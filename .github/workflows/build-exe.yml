@@ -1,0 +1,70 @@
+name: build-exe
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/**"
+      - "packaging/**"
+      - "pyproject.toml"
+      - "uv.lock"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-exe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check for packaging spec
+        id: spec
+        shell: bash
+        run: |
+          if [ -f packaging/autotrader.spec ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::packaging/autotrader.spec not found yet; skipping the Windows build."
+          fi
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        if: steps.spec.outputs.exists == 'true'
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          ignore-nothing-to-cache: true
+
+      - name: Install dependencies
+        if: steps.spec.outputs.exists == 'true'
+        run: uv sync --locked
+
+      - name: Build with PyInstaller
+        if: steps.spec.outputs.exists == 'true'
+        run: uv run pyinstaller packaging/autotrader.spec --noconfirm --clean
+
+      - name: Smoke test (--self-test)
+        if: steps.spec.outputs.exists == 'true'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\autotrader\autotrader.exe" -ArgumentList "--self-test" -Wait -PassThru -NoNewWindow
+          if (Test-Path "self-test-report.txt") { Get-Content "self-test-report.txt" }
+          if ($p.ExitCode -ne 0) {
+            Write-Error "self-test failed with exit code $($p.ExitCode)"
+            exit 1
+          }
+
+      - name: Upload build (manual runs only)
+        if: steps.spec.outputs.exists == 'true' && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: autotrader-windows-${{ github.sha }}
+          path: dist/autotrader/
+          retention-days: 7
+          if-no-files-found: error

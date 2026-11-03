@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check for Python project
+        id: project
+        shell: bash
+        run: |
+          if [ -f pyproject.toml ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::pyproject.toml not found yet; skipping lint and tests."
+          fi
+
+      - name: Install Qt runtime libraries
+        if: steps.project.outputs.exists == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libgl1 libegl1 libdbus-1-3 libxkbcommon0 libfontconfig1
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        if: steps.project.outputs.exists == 'true'
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          ignore-nothing-to-cache: true
+
+      - name: Install dependencies
+        if: steps.project.outputs.exists == 'true'
+        run: uv sync --locked
+
+      - name: Lint
+        if: steps.project.outputs.exists == 'true'
+        run: uv run ruff check .
+
+      - name: Test
+        if: steps.project.outputs.exists == 'true'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run pytest -q

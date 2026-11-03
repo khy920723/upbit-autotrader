@@ -2,7 +2,7 @@
 
 업비트 원화(KRW) 마켓에서 최대 3개 코인을 자동으로 매매하는 **개인용 Windows 데스크톱 앱**입니다. 시세·지표와 뉴스 헤드라인을 LLM(Gemini)이 긍정·부정으로 평가하고, 규칙 조건과 위험 한도를 모두 통과할 때만 주문합니다.
 
-> **현재 상태:** 0단계(준비)를 마쳤고 기능 개발 전입니다. 진행 상황은 [docs/PROGRESS.md](docs/PROGRESS.md)에 기록합니다.
+> **현재 상태:** 0단계(준비)와 기획 문서 작성을 마쳤고 기능 개발 전입니다. 진행 상황은 [진행 기록](docs/10-management/progress.md)에 남깁니다.
 
 > **면책:** 이 프로젝트는 투자 자문이 아니며 수익을 보장하지 않습니다. 자동매매는 버그, 장애, 급변동으로 손실이 날 수 있습니다. 실제 자금을 쓰기 전에 페이퍼(모의) 모드로 충분히 검증하세요.
 
@@ -50,11 +50,13 @@
 
 [Claude Code](https://claude.com/claude-code) 클라우드 세션으로 단계별로 개발합니다. 단계 하나가 세션 하나, PR 하나입니다.
 
-- [docs/SPEC.md](docs/SPEC.md): 요구사항
-- [docs/PLAN.md](docs/PLAN.md): 단계별 계획과 검증된 외부 사실
-- [docs/PROGRESS.md](docs/PROGRESS.md): 진행 기록
+- [문서 지도](docs/README.md): 기획 문서 전체 목록(10개 분류)
+- [요구사항 정의서](docs/01-planning/requirements.md)
+- [시스템 구성도](docs/06-architecture/system-architecture.md)
+- [로드맵](docs/10-management/roadmap.md): 단계별 계획과 검증된 외부 사실
+- [진행 기록](docs/10-management/progress.md)
 - [CLAUDE.md](CLAUDE.md): 개발 규칙
 
 ## 라이선스
 
-아직 정하지 않았습니다.
+[MIT](LICENSE)

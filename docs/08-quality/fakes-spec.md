@@ -55,7 +55,8 @@
 ### 2.2 응답 형식
 
 - **주문 객체 필드:** `uuid`, `side`(bid·ask), `ord_type`(limit·price·market·best), `price`, `state`(wait·watch·done·cancel), `market`, `created_at`(KST, `2025-07-04T15:00:00+09:00` 형식), `volume`, `remaining_volume`, `executed_volume`, `reserved_fee`, `remaining_fee`, `paid_fee`, `locked`, `prevented_volume`, `prevented_locked`, `trades_count`, 그리고 있을 수도 없을 수도 있는 `time_in_force`, `identifier`(2024-10-18 이후 주문만), `smp_type`(2026-11-09부터 항상), `trades`(개별 조회만, `{market, uuid, price, volume, funds, trend, created_at, side}`).
-- **빠지는 필드:** 가짜는 `omit_optional_fields` 옵션으로 위의 선택 필드를 빼서 보낼 수 있어야 한다. 앱은 빠진 필드를 "모름"으로 다뤄야 한다.
+- **빠지는 필드:** 가짜는 `omit_optional_fields` 옵션으로 위의 선택 필드를 빼서 보낼 수 있어야 한다. 앱은 빠진 필드를 "모름"으로 다뤄야 한다. 값이 없는 필드(시장가 매도의 `price`, 시장가·최유리 매수의 `volume`·`remaining_volume`)는 문서 예시처럼 키 자체를 뺀다(3단계 구현).
+- **접수 응답:** POST /v1/orders 응답은 접수 시점의 모습(`wait`, 체결 0)이고 DELETE /v1/order 응답은 취소 전 모습(`wait`)이다. 끝 상태는 곧바로 조회하면 보인다(문서 예시와 같음).
 - **숫자 표기:**
   - 거래(Exchange) API는 숫자를 문자열로 준다(`"0.0005"`, `"1000000.0"`).
   - 시세 REST는 JSON 숫자이고 표기가 섞여 있다. 같은 응답에 `0.01270000`과 `0.0127`이 함께 오고, `acc_trade_price`처럼 float로 읽으면 값이 달라지는 긴 수(`15639124215.8082700000000000`)가 있다.
@@ -77,16 +78,22 @@
 | 서명 알고리즘 | `alg`가 HS512가 아님 | 인증 문서(HS512 권장), CLAUDE.md |
 | nonce | UUID가 아님, 이미 쓴 값 | 인증 문서(`nonce_used`) |
 | query_hash | 파라미터·본문이 있는데 없음, 또는 값이 "URL 인코딩 전 실제 쿼리 문자열"(POST는 JSON 본문의 키·값을 순서대로 `key=value&...`로 바꾼 문자열)의 SHA512와 다름. 배열은 `uuids[]=a&uuids[]=b`처럼 키를 반복 | 인증 문서 |
-| smp_type | 주문 생성·검증에 없음, 또는 `post_only`와 함께 씀 | SMP 기본값 공지(2026-11-09), CLAUDE.md |
-| identifier | 주문 생성에 없음, 64자 초과, 계정에서 이미 쓴 값 | 주문 생성 문서(계정 전체에서 고유, 재사용 불가, 최대 64자) |
+| smp_type | 주문 생성·검증에 없음, `post_only`와 함께 씀, `cancel_maker`가 아님(`cancel_taker`·`reduce`·`none`은 "앱 정책 위반") | SMP 기본값 공지(2026-11-09), CLAUDE.md, D-047 |
+| 주문 값 형식 | 값이 JSON 문자열이 아님, `price`·`volume`이 `^[0-9]+(\.[0-9]+)?$`가 아님(지수 표기, 공백, 부호, 밑줄), `volume` 소수 8자리 초과 | 주문 생성 문서(값은 문자열), INV-14 |
+| 쿼리 인코딩 | 쿼리 원문에 인코딩하지 않은 `+`·공백, 배열 키의 `[]`를 `%5B%5D`로 인코딩(기본 위반, `forbid_encoded_brackets=False`로 끔), 경로별 허용 목록에 없는 쿼리 키(`states`처럼 `[]` 없는 배열 키 포함), 쿼리가 붙은 POST | 업비트 API 연동 명세 3장 |
+| 호스트 | `https://api.upbit.com`이 아닌 스킴·호스트, 가짜가 모르는 경로 | CLAUDE.md |
+| identifier | 주문 생성에 없음, 64자 초과, 공백·`+`가 있음, 계정에서 이미 쓴 값(앞 시도가 응답을 받았으면 `identifier`, 못 받았으면 `auto_retry`. 429·418·인증 오류 뒤 재전송도 포함) | 주문 생성 문서(계정 전체에서 고유, 재사용 불가, 최대 64자), INV-03, TS-116 |
 | identifier 선저장 | 요청을 받은 시점에 그 identifier가 앱 DB에 없음(가짜가 테스트의 DB 조회 콜백으로 확인. 선택 검사) | CLAUDE.md, 매매 로직 명세 |
 | 주문 유형별 필수값 | `best`인데 `time_in_force`(ioc·fok)가 없음, `price`(시장가 매수)에 `volume`이 있음, `market`(시장가 매도)에 `price`가 있음 | 주문 생성 문서 |
 | 자동 재시도 | 같은 identifier의 POST /v1/orders가 두 번 옴(타임아웃 뒤 클라이언트가 다시 보냄) | CLAUDE.md, TS-72 |
-| 요청 한도 절반 | 그룹별 1초 창에서 한도의 절반을 넘음(표 아래 목록). 실제 한도까지 넘으면 위반과 함께 429를 흉내 | NFR-06 |
+| 요청 한도 절반 | 그룹별 1초 창(가짜는 FakeClock monotonic 정수 초 창)에서 한도의 절반을 넘음(표 아래 목록). 실제 한도까지 넘으면 위반과 함께 429를 흉내 | NFR-06 |
+| 멈춤 | 429 응답이나 `sec=0` 헤더 뒤 그 그룹의 다음 초 경계 전에 또 보냄, 418 뒤 차단이 끝나기 전에 어느 그룹이든 보냄(만기 뒤 확인 1건은 허용) | INV-13, TS-03, TS-05, D-078, D-088 |
+| 일괄 취소 | `DELETE /v1/orders/open` 호출(`forbid_batch_cancel=True`가 기본) | D-069 |
 | 실제 네트워크 없음 | 테스트 중 가짜를 거치지 않고 밖으로 나가는 연결 시도. 테스트 픽스처가 소켓 연결을 막아 실패로 만든다 | CLAUDE.md(클라우드에서 비공개 API 호출 금지) |
 
 - 한도의 절반: 시세 그룹 `market`·`candles`·`trade`·`ticker`·`orderbook` 초당 5회(IP), `default` 15회, `order` 6회, `order-test` 4회(이상 포켓), `order-cancel-all` 4초에 1회, 웹소켓 연결 초당 2회, 메시지 연결마다 초당 2회·분당 50회.
 - 엄격 모드를 끄는 옵션은 두지 않는다. 오류 응답 처리를 시험할 때는 2.5절 주입을 쓴다.
+- **구현(3단계):** `tests/fakes/upbit_http.py`의 `FakeUpbitServer(clock, credentials, **options)`. `server.transport`를 앱의 HTTP 클라이언트에 꽂는다. 위반은 `FakeProtocolViolation.rule`로 구분한다: `path`, `origin`, `duplicate_header`, `post_body`, `delete_body`, `auth`, `jwt_alg`, `nonce`, `query_hash`, `query_encoding`, `query_params`, `smp_type`, `identifier`, `identifier_not_saved`, `order_params`, `auto_retry`, `rate_limit_half`, `rate_limit`, `rate_limit_pause`, `blocked_request`, `batch_cancel`. 서명은 앱 코드를 쓰지 않고 가짜 안에서 따로 검증한다(PyJWT 디코드 + SHA512 재계산). nonce는 하이픈 있는 표준 UUID만 받는다. 실제 네트워크 차단 픽스처는 아직 없다(남은 일).
 
 ### 2.4 상태 모형
 
@@ -97,11 +104,12 @@
 | 주문 | 계산 | 끝 상태 |
 |---|---|---|
 | 최유리 FOK 매수(`ord_type=best`, `side=bid`, `price`=총액, `time_in_force=fok`) | 최우선 매도호가에서 총액만큼 전량 체결할 수 있으면 그 가격으로 체결 | 체결되면 `done`, 아니면 `cancel`(체결 0) |
-| 시장가 매수(`ord_type=price`) | 매도호가를 위에서부터 소진 | 총액을 다 쓰면 `done`, 남으면 `cancel`(체결분 있음) |
+| 시장가 매수(`ord_type=price`) | 매도호가를 위에서부터 소진 | 총액을 다 쓰면 `done`, 남으면(최소 수량 1e-8도 못 사는 잔돈 포함, 호가 깊이와 상관없이) `cancel`(체결분 있음). 체결 0건이면 `cancel` |
 | 시장가 매도(`ord_type=market`) | 매수호가를 위에서부터 소진 | 수량을 다 팔면 `done`, 남으면 `cancel`(체결분 있음) |
 | 지정가(`ord_type=limit`) | 바로 체결되는 부분만 체결, 나머지는 대기 | `wait`. 앱은 쓰지 않는다. 사용자 수동 주문을 흉내 낼 때 쓴다 |
 
-- **수수료:** 체결 금액 × 수수료율을 `paid_fee`에 넣는다.
+- **수수료:** 체결 금액 × 수수료율을 `paid_fee`에 넣는다. 계산은 지역 `decimal.Context`로 해서 전역 정밀도 설정에 흔들리지 않는다.
+- **잔고(3단계 구현):** 체결해도 잔고는 바뀌지 않는다. 테스트가 `set_accounts(...)`로만 바꾼다. SMP의 `prevented` 처리는 아직 없다.
 - **SMP:** 같은 계정의 반대 방향 대기 주문(수동 지정가)과 맞부딪치면 테이커 주문의 `smp_type`을 따른다. `cancel_maker`면 대기 주문을 취소하고(`prevented_volume`, `prevented_locked`) 앱 주문은 진행한다. myOrder에는 `prevented`를 보낸다.
 - **시각:** `created_at`과 체결 시각은 FakeClock의 거래소 시각(KST 표기)으로 만든다.
 
@@ -136,6 +144,7 @@
 | | `candles(market, unit, series)` | 빈 구간 있는 캔들, 200개 넘는 기간 | TS-105 |
 | | `server_time_offset(seconds)` | `Date` 헤더를 PC 시계와 다르게 | TS-42 |
 | | `api_keys(result)` | 자기 키 있음, 없음, 호출 실패 | TS-78 |
+| | `set_accounts(...)` | 잔고 목록을 바꾼다(체결로는 바뀌지 않는다) | TS-10 |
 | 웹소켓 | `ws_drop(after)` | 연결 종료 | TS-41 |
 | | `ws_silence(seconds)` | 데이터를 보내지 않음(120초 넘으면 서버처럼 끊음) | TS-41, TS-106 |
 | | `ws_status_up` | 클라이언트가 `"PING"` 문자열을 보내면 10초마다 `{"status":"UP"}` | TS-106 |
@@ -154,6 +163,10 @@
 - `open_orders(market)`: 그 시점 거래소의 대기 주문(INV-05).
 - `jwt_payloads`: 받은 JWT의 페이로드(비밀은 없지만 nonce 중복 검사에 쓴다).
 - `violations`: 엄격 모드 위반 목록. 테스트 끝에 비어 있어야 한다.
+- `assert_clean()`: 위반이 있으면 목록을 보여 주며 실패한다. `tests/conftest.py`의 `make_fake_upbit(clock=None, credentials=None, **options)`·`fake_upbit` 픽스처가 정리 단계에서 부른다(1.2절 3번).
+- 기록한 요청의 repr은 `Authorization` 값을 가린다.
+
+**3단계 구현 범위(REST):** 위 표의 주입 중 통신(`slow` 제외), 한도, 인증·권한, 주문 거절, `fill(identifier, ratio, price, trades, state)`(이미 있는 주문에도 적용), `not_found_for`, `validate`, 시장 정보(`market_event`, `market_removed`, `chance`, `orderbook`, `candles`, `server_time_offset`, `api_keys`, `set_accounts`)를 만들었다. `slow`, `lookup_error`, `cancel_error`, `manual_order`, `exchange_only_order`, `balance_drift`, SMP `prevented`, 웹소켓 주입은 남은 일이다(웹소켓은 3b, 나머지는 5단계 브로커·대조 시험 때).
 
 ### 2.7 녹화 응답과 문서 예시
 

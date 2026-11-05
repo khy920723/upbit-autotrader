@@ -115,7 +115,7 @@
 | | `server_error(status=500, created: bool)` | 5xx. 주문이 만들어졌는지 고를 수 있다 | TS-66 |
 | | `slow(seconds)` | FakeClock 기준으로 늦게 응답한다 | TS-142 |
 | 한도 | `rate_limited(group, times, body)` | 429. 본문 형식이 문서에 없어 세 가지(JSON 오류, 빈 본문, 일반 텍스트)를 고른다 | TS-03, TS-04 |
-| | `blocked(seconds, body)` | 418. 차단 시간을 담는 형식이 문서에 없어 세 가지(본문에 시간, 빈 본문, 일반 텍스트)를 고른다. `Retry-After` 헤더가 있는 경우와 없는 경우도 고른다(D-078 대기) | TS-05 |
+| | `blocked(seconds, body)` | 418. 차단 시간을 담는 형식이 문서에 없어 세 가지(본문에 시간, 빈 본문, 일반 텍스트)를 고른다. `Retry-After` 헤더가 있는 경우와 없는 경우도 고른다(D-078) | TS-05 |
 | | `remaining(group, sec)` | `Remaining-Req`의 `sec` 값을 정한다(0 포함). group 값을 표와 다르게(예: 문서 표기 `candle`) 보내는 옵션. 앱은 경로별 표로 버킷을 고르고 다른 group 값은 경고만 남겨야 한다 | TS-143 |
 | 인증·권한 | `auth_error(name)` | 401 `no_authorization_ip`, `expired_access_key`, `jwt_verification`, `invalid_query_payload`, `nonce_used`, `no_authorization_token` | TS-06, TS-07, TS-08 |
 | | `out_of_scope(status)` | `out_of_scope`를 401 또는 403으로 | TS-44 |

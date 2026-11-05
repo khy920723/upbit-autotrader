@@ -7,7 +7,7 @@
 - 시간은 FakeClock(monotonic 1000.0에서 시작, PC·거래소 오차 없음)만 쓴다. 실제로 기다리지 않는다.
 - "1초 창"은 정수 초 경계 [k, k+1)다. 시작 시각이 정수이고 오차가 없어 monotonic과 거래소 시각의
   초 경계가 같다. 한도 장치는 슬라이딩 창이라 길이 1초인 어느 구간에도 절반을 넘지 않는다
-  (T2 리뷰 반영 결정, D-086 갱신 제안). 정수 초 창 조건은 그 특수한 경우다.
+  (T2 리뷰 반영 결정, D-087 갱신 제안). 정수 초 창 조건은 그 특수한 경우다.
 - 한도의 절반: 시세 그룹 5, default 15, order 6, order-test 4(초당), order-cancel-all 4초에 1.
 """
 
@@ -546,7 +546,7 @@ def test_success_after_block_resets_the_wait():
     assert asyncio.run(scenario()) == pytest.approx(300.0)
 
 
-# --- 418 세부(D-088 제안: 오케스트레이터 결정 D·E·F) ---------------------------------------
+# --- 418 세부(D-089 제안: 오케스트레이터 결정 D·E·F) ---------------------------------------
 
 
 def test_418_arriving_while_already_blocked_does_not_raise_the_step():

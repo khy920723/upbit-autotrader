@@ -20,12 +20,15 @@
   WriteTimeout)는 RequestTimeout이다. NetworkError는 요청이 안 나갔다는 뜻이 아니다(ReadError·
   RemoteProtocolError는 서버가 받은 뒤일 수 있다). 주문 POST의 NetworkError·RequestTimeout은
   모두 결과 불명으로 다룬다(같은 identifier로 조회, 재전송 금지).
+- TLS: 기본 전송은 앱의 TLS 문맥(autotrader.adapters.tls, certifi 묶음만, 최소 TLS 1.2)을 쓴다
+  (D-093). httpx 기본값과 달리 SSL_CERT_FILE·SSL_CERT_DIR를 읽지 않는다.
 근거: docs/05-integration/upbit-api.md 3~6장·9장, ADR-0006 "지킬 것", INV-07·INV-13·INV-14.
 """
 
 import json
 import logging
 import re
+import ssl
 import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -38,6 +41,7 @@ from typing import Any
 import httpx
 
 from autotrader import __version__
+from autotrader.adapters.tls import create_tls_context
 from autotrader.adapters.upbit.auth import (
     Credentials,
     Params,
@@ -154,6 +158,7 @@ class UpbitHttp:
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 10.0,
         user_agent: str = DEFAULT_USER_AGENT,
+        tls_context: ssl.SSLContext | None = None,
     ) -> None:
         # clock은 호출 쪽 호환을 위해 받는다. 시간은 limiter가 같은 시계로 잰다.
         del clock
@@ -164,8 +169,14 @@ class UpbitHttp:
         self._base_url = base_url
         # 기본 전송(retries=0)으로 자동 재시도가 없다. 리다이렉트는 따라가지 않는다.
         # 서버의 Set-Cookie를 저장해 다음 요청에 되돌려 보내지 않는다.
+        # transport를 받으면 tls_context는 쓰지 않고 TLS 문맥을 만들지도 않는다.
+        if transport is None:
+            transport = httpx.AsyncHTTPTransport(
+                retries=0,
+                verify=tls_context if tls_context is not None else create_tls_context(),
+            )
         self._client = httpx.AsyncClient(
-            transport=transport if transport is not None else httpx.AsyncHTTPTransport(retries=0),
+            transport=transport,
             timeout=httpx.Timeout(timeout),
             follow_redirects=False,
             headers={"Accept": "application/json", "User-Agent": user_agent},

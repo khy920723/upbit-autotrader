@@ -82,3 +82,30 @@ def make_fake_upbit() -> Iterator[Callable[..., Any]]:
 def fake_upbit(make_fake_upbit: Callable[..., Any]) -> Any:
     """기본 옵션의 FakeUpbitServer 하나(정리 단계에서 assert_clean)."""
     return make_fake_upbit()
+
+
+@pytest.fixture
+def make_fake_upbit_ws() -> Iterator[Callable[..., Any]]:
+    """FakeUpbitWs(웹소켓 와이어 가짜)를 만드는 함수.
+
+    `make_fake_upbit_ws(clock=None, credentials=None, **옵션)`.
+
+    clock을 주지 않으면 새 FakeClock, credentials를 주지 않으면 새 카나리아 키를 쓴다(가짜의
+    `.clock`·`.credentials`로 꺼낸다). 정리 단계에서 만든 가짜마다 `assert_clean()`을 부른다.
+    위반을 일부러 만드는 테스트는 끝에 `fake.violations.clear()`를 하거나 이 픽스처를 쓰지 않는다.
+    """
+    from fakes.clock import FakeClock
+    from fakes.upbit_ws import FakeUpbitWs
+
+    fakes: list[FakeUpbitWs] = []
+
+    def factory(
+        clock: FakeClock | None = None, credentials: Any = None, **options: Any
+    ) -> FakeUpbitWs:
+        fake = FakeUpbitWs(clock if clock is not None else FakeClock(), credentials, **options)
+        fakes.append(fake)
+        return fake
+
+    yield factory
+    for fake in fakes:
+        fake.assert_clean()

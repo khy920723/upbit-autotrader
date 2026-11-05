@@ -43,6 +43,8 @@ THIRD_PARTY_MODULES = (
     "keyring",
     "sqlite3",
     "ssl",
+    # anyio는 첫 실제 요청에서야 asyncio 백엔드를 이름으로 import한다. exe에 빠지면 그때 실패한다.
+    "anyio._backends._asyncio",
 )
 
 # check_qt가 만든 QApplication. 프로세스가 끝날 때까지 붙잡아 둔다(다시 만들 수 없다).
@@ -170,25 +172,46 @@ def check_sqlite(*, sqlite_version: str | None = None) -> str:
 
 def check_tls(
     *,
-    platform: str | None = None,
-    create_context: Callable[[], ssl.SSLContext] | None = None,
-    verify_paths: Callable[[], ssl.DefaultVerifyPaths] | None = None,
+    bundle_path: str | None = None,
+    create_context: Callable[..., ssl.SSLContext] | None = None,
 ) -> str:
-    """기본 TLS 설정이 신뢰할 CA 인증서를 찾는지 본다. 연결은 하지 않는다."""
-    platform = sys.platform if platform is None else platform
-    context = (create_context or ssl.create_default_context)()
+    """REST·웹소켓과 같은 TLS 설정(D-093)이 certifi 묶음에서 CA 인증서를 읽는지 본다.
+
+    연결하지 않고, 운영체제 저장소와 SSL_CERT_FILE·SSL_CERT_DIR는 보지 않는다. exe에서는 묶음이
+    번들 폴더 안에 있는지도 본다. 문구에는 묶음의 전체 경로 대신 파일 이름만 쓴다(사용자 이름이
+    들어갈 수 있다).
+    """
+    from autotrader.adapters import tls
+
+    path = Path(tls.ca_bundle_path() if bundle_path is None else bundle_path)
+    name = path.name
+    if getattr(sys, "frozen", False):
+        bundle_root = getattr(sys, "_MEIPASS", None)
+        if not bundle_root:
+            raise CheckFailed(f"CA 인증서 묶음을 확인할 번들 폴더를 알 수 없습니다: {name}")
+        if not path.resolve().is_relative_to(Path(bundle_root).resolve()):
+            raise CheckFailed(f"CA 인증서 묶음이 실행 번들 폴더 밖에 있습니다: {name}")
+    if not path.is_file():
+        raise CheckFailed(f"CA 인증서 묶음 파일이 없습니다: {name}")
+    try:
+        context = (create_context or tls.create_tls_context)(cafile=str(path))
+    except OSError as exc:
+        # 예외 문구에는 경로가 들어갈 수 있어 종류만 쓴다.
+        raise CheckFailed(
+            f"CA 인증서 묶음을 읽지 못했습니다: {name} ({type(exc).__name__})"
+        ) from exc
     minimum = context.minimum_version
     if int(minimum) < int(ssl.TLSVersion.TLSv1_2):
         raise CheckFailed(f"TLS 최소 버전이 1.2보다 낮습니다: {minimum.name}")
+    if context.check_hostname is not True or context.verify_mode != ssl.CERT_REQUIRED:
+        raise CheckFailed("TLS 설정이 호스트 이름과 인증서를 확인하지 않습니다")
     ca_count = context.cert_store_stats().get("x509_ca", 0)
-    if ca_count > 0:
-        return f"{ssl.OPENSSL_VERSION}, CA 인증서 {ca_count}개, 최소 {minimum.name}"
-    if platform != "win32":
-        # 리눅스는 CA 디렉터리(capath)를 연결할 때 읽어서 미리 센 개수가 0일 수 있다.
-        capath = (verify_paths or ssl.get_default_verify_paths)().capath
-        if capath and Path(capath).is_dir() and any(Path(capath).iterdir()):
-            return f"{ssl.OPENSSL_VERSION}, CA 디렉터리 사용(연결할 때 읽음), 최소 {minimum.name}"
-    raise CheckFailed("신뢰할 CA 인증서를 찾지 못했습니다")
+    if ca_count <= 0:
+        raise CheckFailed(f"CA 인증서 묶음에서 CA 인증서를 하나도 읽지 못했습니다: {name}")
+    return (
+        f"{tls.CA_SOURCE} {tls.ca_bundle_version()} 묶음, CA 인증서 {ca_count}개, "
+        f"{ssl.OPENSSL_VERSION}, 최소 {minimum.name}"
+    )
 
 
 def check_paths(*, env: Mapping[str, str] | None = None, platform: str | None = None) -> str:

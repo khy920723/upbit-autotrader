@@ -69,6 +69,7 @@ ID2 = "uat-l-261105000000-0000aa02"
 ID3 = "uat-l-261105000000-0000aa03"
 NEVER = "uat-l-261105000000-ffffffff"
 JWT_SHAPE = re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+PLAIN_NUMBER = re.compile(r"\d+(\.\d+)?")  # 가짜가 받는 주문 값 모양(지수 표기·부호 없음)
 
 # 상태 모형 시험용 얇은 호가(가짜 구현 테스트와 같은 값).
 THIN_BOOK = [
@@ -173,9 +174,9 @@ def ms(moment: datetime) -> str:
 
 
 def plain_number(text: Any, expected: Decimal) -> None:
-    """본문의 숫자는 지수 표기 없는 문자열이고 Decimal로 읽으면 원래 값이다."""
+    """본문의 숫자는 지수 표기 없는 문자열이고 Decimal로 읽으면 원래 값이다(D-071)."""
     assert isinstance(text, str), text
-    assert "e" not in text.lower(), text
+    assert PLAIN_NUMBER.fullmatch(text), text
     assert D(text) == expected
 
 
@@ -375,17 +376,51 @@ def test_create_order_returns_the_accepted_snapshot(exchange):
     assert_decimal_fields(snapshot)
 
 
+def test_snapshot_without_price_or_volume_keys_is_parsed(exchange):
+    # 값이 없는 필드(시장가 매도의 price, 시장가 매수의 volume)는 응답에서 키째 빠질 수 있다.
+    async def scenario(api):
+        sold = await api.create_order(market_sell(ID1, "0.001"))
+        bought = await api.create_order(market_buy(ID2, "10000"))
+        return (
+            sold,
+            await api.get_order(identifier=ID1),
+            bought,
+            await api.get_order(identifier=ID2),
+        )
+
+    sold, sold_later, bought, bought_later = exchange.run(scenario)
+
+    for snapshot in (sold, sold_later):
+        assert snapshot.price is None
+        assert snapshot.volume == D("0.001")
+        assert_decimal_fields(snapshot)
+    for snapshot in (bought, bought_later):
+        assert snapshot.price == D("10000")
+        assert snapshot.volume is None
+        assert snapshot.remaining_volume is None
+        assert_decimal_fields(snapshot)
+
+
 @pytest.mark.parametrize(
     ("req", "key", "value"),
     [
         (market_buy(ID1, "1E+4"), "price", D("10000")),
+        (market_buy(ID1, "5E+3"), "price", D("5000")),
         (market_buy(ID1, "10000.00000000"), "price", D("10000")),
         (market_sell(ID1, "1.0E-3"), "volume", D("0.001")),
         (market_sell(ID1, "1E-8"), "volume", D("0.00000001")),
         (limit_buy(ID1, "1.0E+3", "2.5E+0"), "price", D("1000")),
         (limit_buy(ID1, "1.0E+3", "2.5E+0"), "volume", D("2.5")),
     ],
-    ids=["price-exp", "price-trailing-zeros", "volume-exp", "volume-tiny", "limit-p", "limit-v"],
+    ids=[
+        "price-exp",
+        "price-5e3",
+        "price-trailing-zeros",
+        "volume-exp",
+        "volume-tiny",
+        "limit-p",
+        "limit-v",
+    ],
 )
 def test_amounts_are_sent_as_plain_strings(exchange, req, key, value):
     exchange.run(lambda api: api.create_order(req))
@@ -443,6 +478,8 @@ INVALID_REQUESTS = {
     "nan-price": request(side="bid", ord_type="price", price=D("NaN")),
     "infinite-volume": request(side="ask", ord_type="market", volume=D("Infinity")),
     "zero-volume": request(side="ask", ord_type="market", volume=D("0")),
+    # 수량은 소수 8자리까지(가짜 엄격 검사). 반올림은 정책 몫이므로 어댑터는 보내지 않고 거부한다.
+    "volume-9-decimals": request(side="ask", ord_type="market", volume=D("0.000000001")),
     "empty-identifier": request(identifier="", side="bid", ord_type="price", price=D("10000")),
     "identifier-65-chars": request(
         identifier="uat-" + "a" * 61, side="bid", ord_type="price", price=D("10000")
@@ -594,11 +631,13 @@ def test_a_failed_order_is_sent_exactly_once_and_reported(exchange, inject, expe
 
 
 def test_an_order_whose_answer_was_lost_can_be_confirmed_by_identifier(exchange):
+    exchange.server.orderbook("KRW-BTC", THIN_BOOK)
     exchange.server.timeout_after_accept()
 
     async def scenario(api):
         with pytest.raises(RequestTimeout):
-            await api.create_order(market_buy(ID1))
+            # 얇은 호가에서 잔돈 없이 다 쓰는 금액(1억 × 0.01 + 1.25억 × 0.008) → done
+            await api.create_order(market_buy(ID1, "2000000"))
         return await api.get_order(identifier=ID1)
 
     found = exchange.run(scenario)
@@ -909,7 +948,9 @@ def test_get_orders_by_identifiers_without_trades(exchange):
     assert {o.identifier for o in orders} == {ID1, ID2}
     for order in orders:
         assert order.trades is None  # 목록 조회는 체결 목록을 주지 않는다(매매 로직 명세 11장)
-        assert order.state == "done"
+        # 녹화 호가에서 1만 원 시장가 매수는 잔돈이 남아 cancel(체결분 있음)일 수 있다.
+        assert order.state in ("done", "cancel")
+        assert order.executed_volume > 0
         assert_decimal_fields(order)
     [sent] = exchange.sent("GET", "/v1/orders/uuids")
     params = exchange.params(sent)
@@ -989,11 +1030,12 @@ def test_open_orders_for_one_market(exchange):
 
 
 def test_closed_orders_in_the_window_are_listed_without_trades(exchange):
+    exchange.server.orderbook("KRW-BTC", THIN_BOOK)
     start = START - timedelta(hours=1)
     end = START + timedelta(hours=1)
 
     async def scenario(api):
-        await api.create_order(market_buy(ID1))
+        await api.create_order(market_buy(ID1, "2000000"))
         await api.create_order(limit_buy(ID2))
         await api.cancel_order(identifier=ID2)
         return await api.list_closed_orders(market="KRW-BTC", start=start, end=end)

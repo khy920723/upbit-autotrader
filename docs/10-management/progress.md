@@ -5,8 +5,8 @@
 ## 2026-11-05 — QA: 검증 기반 (클라우드 세션)
 
 - 한 일:
-  - [요구사항 추적표](../08-quality/traceability.md): FR-01~FR-26, NFR-01~NFR-12를 설계 문서, 테스트 시나리오, 불변식, 로드맵 단계와 연결했다. 보완 전 판정은 충분 5개, 빠짐 6개(FR-09, FR-18, FR-24, FR-26, NFR-07, NFR-11), 나머지는 일부. 요구사항 문장이 없는 테스트 7개(TS-15, TS-16, TS-73, TS-74, TS-75, TS-77, TS-102)를 찾았고, 명세 공백 17개(Q-01~Q-17)를 정리했다.
-  - [테스트 시나리오](../08-quality/test-scenarios.md)에 빈 곳을 메우는 TS-84~TS-131(48개)을 추가했다. 작업 중에 [1단계 설계 PR](https://github.com/khy920723/upbit-autotrader/pull/2)이 TS-60~TS-83을 써서 병합됐으므로 TS-84부터 붙였다.
+  - [요구사항 추적표](../08-quality/traceability.md): FR-01~FR-26, NFR-01~NFR-12를 설계 문서, 테스트 시나리오, 불변식, 로드맵 단계와 연결했다. 보완 전 판정은 충분 5개, 빠짐 6개(FR-09, FR-18, FR-24, FR-26, NFR-07, NFR-11), 나머지는 일부. 요구사항 문장이 없는 테스트 7개(TS-15, TS-16, TS-73, TS-74, TS-75, TS-77, TS-116)를 찾았고, 명세 공백 17개(Q-01~Q-17)를 정리했다.
+  - [테스트 시나리오](../08-quality/test-scenarios.md)에 빈 곳을 메우는 TS-98~TS-145(48개)을 추가했다. 작업 중에 [1단계 설계 PR](https://github.com/khy920723/upbit-autotrader/pull/2)이 TS-60~TS-83을 써서 병합됐으므로 TS-98부터 붙였다.
   - [불변식 명세](../08-quality/invariants.md): INV-01~INV-19(위험 한도 초과 주문 0건, STOPPED·SUSPENDED·HALTED에서 주문 0건, identifier 재전송 없음, 결과 불명 중 같은 코인 새 주문 없음, 같은 코인 매수·매도 동시 주문 없음, 비밀 없음 등)와 각각을 단위·속성 기반(hypothesis)·통합·구조 검사 중 어떤 테스트로 증명할지 정했다.
   - [가짜 구현 명세](../08-quality/fakes-spec.md): FakeExchange, FakeLLM, FakeNews, FakeClock, FakeNotifier의 응답 형식, 오류 이름, 주입 기능, 엄격 모드 검사, 비밀 검사(카나리아)를 정했다. 업비트 개발자 센터 35쪽과 Gemini API 문서 8쪽을 받아 대조했다. 텔레그램·네이버 문서는 네트워크 정책으로 막혀 검색 요약으로만 확인했다.
   - [녹화 응답](../../tests/fixtures/upbit/README.md): 업비트 공개 시세 API로 market/all(875개 중 8개 항목), 240분봉·일봉 5개, ticker 3개, orderbook, 오류 2개를 받아 저장했다(초당 1회, Origin 없음, 끝 슬래시 없음, 키 없음).

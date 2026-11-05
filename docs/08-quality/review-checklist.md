@@ -56,7 +56,7 @@ QA가 PR을 검토할 때 쓰는 기준이다. PR 종류(문서, 인프라, 기�
 | RC-C06 | `pyupbit`, `google-generativeai`(구 SDK)가 의존성 트리에 없다 | CLAUDE.md, LLM 시그널 명세 3장 |
 | RC-C07 | 새 의존성의 라이선스가 MIT 배포와 맞고 의존성 라이선스 목록을 고쳤다. Windows 휠이 있고 PyInstaller 호환(훅, hidden import)을 확인했다 | 법·약관 검토 8장 |
 | RC-C08 | `packaging/autotrader.spec`이 onedir, windowed, UPX 끔이고 결과가 `dist/autotrader/autotrader.exe`다 | CLAUDE.md CI 계약 |
-| RC-C09 | `--self-test`가 창을 띄우지 않고, 네트워크와 키를 쓰지 않으며, 현재 폴더에 `self-test-report.txt`를 쓰고 성공 0·실패 1로 끝난다 | CLAUDE.md CI 계약, TS-123 |
+| RC-C09 | `--self-test`가 창을 띄우지 않고, 네트워크와 키를 쓰지 않으며, 현재 폴더에 `self-test-report.txt`를 쓰고 성공 0·실패 1로 끝난다 | CLAUDE.md CI 계약, TS-137 |
 | RC-C10 | CI 명령 이름이 그대로다: `uv run ruff check .`, `QT_QPA_PLATFORM=offscreen uv run pytest -q` | CLAUDE.md CI 계약 |
 | RC-C11 | pytest 설정(`--strict-markers` 등)을 지키고 새 마커를 등록했다 | `pyproject.toml` |
 | RC-C12 | `.gitignore`가 런타임 데이터(`data/`, `logs/`, `*.db`), 비밀 파일, `.hypothesis/`를 막는다 | CLAUDE.md 구조 원칙 |
@@ -219,10 +219,10 @@ QT_QPA_PLATFORM=offscreen uv run pytest -q --cov --cov-branch --cov-report=term-
 1. [RC-D19] src/autotrader/adapters/upbit/client.py:120 — 주문 POST에 HTTP 클라이언트 자동 재시도가 켜져 있다.
    근거: CLAUDE.md "업비트 API 주의", 불변식 INV-03.
    고칠 방법: 주문 POST는 재시도하지 않고 타임아웃이면 UNKNOWN 절차로 넘긴다.
-   확인할 테스트: FakeExchange timeout_after_accept에서 orders_received(identifier) == 1 (TS-103).
+   확인할 테스트: FakeExchange timeout_after_accept에서 orders_received(identifier) == 1 (TS-117).
 
 권장
-2. [RC-E02] tests/unit/test_risk.py — 테스트 docstring에 TS·INV ID가 없다. 예: """TS-99, INV-01: ..."""
+2. [RC-E02] tests/unit/test_risk.py — 테스트 docstring에 TS·INV ID가 없다. 예: """TS-113, INV-01: ..."""
 
 질문
 3. [Q-01] 손절 매도에 최소 주문 간격을 적용한 이유가 있나? 정책서 1장 원칙 2와 맞는지 확인이 필요하다.

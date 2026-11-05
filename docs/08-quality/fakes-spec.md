@@ -351,7 +351,7 @@
 | 주입 | 동작 | 쓰는 곳 |
 |---|---|---|
 | `rate_limited(retry_after)` | 429와 `retry_after`, `Retry-After` 헤더 | TS-48 |
-| `gone()` | 404, `code` 10015(웹후크가 지워짐) | TS-48 |
+| `gone()` | 404, `code` 10015(웹후크가 지워짐) | TS-48, TS-54 |
 | `fail(kind)` | 네트워크 오류, 5xx, 400, 401(50027) | TS-48, TS-127 |
 | `slow(seconds)` | 늦은 응답 | TS-127 |
 | `remaining_zero(reset_after)` | 성공 응답이지만 `X-RateLimit-Remaining: 0`, `X-RateLimit-Reset-After` | TS-48 |

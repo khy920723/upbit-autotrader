@@ -1,0 +1,60 @@
+{
+  "source": "https://docs.upbit.com/kr/reference/cancel-order.md",
+  "retrieved_at": "2026-11-05",
+  "doc_updated_at": "2026-11-04T07:45:51.000Z",
+  "method": "DELETE",
+  "path": "/v1/order",
+  "status": 200,
+  "example_title": "Successful Example",
+  "example": {
+    "uuid": "cdd92199-2897-4e14-9448-f923320408ad",
+    "side": "bid",
+    "ord_type": "limit",
+    "price": "140000000",
+    "state": "wait",
+    "market": "KRW-BTC",
+    "created_at": "2025-07-04T15:00:00+09:00",
+    "volume": "1.0",
+    "remaining_volume": "1.0",
+    "executed_volume": "0.0",
+    "reserved_fee": "70000.0",
+    "remaining_fee": "70000.0",
+    "paid_fee": "0.0",
+    "locked": "140070000.0",
+    "prevented_volume": "0",
+    "prevented_locked": "0",
+    "trades_count": 0
+  },
+  "error_examples": [
+    {
+      "status": 400,
+      "title": "body parameter not supported error",
+      "body": {
+        "error": {
+          "name": "QUERY_PARAMETER_NOT_SUPPORTED",
+          "message": "이 API는 쿼리 파라미터 형식의 요청만 지원합니다. 요청 본문에 값을 포함할 수 없습니다."
+        }
+      }
+    },
+    {
+      "status": 400,
+      "title": "bad request error",
+      "body": {
+        "error": {
+          "name": "bad_request",
+          "message": "잘못된 요청"
+        }
+      }
+    },
+    {
+      "status": 404,
+      "title": "not found order error",
+      "body": {
+        "error": {
+          "name": "order_not_found",
+          "message": "주문을 찾지 못했습니다."
+        }
+      }
+    }
+  ]
+}

@@ -66,3 +66,27 @@ curl -sS -H 'Accept: application/json' 'https://api.upbit.com/v1/ticker?markets=
 - 녹화 파일을 고치지 않는다. 다른 경우가 필요하면 테스트 안에서 복사본을 바꾸거나 가짜 구현이 만든다.
 - 비밀과 개인 정보는 없다. 공개 시세 API를 키 없이 불렀고, IP가 드러날 수 있는 헤더는 남기지 않았다. 새 녹화를 넣을 때도 이 조건을 확인한다.
 - 비공개(Exchange) API 응답은 녹화할 수 없다(클라우드 세션은 비공개 API를 부르지 않는다). 공식 문서의 응답 예시로 만든다.
+
+## 문서 예시(`docs_examples/`)
+
+비공개(Exchange) API의 응답은 녹화 대신 공식 문서의 응답 예시를 옮겨 둔다. 2026-11-05에 `https://docs.upbit.com/kr/reference/<문서>.md`(OpenAPI 정의와 예시)를 1초 간격으로 받았다. 업비트 API는 부르지 않았다.
+
+| 파일 | 요청 |
+|---|---|
+| `get-balance.json` | GET /v1/accounts |
+| `available-order-information.json` | GET /v1/orders/chance |
+| `new-order.json` | POST /v1/orders |
+| `order-test.json` | POST /v1/orders/test |
+| `get-order.json` | GET /v1/order |
+| `list-orders-by-ids.json` | GET /v1/orders/uuids |
+| `list-open-orders.json` | GET /v1/orders/open |
+| `list-closed-orders.json` | GET /v1/orders/closed |
+| `cancel-order.json` | DELETE /v1/order |
+| `batch-cancel-orders.json` | DELETE /v1/orders/open(앱은 쓰지 않음, D-069) |
+| `list-api-keys.json` | GET /v1/api_keys |
+| `list-orderbook-instruments.json` | GET /v1/orderbook/instruments(공개 API지만 녹화가 없어 문서 예시를 둔다) |
+
+- **형식:** `{source, retrieved_at, doc_updated_at, method, path, status, example_title, example}`. 문서에 있으면 `other_examples`, `request_examples`, `error_examples`, `replaced_with_placeholder`도 넣었다. 숫자 토큰은 원문 그대로다.
+- **키 자리표시:** `list-api-keys.json`의 `access_key`는 `CANARY-PLACEHOLDER`로 바꿨다(`replaced_with_placeholder`에 기록). 테스트는 실행 중에 카나리아 값으로 채운다.
+- **문서와 다른 점:** 주문 예시에는 `identifier`·`smp_type`·`time_in_force`가 없다(가짜가 붙인다). 시장가 매도 예시에는 `price` 키가 없다. 체결(`trades`)의 `created_at`에는 마이크로초가 있다.
+- `tests/unit/fakes/test_upbit_docs_examples.py`가 형식, 출처, 키 자리표시, 문자열 숫자, 오류 이름 타입을 검사한다.

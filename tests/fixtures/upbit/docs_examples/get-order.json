@@ -1,0 +1,83 @@
+{
+  "source": "https://docs.upbit.com/kr/reference/get-order.md",
+  "retrieved_at": "2026-11-05",
+  "doc_updated_at": "2026-11-04T07:45:51.000Z",
+  "method": "GET",
+  "path": "/v1/order",
+  "status": 200,
+  "example_title": "Successful Example(market)",
+  "example": {
+    "market": "KRW-USDT",
+    "uuid": "3b67e543-8ad3-48d0-8451-0dad315cae73",
+    "side": "ask",
+    "ord_type": "market",
+    "state": "done",
+    "created_at": "2025-08-09T16:44:00+09:00",
+    "volume": "5.377594",
+    "remaining_volume": "0",
+    "executed_volume": "5.377594",
+    "reserved_fee": "0",
+    "remaining_fee": "0",
+    "paid_fee": "3.697095875",
+    "locked": "0",
+    "prevented_volume": "0",
+    "prevented_locked": "0",
+    "trades_count": 1,
+    "trades": [
+      {
+        "market": "KRW-USDT",
+        "uuid": "795dff29-bba6-49b2-baab-63473ab7931c",
+        "price": "1375",
+        "volume": "5.377594",
+        "funds": "7394.19175",
+        "trend": "down",
+        "created_at": "2025-08-09T16:44:00.597751+09:00",
+        "side": "ask"
+      }
+    ]
+  },
+  "other_examples": {
+    "Successful Example(limit)": {
+      "market": "KRW-BTC",
+      "uuid": "5d303952-8be9-41e6-915b-121a90026248",
+      "side": "bid",
+      "ord_type": "limit",
+      "price": "155772000",
+      "state": "wait",
+      "created_at": "2025-08-09T16:52:49+09:00",
+      "volume": "0.0001",
+      "remaining_volume": "0.0001",
+      "executed_volume": "0",
+      "reserved_fee": "7.7886",
+      "remaining_fee": "7.7886",
+      "paid_fee": "0",
+      "locked": "15584.9886",
+      "prevented_volume": "0",
+      "prevented_locked": "0",
+      "trades_count": 0,
+      "trades": []
+    }
+  },
+  "error_examples": [
+    {
+      "status": 400,
+      "title": "invalid parameter error",
+      "body": {
+        "error": {
+          "name": "invalid_parameter",
+          "message": "잘못된 파라미터"
+        }
+      }
+    },
+    {
+      "status": 404,
+      "title": "not found order error",
+      "body": {
+        "error": {
+          "name": "order_not_found",
+          "message": "주문을 찾지 못했습니다."
+        }
+      }
+    }
+  ]
+}

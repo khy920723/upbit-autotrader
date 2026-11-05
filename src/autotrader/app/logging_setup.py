@@ -3,6 +3,8 @@
 형식: `시각(KST) | 수준 | 모듈 | 이벤트 코드 | 내용` (docs/04-data/logging-audit.md).
 이벤트 코드는 `logger.info("...", extra={"event": "APP_START"})`처럼 넘긴다. 없으면 `-`.
 비밀 가리기 필터와 90일 보관 정리는 이후 단계에서 붙인다.
+httpx·httpcore 로거는 WARNING 이상만 남긴다. 그 INFO·DEBUG는 요청 URL(identifier·uuid 쿼리)과
+헤더 처리 과정을 적는다.
 """
 
 import logging
@@ -15,6 +17,7 @@ LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(event)s | %(message)s"
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 10
 NO_EVENT = "-"
+QUIET_LIBRARY_LOGGERS = ("httpx", "httpcore")
 
 
 class KstFormatter(logging.Formatter):
@@ -47,6 +50,8 @@ def configure_logging(log_file: Path, level: int = logging.INFO) -> AppLogHandle
     root = logging.getLogger()
     root.addHandler(handler)
     root.setLevel(level)
+    for name in QUIET_LIBRARY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
     return handler
 
 

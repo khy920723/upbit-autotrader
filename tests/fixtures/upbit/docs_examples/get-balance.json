@@ -1,0 +1,39 @@
+{
+  "source": "https://docs.upbit.com/kr/reference/get-balance.md",
+  "retrieved_at": "2026-11-05",
+  "doc_updated_at": "2026-11-04T07:45:51.000Z",
+  "method": "GET",
+  "path": "/v1/accounts",
+  "status": 200,
+  "example_title": "Successful Example",
+  "example": [
+    {
+      "currency": "KRW",
+      "balance": "1000000.0",
+      "locked": "0.0",
+      "avg_buy_price": "0",
+      "avg_buy_price_modified": false,
+      "unit_currency": "KRW"
+    },
+    {
+      "currency": "BTC",
+      "balance": "2.0",
+      "locked": "0.0",
+      "avg_buy_price": "140000000",
+      "avg_buy_price_modified": false,
+      "unit_currency": "KRW"
+    }
+  ],
+  "error_examples": [
+    {
+      "status": 401,
+      "title": "no authorization ip error",
+      "body": {
+        "error": {
+          "name": "no_authorization_ip",
+          "message": "This is not a verified IP."
+        }
+      }
+    }
+  ]
+}

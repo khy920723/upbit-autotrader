@@ -1,0 +1,90 @@
+{
+  "source": "https://docs.upbit.com/kr/reference/available-order-information.md",
+  "retrieved_at": "2026-11-05",
+  "doc_updated_at": "2026-11-04T07:45:51.000Z",
+  "method": "GET",
+  "path": "/v1/orders/chance",
+  "status": 200,
+  "example_title": "Successful Example",
+  "example": {
+    "bid_fee": "0.0005",
+    "ask_fee": "0.0005",
+    "maker_bid_fee": "0.0005",
+    "maker_ask_fee": "0.0005",
+    "market": {
+      "id": "KRW-BTC",
+      "name": "BTC/KRW",
+      "order_types": [
+        "limit"
+      ],
+      "order_sides": [
+        "ask",
+        "bid"
+      ],
+      "bid_types": [
+        "best_fok",
+        "best_ioc",
+        "limit",
+        "limit_fok",
+        "limit_ioc",
+        "price"
+      ],
+      "ask_types": [
+        "best_fok",
+        "best_ioc",
+        "limit",
+        "limit_fok",
+        "limit_ioc",
+        "market"
+      ],
+      "bid": {
+        "currency": "KRW",
+        "min_total": "5000"
+      },
+      "ask": {
+        "currency": "BTC",
+        "min_total": "5000"
+      },
+      "max_total": "1000000000",
+      "state": "active"
+    },
+    "bid_account": {
+      "currency": "KRW",
+      "balance": "10000",
+      "locked": "0",
+      "avg_buy_price": "0",
+      "avg_buy_price_modified": true,
+      "unit_currency": "KRW"
+    },
+    "ask_account": {
+      "currency": "BTC",
+      "balance": "0.001",
+      "locked": "0",
+      "avg_buy_price": "140000000",
+      "avg_buy_price_modified": false,
+      "unit_currency": "KRW"
+    }
+  },
+  "error_examples": [
+    {
+      "status": 400,
+      "title": "invalid parameter error",
+      "body": {
+        "error": {
+          "name": "invalid_parameter",
+          "message": "잘못된 파라미터"
+        }
+      }
+    },
+    {
+      "status": 400,
+      "title": "not found market error",
+      "body": {
+        "error": {
+          "name": "notfoundmarket",
+          "message": "다음 마켓에 없는 종목입니다: KRW-BTCs"
+        }
+      }
+    }
+  ]
+}

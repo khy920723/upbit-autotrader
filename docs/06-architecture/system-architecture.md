@@ -157,6 +157,9 @@ class Clock(Protocol):
     def exchange_now(self) -> datetime: ...           # PC 시계 + 측정한 거래소 시각 오차
     async def sleep(self, seconds: float) -> None: ...
 
+class AdjustableClock(Clock, Protocol):             # 거래소 시각 오차를 측정해 넣는 쪽(JOB-09)만 쓴다
+    def set_exchange_offset(self, seconds: float) -> None: ...
+
 class SecretStore(Protocol):                         # keyring. 블로킹이므로 작업 스레드에서 부른다
     def get(self, name: SecretName) -> str | None: ...
     def set(self, name: SecretName, value: str) -> None: ...
@@ -183,7 +186,7 @@ class ExchangeApi(Protocol):                         # 비공개 REST(키 필요
     async def list_closed_orders(self, *, market: str | None,
                                  start: datetime, end: datetime) -> list[OrderSnapshot]: ...  # 최대 7일
     async def cancel_order(self, *, identifier: str) -> OrderSnapshot: ...    # 정지 때 앱 주문만 하나씩(일괄 취소 API는 쓰지 않음)
-    async def list_api_keys(self) -> list[ApiKeyInfo]: ...                     # GET /v1/api_keys(만료일)
+    async def list_api_keys(self) -> list[ApiKeyInfo]: ...                     # GET /v1/api_keys(만료일). 전체 Access Key는 담지 않는다(앞 4자, 현재 키 여부, 만료 시각)
 
 class PublicStream(Protocol):                        # wss://api.upbit.com/websocket/v1
     def ticker(self, markets: Sequence[str]) -> AsyncIterator[TickerEvent]: ...

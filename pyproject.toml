@@ -16,7 +16,9 @@ classifiers = [
 # 의존성을 바꾸면 docs/07-security-legal/dependency-licenses.md도 갱신한다(테스트가 확인한다).
 dependencies = [
     "PySide6==6.12.0",
+    "httpx==0.28.1",
     "keyring==25.7.0",
+    "pyjwt==2.15.1",
 ]
 
 [project.gui-scripts]
@@ -49,6 +51,8 @@ module-name = "autotrader"
 [tool.pytest.ini_options]
 minversion = "9.0"
 testpaths = ["tests"]
+# tests/fakes/(가짜 구현 패키지)를 `import fakes...`로 쓴다.
+pythonpath = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
 xfail_strict = true
 qt_api = "pyside6"

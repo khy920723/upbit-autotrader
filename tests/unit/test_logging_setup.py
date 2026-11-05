@@ -1,6 +1,8 @@
 import logging
 from datetime import datetime, timedelta
 
+import pytest
+
 from autotrader.app.logging_setup import (
     LOG_BACKUP_COUNT,
     LOG_MAX_BYTES,
@@ -82,3 +84,21 @@ def test_remove_app_log_handlers_detaches_and_closes(tmp_path):
 
     assert handler not in logging.getLogger().handlers
     assert handler.stream is None
+
+
+@pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG])
+def test_http_library_loggers_only_write_warnings(tmp_path, level):
+    # httpx·httpcore의 INFO·DEBUG는 요청 URL(identifier·uuid 쿼리)과 헤더 처리 과정을 남긴다.
+    log_file = tmp_path / "app.log"
+
+    configure_logging(log_file, level=level)
+    for name in ("httpx", "httpcore", "httpcore.http11", "httpcore.connection"):
+        logger = logging.getLogger(name)
+        logger.info("HTTP Request: GET https://api.upbit.com/v1/order?identifier=uat-1")
+        logger.debug("send_request_headers.started")
+        logger.warning("경고는 남는다")
+        assert not logger.isEnabledFor(logging.INFO)
+    logging.getLogger("autotrader.test").info("앱 로그")
+
+    messages = [line.rsplit(" | ", 1)[1] for line in read_lines(log_file)]
+    assert messages == ["경고는 남는다"] * 4 + ["앱 로그"]

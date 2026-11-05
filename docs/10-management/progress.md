@@ -2,6 +2,30 @@
 
 세션이 끝날 때마다 맨 위에 추가한다. 형식: 날짜 — 단계 / 한 일 / 결정 / 남은 일 / 다음 단계.
 
+## 2026-11-05 — 3단계 3a: 업비트 REST 연동과 가짜 거래소(REST) (클라우드 세션)
+
+- 한 일:
+  - 런타임 의존성 `httpx==0.28.1`, `pyjwt==2.15.1`을 정확한 버전으로 고정하고(ADR-0006, D-038) uv.lock과 [의존성 라이선스 목록](../07-security-legal/dependency-licenses.md)을 갱신했다. 함께 들어온 런타임 패키지: anyio 4.16.0, certifi 2026.10.23, h11 0.16.0, httpcore 1.0.9, idna 3.20, typing_extensions 4.16.0(개발 전용에서 런타임으로). PyInstaller spec의 제외 목록에서 typing_extensions를 뺐다(anyio가 쓴다).
+  - core 기반: 오류 타입(시스템 구성도 7장, StorageError 포함), `Clock`·`AdjustableClock`·`SystemClock`, 값 모델(Decimal만 받음, 비밀은 복제·피클·asdict로도 안 나옴), 포트(QuotationApi·ExchangeApi), 호가 단위(`core/ticks.py`, 2026-05-04 문서 표).
+  - 업비트 어댑터(`adapters/upbit/`): JWT HS512 서명과 query_hash(URL 인코딩 전 문자열, 배열 키 반복, `[]` 미인코딩), 요청 한도(그룹별 슬라이딩 창으로 절반 이하, `Remaining-Req`의 sec만, 429는 최소 1초 멈춤, 418은 D-078 단계 대기와 만기 뒤 확인 1건), `error.name` 기반 오류 매핑, HTTP 전송(자동 재시도 없음, 리다이렉트·쿠키 없음, 경로 표에 그룹과 인증 여부, 일괄 취소 경로 없음, 응답 숫자는 모두 Decimal), 시세 API(종목 목록과 market_event 경고, 캔들, 현재가 404 때 마켓별 재조회, 호가, instruments, 서버 시각), 거래 API(잔고, 주문 가능 정보, 주문 생성·검증의 호출 형식, 조회·취소, 키 목록). 주문 정책(금액 계산, 주문 유형 선택, 분할)은 만들지 않았다(5단계).
+  - 가짜: FakeClock(정수 나노초, `run_for`, `suspend`, `true_utc_now`), 카나리아(`find_canaries`, `find_secret_shapes`), 업비트 REST 와이어 가짜 `FakeUpbitServer`(엄격 검사 21개 규칙, 주입, 체결 모형, `assert_clean`과 `make_fake_upbit` 픽스처). 공식 문서 응답 예시 12개를 `tests/fixtures/upbit/docs_examples/`에 두었다(키 값은 자리표시).
+  - 구조 검사 강화: core는 표준 라이브러리와 core만 import, `time` 모듈은 core/clock.py만, asyncio 시간 상한·루프 시간 금지, core의 `float(` 금지.
+  - 테스트 2350개(커버리지 96%), ruff 통과. 업비트는 공개·비공개 모두 부르지 않았다(문서 사이트만 읽음).
+  - 진행 방식(D-077): 작업 4개(T1 기반, T2 서명·한도·전송, T3 가짜 거래소, T4 시세·거래 API)마다 하위 에이전트를 테스터 → 워커 → 리뷰어 → 수정 1회로 썼다. 작업별 모델·노력은 PR 설명에 있다.
+  - main의 D-086(#16)과 겹치지 않게 이 단계의 결정 번호를 D-087~D-090으로 정했다.
+- 결정:
+  - D-087 요청 한도 계산(슬라이딩 창, 유효(초안)), D-090 업비트 HTTP 계층 세부(재시도 없음, Decimal 파싱, PyJWT 키 길이 경고 국소 억제, 경로 표, 값 검사, 쿠키·로그, 유효(초안)).
+  - D-088 REST 오류 분류 세부(대기, 추천 A: 418 > 429 > 5xx는 상태 우선, 모르는 401·403은 HALTED 쪽), D-089 418 대기 세부(대기, 추천 A: 차단 중 418은 단계 안 올림, Retry-After는 양의 정수 초만, 만기 뒤 확인 1건). 구현은 추천안대로 해 두었고 사용자가 다른 안을 고르면 고친다.
+- 남은 일:
+  - 사용자: D-088·D-089 선택(지휘 세션이 묻는다).
+  - 인프라 세션: PyInstaller 묶음에 httpx·httpcore·anyio(백엔드 동적 import, `hook-anyio` 있음)·certifi·PyJWT가 제대로 들어가는지 Windows 빌드로 확인. self-test는 앱 모듈을 모두 import하므로 httpx·jwt import는 점검된다. 필요하면 `anyio._backends._asyncio`를 점검 목록에 더한다.
+  - 5단계: 조회의 "다음 초에 다시"·"5xx 1회 다시"는 호출하는 쪽이 한다(D-090). 418 확인 요청을 가벼운 조회로 보내는 일, 시세·거래 어댑터가 RateLimiter 하나를 공유하게 조립하는 일, 묶은 현재가 404 때 없는 마켓 기억, 미체결 목록 쪽 넘김 사이에 끝난 주문을 대조에서 잡는 정책.
+  - 가짜: `slow`, `lookup_error`, `cancel_error`, `manual_order`, `exchange_only_order`, `balance_drift`, SMP `prevented`, 체결에 따른 잔고 변화, 실제 네트워크 차단 픽스처(fakes-spec 2.3).
+  - 확인 필요(사용자 PC, 실제 키): 배열 파라미터의 `[]` 미인코딩이 실제로 통과하는지(upbit-api 3장), 418 응답의 실제 형식.
+  - 새 개발 의존성은 넣지 않았다(asyncio 테스트는 표준 `asyncio.run`으로 했다).
+- PR #17 Windows 빌드 실패와 조치: 번들 검사가 "개발·빌드 전용 패키지가 번들에 들어갔습니다: _pytest, pygments"로 실패했다(job 127231215977). Linux에서 같은 실패를 재현하고 xref로 확인하니 `anyio._backends._asyncio`가 pytest 연동 함수 안에서 `_pytest.outcomes`를, httpx 명령줄 도구 `httpx._main`이 pygments를 끌어왔다(`hook-anyio`는 `anyio._backends`만 모은다). spec의 excludes에 `_pytest`, `pytest`, `httpx._main`, `pygments`를 더했다(`httpx/__init__.py`는 `_main` import의 ImportError를 처리한다). 번들 검사는 그대로다. 다시 빌드한 Linux exe의 self-test가 6/6 통과했고, 새 런타임 패키지 8개의 라이선스 파일이 번들의 `*.dist-info`에 들어 있음을 확인했다(NOTICE.txt가 그 위치와 certifi 소스 주소를 안내한다).
+- 다음 단계: 3b(시세·비공개 웹소켓, 재연결 뒤 REST 대조, D-079 공지 매수 차단, D-080 웹소켓 오류 처리, 웹소켓 가짜). 최신 main에서 새 브랜치로 한다.
+
 ## 2026-11-05 — 기획/문서: 분할 매매 결정 5건 반영(D-082~D-085, D-043) (클라우드 세션)
 
 - 한 일:

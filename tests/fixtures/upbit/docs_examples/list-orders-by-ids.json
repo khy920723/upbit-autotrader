@@ -1,0 +1,60 @@
+{
+  "source": "https://docs.upbit.com/kr/reference/list-orders-by-ids.md",
+  "retrieved_at": "2026-11-05",
+  "doc_updated_at": "2026-11-04T07:45:51.000Z",
+  "method": "GET",
+  "path": "/v1/orders/uuids",
+  "status": 200,
+  "example_title": "Successful Example",
+  "example": [
+    {
+      "uuid": "5d303952-8be9-41e6-915b-121a90026248",
+      "side": "bid",
+      "ord_type": "limit",
+      "price": "155772000",
+      "state": "wait",
+      "market": "KRW-BTC",
+      "created_at": "2025-08-09T16:52:49+09:00",
+      "volume": "0.0001",
+      "remaining_volume": "0.0001",
+      "prevented_volume": "0",
+      "reserved_fee": "7.7886",
+      "remaining_fee": "7.7886",
+      "paid_fee": "0",
+      "locked": "15584.9886",
+      "prevented_locked": "0",
+      "executed_volume": "0",
+      "trades_count": 0
+    },
+    {
+      "uuid": "3b67e543-8ad3-48d0-8451-0dad315cae73",
+      "side": "ask",
+      "ord_type": "market",
+      "state": "done",
+      "market": "KRW-USDT",
+      "created_at": "2025-08-09T16:44:00+09:00",
+      "volume": "5.377594",
+      "remaining_volume": "0",
+      "prevented_volume": "0",
+      "reserved_fee": "0",
+      "remaining_fee": "0",
+      "paid_fee": "3.697095875",
+      "locked": "0",
+      "prevented_locked": "0",
+      "executed_volume": "5.377594",
+      "trades_count": 1
+    }
+  ],
+  "error_examples": [
+    {
+      "status": 400,
+      "title": "invalid parameter error",
+      "body": {
+        "error": {
+          "name": "invalid_parameter",
+          "message": "잘못된 파라미터"
+        }
+      }
+    }
+  ]
+}

@@ -10,6 +10,8 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+from autotrader.core.errors import StorageError
+
 SCHEMA_VERSION = 0
 """앱이 아는 최신 마이그레이션 번호. 마이그레이션이 없으면 0."""
 
@@ -26,11 +28,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 """
 
 
-class SchemaVersionError(RuntimeError):
+class SchemaVersionError(StorageError):
     """DB 스키마 기록이 이 앱과 맞지 않는다(새 버전 앱이 만든 DB, 또는 기록이 서로 다름)."""
 
 
-class SQLiteVersionError(RuntimeError):
+class SQLiteVersionError(StorageError):
     """SQLite가 STRICT 테이블을 지원하지 않는다."""
 
 

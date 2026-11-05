@@ -6,6 +6,7 @@ from contextlib import closing
 
 import pytest
 
+from autotrader.core import errors
 from autotrader.storage.database import (
     MIN_SQLITE_VERSION,
     SCHEMA_VERSION,
@@ -146,3 +147,11 @@ def test_supported_sqlite_versions(version):
 def test_sqlite_without_strict_tables_is_rejected(version):
     with pytest.raises(SQLiteVersionError, match=r"3\.37\.0"):
         check_sqlite_version(version)
+
+
+@pytest.mark.parametrize("cls", [SchemaVersionError, SQLiteVersionError], ids=lambda c: c.__name__)
+def test_database_errors_are_storage_errors(cls):
+    # 시스템 구성도 7장: StorageError(SQLite 오류) > SchemaVersionError.
+    assert issubclass(cls, errors.StorageError)
+    assert issubclass(cls, errors.AutotraderError)
+    assert not issubclass(cls, errors.ExternalError)

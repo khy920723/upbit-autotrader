@@ -116,11 +116,11 @@ QA가 PR을 검토할 때 쓰는 기준이다. PR 종류(문서, 인프라, 기�
 | RC-D30 | 실제 응답 모델명과 입출력 원문을 DB에 기록한다. SDK 자동 재시도에서 429를 뺐고 호출 전체에 시간 상한이 있다 | CLAUDE.md, LLM 시그널 명세 3장 |
 | RC-D31 | LLM 시그널 성과를 과거 데이터로 백테스트하지 않는다 | CLAUDE.md |
 
-### 4.5 텔레그램·뉴스·기록·화면
+### 4.5 디스코드·뉴스·기록·화면
 
 | ID | 확인 항목 | 근거 |
 |---|---|---|
-| RC-D32 | 텔레그램 토큰이 든 URL이 로그·예외 메시지에 남지 않는다. 일반 텍스트, 4096자, 초당 1건, 429는 `retry_after` 뒤 다시. 전송이 실패해도 매매가 계속된다 | 텔레그램 연동 명세 |
+| RC-D32 | 디스코드 웹후크 주소(토큰 포함)가 로그·예외 메시지에 남지 않는다. `content`만, 2000자 이하, `allowed_mentions: {"parse": []}`, `wait=true`, 초당 1건, 429는 `retry_after` 뒤 다시(3회까지), 404·401이면 멈추고 MSG-W012. 전송이 실패해도 매매가 계속된다 | 디스코드 연동 명세 |
 | RC-D33 | 뉴스는 공식 API와 RSS만 쓰고, 제목·링크·출처·시각만 저장한다. 본문을 저장하거나 LLM에 보내지 않는다 | 뉴스 수집 명세 1장 |
 | RC-D34 | 로그 가리기 필터를 지나고, events·order_events의 payload에 비밀이나 요청 헤더가 없다 | 로그·감사 기록 정의서 2장, INV-07 |
 | RC-D35 | 화면 문구는 메시지 정의서의 ID를 쓰고 원인과 해결 방법이 있다. 상태는 색과 글자를 함께 쓰고, 키는 앞 4자리만 보인다 | 화면 정의서 공통 규칙 |
@@ -174,7 +174,7 @@ git diff --name-only origin/main...FETCH_HEAD -- .github/workflows
 ```
 
 ```bash
-git diff origin/main...FETCH_HEAD | grep -nE '^\+.*(eyJ[A-Za-z0-9_-]{10,}\.|Bearer [A-Za-z0-9]|api\.telegram\.org/bot[0-9]|[0-9]{8,10}:[A-Za-z0-9_-]{35}|AIza[0-9A-Za-z_-]{35}|([0-9]{1,3}\.){3}[0-9]{1,3})'
+git diff origin/main...FETCH_HEAD | grep -nE '^\+.*(eyJ[A-Za-z0-9_-]{10,}\.|Bearer [A-Za-z0-9]|discord(app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+|AIza[0-9A-Za-z_-]{35}|([0-9]{1,3}\.){3}[0-9]{1,3})'
 ```
 
 ```bash

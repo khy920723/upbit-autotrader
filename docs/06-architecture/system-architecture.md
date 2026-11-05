@@ -15,7 +15,7 @@ flowchart LR
     P --> UP[(업비트)]
     P --> GM[(Gemini API)]
     P --> NV[(네이버·RSS)]
-    P --> TG[(Telegram)]
+    P --> DC[(Discord 웹후크)]
 ```
 
 - 실제 키는 Windows PC에만 있다. 클라우드 VM과 CI에는 없다.
@@ -39,7 +39,7 @@ flowchart TB
         OM[주문 관리]
         BRK["브로커<br/>live·validate·paper"]
         HC[시작 점검·감시]
-        ADP["어댑터<br/>업비트·Gemini·뉴스·텔레그램"]
+        ADP["어댑터<br/>업비트·Gemini·뉴스·디스코드"]
         DBW[(SQLite 쓰기 연결)]
     end
     subgraph INF["기반"]
@@ -86,7 +86,7 @@ asyncio 이벤트 루프를 GUI와 다른 스레드(core 스레드)에서 돌린
 | 스레드 | 하는 일 | 하지 않는 일 |
 |---|---|---|
 | GUI(메인) | QApplication, 창·트레이·대화상자, 앱 계층 브리지, 단일 인스턴스 서버, 전원 이벤트 수신(네이티브 이벤트 필터), 시작 앱 등록, 절전 방지 호출, 화면 조회용 읽기 전용 DB 연결 | 네트워크 호출, DB 쓰기, 매매 판단 |
-| core(asyncio 루프 1개) | 스케줄러, 결정·규칙·위험·주문 관리, 업비트 REST·웹소켓, Gemini, 뉴스, 텔레그램, DB 쓰기 연결 | Qt import |
+| core(asyncio 루프 1개) | 스케줄러, 결정·규칙·위험·주문 관리, 업비트 REST·웹소켓, Gemini, 뉴스, 디스코드 웹후크, DB 쓰기 연결 | Qt import |
 | 작업 스레드(필요할 때) | keyring 읽기·쓰기(`asyncio.to_thread`), DB 백업, CSV 내보내기 | 매매 상태 변경 |
 
 ### 통신 규칙
@@ -107,7 +107,7 @@ asyncio 이벤트 루프를 GUI와 다른 스레드(core 스레드)에서 돌린
 ### 감시와 예외
 
 - core는 5초마다 heartbeat를 보낸다. heartbeat에는 JOB-02(위험 점검)가 마지막으로 끝난 시각(monotonic)을 넣는다. 루프는 돌지만 JOB-02가 타임아웃 없는 기다림에 걸리면 heartbeat만으로는 알 수 없기 때문이다. JOB-02 완료가 180초 넘게 없으면 heartbeat가 끊긴 것과 같게 처리한다. 모든 외부 호출에는 타임아웃을 두고, 주기 작업 한 회차에는 전체 시간 상한(예: JOB-02 45초)을 둔다(D-071). 앱 계층이 heartbeat를 30초 넘게 받지 못하면 화면과 트레이를 빨강으로 바꾸고 MSG-E016을 보이고 로그에 남긴다. 이때 손절도 멈춰 있을 수 있으므로 사용자가 앱을 다시 시작한다(시작 점검이 거래소 기준으로 맞춘다).
-- core가 멈추면 core의 텔레그램 알림도 나가지 않는다. 그래서 앱 계층에 비상 전송 경로를 하나 둔다(제안, D-060 대기): 작업 스레드에서 텔레그램 `sendMessage`를 동기로 한 번 보내 NTF-21(MSG-E016)을 알린다. core와 상태를 나누지 않고 토큰은 keyring에서 직접 읽는다. "네트워크 호출은 core 스레드에서만" 규칙의 유일한 예외다. 대안은 heartbeat가 2분 넘게 없으면 앱이 스스로 다시 시작하는 것이다(시작 점검이 거래소 기준으로 대조).
+- core가 멈추면 core의 디스코드 알림도 나가지 않는다. 그래서 앱 계층에 비상 전송 경로를 하나 둔다(제안, D-060 대기): 작업 스레드에서 `app-alarm` 웹후크로 한 번 동기 POST를 보내 NTF-21(MSG-E016)을 알린다. core와 상태를 나누지 않고 웹후크 주소는 keyring에서 직접 읽는다. "네트워크 호출은 core 스레드에서만" 규칙의 유일한 예외다. 대안은 heartbeat가 2분 넘게 없으면 앱이 스스로 다시 시작하는 것이다(시작 점검이 거래소 기준으로 대조).
 - core 작업의 예외는 작업 단위로 잡아 로그·이벤트로 남기고 다음 주기에 다시 한다. 위험 점검(JOB-02)과 주문 관리에서 3회 연속이면 HALTED로 간다(모든 모드, 이벤트 INTERNAL_ERROR, NTF-03·MSG-E017). 나머지 작업은 경고만 한다. HALTED에서는 손절도 멈춘다. 사용자가 이 규칙을 정했다(D-058, [위험 관리 정책서](../03-functional/risk-policy.md) 2장).
 - GUI 쪽 예외는 `sys.excepthook`으로 로그에 남기고 core에 영향을 주지 않는다.
 - Windows에서는 Python 기본 이벤트 루프(Proactor)를 그대로 쓴다.
@@ -131,7 +131,7 @@ upbit-autotrader/
 │  ├─ app/            앱 조립, 수명 주기, GUI ↔ core 브리지
 │  ├─ ui/             PySide6 화면
 │  ├─ core/           결정·규칙·위험·주문·스케줄러, 인터페이스와 오류 타입(Qt 의존 없음)
-│  ├─ adapters/       upbit, gemini, news, telegram, public_ip
+│  ├─ adapters/       upbit, gemini, news, discord, public_ip
 │  ├─ storage/        SQLite, 마이그레이션(migrations/*.sql)
 │  ├─ platform/       시작 앱, 절전 방지, 전원 이벤트, 단일 인스턴스
 │  └─ config/         설정 스키마, keyring

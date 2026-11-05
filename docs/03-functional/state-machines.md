@@ -1,6 +1,6 @@
 # 상태 전이 정의서
 
-상태: 초안 · 관련: [위험 관리 정책서](risk-policy.md), [매매 로직 명세](trading-logic.md)
+상태: 초안(1단계에서 주문 상태 대응 보완) · 관련: [위험 관리 정책서](risk-policy.md), [매매 로직 명세](trading-logic.md)
 
 상태는 네 종류다: 실행 모드, 매매 상태, 주문 상태, 코인 상태. "live 계열"은 live-validate와 live를 뜻한다.
 
@@ -90,7 +90,8 @@ stateDiagram-v2
     CREATED --> SUBMITTED: 전송
     SUBMITTED --> OPEN: 접수
     SUBMITTED --> REJECTED: 거절 응답(429 포함)
-    SUBMITTED --> UNKNOWN: 타임아웃·연결 끊김
+    SUBMITTED --> UNKNOWN: 타임아웃·연결 끊김·5xx
+    CREATED --> UNKNOWN: 전송 전후 앱 종료 뒤 재시작
     UNKNOWN --> OPEN: 조회로 확인
     UNKNOWN --> FILLED: 조회로 확인
     UNKNOWN --> REJECTED: 60초 동안 반복 조회해도 없음
@@ -104,11 +105,11 @@ stateDiagram-v2
     REJECTED --> [*]
 ```
 
-- UNKNOWN은 identifier 조회와 미체결·종료 주문 목록 조회를 60초(초안) 동안 반복한 뒤에도 주문이 없을 때만 REJECTED로 확정한다. 그 뒤에 늦게 나타난 주문도 OPEN이나 FILLED로 반영한다.
+- UNKNOWN은 identifier 조회를 1·2·4·8·15·30·45·60초에 반복하고, 60초가 지난 뒤 "없음"을 3회 이상 받고 목록 조회에도 없을 때만 REJECTED로 확정한다([매매 로직 명세](trading-logic.md) 9장, D-046). 그 뒤 24시간 안에 늦게 나타난 주문도 실제 상태로 반영한다.
 - UNKNOWN이 풀리기 전에는 같은 코인에 새 주문을 만들지 않는다. 5분 넘게 풀리지 않으면 긴급 알림(NTF-16).
 - 주문 생성이 429를 받으면 REJECTED(reason RATE_LIMIT_429)로 기록한다. 다시 주문하려면 새 identifier로 위험 검사부터 한다.
 - 상태 변화는 모두 order_events에 기록한다.
-- 업비트 응답의 state(wait, watch, done, cancel)를 이 상태로 바꾸는 표는 1단계에서 확정한다.
+- 업비트 응답의 state(REST: wait, watch, done, cancel / myOrder: trade, prevented 추가)를 이 상태로 바꾸는 표는 [매매 로직 명세](trading-logic.md) 10장(D-047)이다. 시장가 매수는 잔량이 남으면 `cancel`로 끝날 수 있어, 코인 상태는 주문 상태가 아니라 체결 합계로 정한다.
 
 ## 4. 코인 상태
 

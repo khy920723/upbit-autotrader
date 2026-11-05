@@ -27,6 +27,8 @@
 - 18세 이상, 지원 지역에서만 이용. 한국은 지원 지역이다.
 - 금융 자문으로 의존하면 안 된다. 그래서 앱은 시그널을 여러 입력 중 하나로만 쓰고 위험 관리는 코드가 강제한다.
 - Google 검색 연동 결과에는 표시 의무와 분석 금지 조항이 있다. 쓰지 않는다.
+- 미확인(사용자 판단): 추가 약관에 "Use of Google AI Studio and Gemini API is for developers building with Google AI models for professional or business purposes, not for consumer use."라는 문장이 있다(aistudio.google.com/docs/terms, 2026-11-05 확인). 본인이 만들어 본인만 쓰는 앱에 이 문장이 어떻게 적용되는지는 법 해석 문제다. 4단계 전에 사용자가 확인한다.
+- 무료 등급 입력·출력은 계정·키·프로젝트와 분리한 뒤 사람이 읽고 주석을 달 수 있다. EEA·스위스·영국 사용자에게 제공하는 앱은 유료 서비스만 써야 한다(이 앱은 해당 없음).
 
 ## 5. 무료 채팅 앱 자동화
 

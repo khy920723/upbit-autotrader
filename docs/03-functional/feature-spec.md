@@ -83,7 +83,7 @@
 ### FR-23 트레이와 중복 실행 방지
 
 - 창 닫기(X)는 트레이로 숨긴다. 종료는 트레이 메뉴에서만 하고 MSG-C005로 확인한다.
-- 두 번째 실행은 기존 창을 띄우고 바로 끝난다. 방법은 QLockFile(데이터 폴더의 `app.lock`) + QLocalServer다([시스템 구성도](../06-architecture/system-architecture.md) 8장, D-052).
+- 두 번째 실행은 기존 창을 띄우고 바로 끝난다. 방법은 QLockFile(데이터 폴더의 `app.lock`) + QLocalServer다([시스템 구성도](../06-architecture/system-architecture.md) 8장, 제안, D-052 대기).
 
 ### FR-24 백테스트
 
@@ -111,7 +111,7 @@
 | JOB-11 | DB 백업 | 하루 1회 | SQLite 백업, 7개 보관 | 경고 로그 |
 | JOB-12 | 공지 수신 | 상시 | 비공개 웹소켓 announcement(키 필요) | 재연결 후 market/all 재확인 |
 | JOB-13 | 인정일 갱신 | 매일 09:00 KST | 전날이 페이퍼 인정일인지, live-validate 인정 일인지(D-049) 계산 | - |
-| JOB-14 | 키·IP 상태 점검 | 10분(live 계열) | GET /v1/accounts 1회로 허용 IP와 키 유효성 확인 | no_authorization_ip·키 오류면 HALTED + NTF-03 |
+| JOB-14 | 키·IP 상태 점검 | 10분(live 계열. paper에 exit_only 실보유분이 있으면 paper에서도, D-068 대기) | GET /v1/accounts 1회로 허용 IP와 키 유효성 확인 | no_authorization_ip·키 오류면 HALTED + NTF-03. paper의 exit_only는 그 주문만 멈추고 NTF-23 |
 
 - 하루의 기준은 업비트 일봉 경계인 09:00 KST다.
 - 주기는 PC 시계가 아니라 monotonic 시간으로 재고, 날짜 경계는 거래소 서버 시각으로 판단한다.

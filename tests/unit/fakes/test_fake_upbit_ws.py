@@ -1068,8 +1068,21 @@ def test_after_an_error_closes_the_connection_reconnecting_waits_a_second(env):
 # ── 공개: 스냅숏·실시간 ───────────────────────────────────
 
 
+TRADE_TIME_FIELDS = ("trade_timestamp", "trade_date", "trade_time")
+
+
 def without_timestamp(message: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in message.items() if k != "timestamp"}
+    """timestamp와, 지금 시각을 넘지 않게 맞추는 체결 시각 필드를 뺀다."""
+    return {k: v for k, v in message.items() if k not in ("timestamp", *TRADE_TIME_FIELDS)}
+
+
+def utc_trade_fields(clock: FakeClock) -> dict[str, Any]:
+    now = clock.true_utc_now()
+    return {
+        "trade_timestamp": num(str(now_ms(clock))),
+        "trade_date": now.strftime("%Y%m%d"),
+        "trade_time": now.strftime("%H%M%S"),
+    }
 
 
 def test_ticker_subscription_sends_one_snapshot_per_market_from_the_recording(env):
@@ -1087,6 +1100,8 @@ def test_ticker_subscription_sends_one_snapshot_per_market_from_the_recording(en
         for message in (btc, eth):
             assert message["stream_type"] == "SNAPSHOT"
             assert message["timestamp"] == num(str(now_ms(e.clock)))
+            # 녹화 체결 시각(12:32 UTC)이 가짜 시계(00:00 UTC)보다 늦어 지금으로 맞춘다
+            assert {k: message[k] for k in TRADE_TIME_FIELDS} == utc_trade_fields(e.clock)
         # 숫자 표기 그대로(뒤 0, float로 읽으면 자릿수가 사라지는 긴 수)
         assert btc["opening_price"] == num("108328000.00000000")
         assert btc["acc_trade_price"] == num("44216351009.9575500000000000")
@@ -1347,6 +1362,7 @@ def test_ws_my_order_trade_state_keeps_trade_fields(env):
 
     async def scenario(e: Env) -> None:
         conn = await e.subscribed_private()
+        await e.clock.run_for(3)
         e.fake.ws_my_order(
             {
                 "state": "trade",
@@ -1361,7 +1377,8 @@ def test_ws_my_order_trade_state_keeps_trade_fields(env):
         assert message["trade_uuid"] == "t-1"
         assert as_decimal(message["trade_fee"]) == Decimal("0.005")
         assert message["is_maker"] is False
-        assert message["trade_timestamp"] == template["trade_timestamp"]
+        assert message["trade_timestamp"] == num(str(now_ms(e.clock)))  # 기본은 지금
+        assert template["trade_timestamp"] != message["trade_timestamp"]
 
     env.run(scenario)
 
@@ -1898,7 +1915,7 @@ def test_ws_errors_queue_in_order(env):
     async def scenario(e: Env) -> None:
         conn = await e.public()
         await conn.send(ticker_request("KRW-BTC"))
-        await conn.send(ticker_request("KRW-BTC"))
+        await conn.send(ticker_request("KRW-ETH"))  # 같은 요청은 되풀이하지 않는다
         names = [(await recv_json(conn))["error"]["name"] for _ in range(2)]
         assert names == ["NO_CODES", "NO_TYPE"]
 

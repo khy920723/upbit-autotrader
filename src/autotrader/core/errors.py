@@ -1,7 +1,8 @@
 """core 오류 타입.
 
 외부 연동 오류는 타입으로 처리를 나눈다(예: 주문 생성 중 NetworkError는 결과 불명,
-UpbitOrderRejected는 거절). 그래서 형제 타입은 서로를 상속하지 않는다.
+UpbitOrderRejected는 거절, UpbitIdentifierConflict(`duplicated_identifier`)는 결과 불명이라
+identifier로 조회해 확정). 그래서 형제 타입은 서로를 상속하지 않는다.
 예외 객체에는 서버가 준 값과 요청 한도 정보만 담고, 요청·헤더·토큰은 담지 않는다(INV-07).
 UpbitError 계열은 키워드 인자로만 만들므로 __reduce__로 copy·pickle을 지원한다.
 근거: docs/06-architecture/system-architecture.md 7장.
@@ -88,7 +89,15 @@ class UpbitPermissionError(UpbitError):
 
 
 class UpbitOrderRejected(UpbitError):
-    """주문 거절(최소 금액 미달, 잔고 부족 등)."""
+    """주문 거절(최소 금액 미달, 잔고 부족 등). 주문이 만들어지지 않았다."""
+
+
+class UpbitIdentifierConflict(UpbitError):
+    """`duplicated_identifier`: 그 identifier를 이미 썼다. 거절이 아니라 결과 불명이다.
+
+    같은 요청이 한 번 더 전달돼 주문이 이미 접수됐을 수 있으므로 identifier로 조회해 확정한다
+    (D-070, 매매 로직 명세 8·10장, INV-03·INV-04, QA R17-01). UpbitOrderRejected를 상속하지 않는다.
+    """
 
 
 class UpbitMarketOffline(UpbitError):
@@ -104,7 +113,11 @@ class UpbitRateLimited(UpbitError):
 
 
 class UpbitBlocked(UpbitError):
-    """IP 차단(418). 본문에 name이 없어 원문을 남긴다."""
+    """IP 차단(418). 본문에 name이 없어 원문을 남긴다.
+
+    retry_after는 서버가 준 원래 값(초)이다. retry_after_capped는 그 값이 24시간을 넘어 24시간만
+    기다린다는 표시다(D-089 보완, QA R17-09). 앱 계층이 이 표시로 긴급 알림을 보낸다.
+    """
 
     def __init__(
         self,
@@ -116,9 +129,11 @@ class UpbitBlocked(UpbitError):
         remaining_sec: int | None = None,
         retry_after: float | None = None,
         raw_body: str = "",
+        retry_after_capped: bool = False,
     ) -> None:
         self.retry_after = retry_after
         self.raw_body = raw_body
+        self.retry_after_capped = retry_after_capped
         super().__init__(
             http_status=http_status,
             error_name=error_name,

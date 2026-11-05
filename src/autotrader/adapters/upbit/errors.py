@@ -21,6 +21,7 @@ from autotrader.core.errors import (
     UpbitAuthError,
     UpbitBlocked,
     UpbitError,
+    UpbitIdentifierConflict,
     UpbitMarketOffline,
     UpbitNotFound,
     UpbitOrderRejected,
@@ -51,7 +52,7 @@ NAME_TYPES: Mapping[str, type[UpbitError]] = MappingProxyType(
         "invalid_post_only": UpbitOrderRejected,
         "create_bid_error": UpbitOrderRejected,
         "create_ask_error": UpbitOrderRejected,
-        "duplicated_identifier": UpbitOrderRejected,
+        "duplicated_identifier": UpbitIdentifierConflict,  # 결과 불명(D-070, R17-01)
         "notfoundmarket": UpbitOrderRejected,
         "market_offline": UpbitMarketOffline,
         "order_not_found": UpbitNotFound,

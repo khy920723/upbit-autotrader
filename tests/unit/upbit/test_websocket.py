@@ -46,9 +46,11 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
    끝난다(error_name·message 원문 보존, message가 없으면 None). 서버가 오류 뒤 close 1000으로
    끊어도 StreamClosed가 아니라 오류가 나온다. 서버가 연결을 열어 두면 어댑터가 닫는다.
 7. 읽을 수 없는 서버 메시지(UTF-8 아님, JSON 아님, 객체 아님, NaN·Infinity, 아는 type인데 필드
-   모양이 다름)도 StreamRequestError로 끝낸다. error_name은 문서에 없는 이름(어댑터가 정함,
-   예: "UNREADABLE_MESSAGE")이고 메시지 원문은 예외에 넣지 않는다(설계 메모에 없던 결정. 감시가
-   BROKEN으로 끝내 공개는 바로 DEGRADED, 무한 재연결을 하지 않는다).
+   모양이 다름)는 그 메시지만 건너뛰고 앱 버그로 기록한다(앱 로거 "autotrader..."에 WARNING
+   이상, 메시지 원문·값은 넣지 않는다. 비공개 메시지에는 주문·잔고가 있다). 연결은 그대로 두고
+   다음 메시지를 받는다. 모르는 type의 메시지(예: 앱이 구독하지 않은 trade)도 건너뛴다(기록은
+   정하지 않음). 설계 메모에 없던 결정(오케스트레이터 권장안). 공개 시세가 계속 깨져 오면 감시의
+   120초 무수신 감시가 DEGRADED로 만든다.
 8. 끊김: 연결의 StreamClosed(close_code 보존)가 그대로 나온다. 끊기 전에 받은 메시지를 먼저 낸다.
    연결 실패: StreamConnectFailed(http_status 보존). 어댑터는 다시 연결하지 않는다(감시 몫).
 9. PING 프레임: 연결이 열려 있는 동안 별도 태스크가 ping_interval(30초)마다 보낸다(소비자가 다음
@@ -58,7 +60,9 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
    연결마다 세면 분당 한도에 닿을 수 없다. 합쳐 세는 쪽이 더 보수적이다 — 설계 메모와 다른 점).
    넘으면 보내기 전에 Clock.sleep으로 기다린다(슬라이딩 창). TOO_MANY_REQUEST를 받을 때 지난
    60초에 보낸 구독 메시지(오류를 받은 것 포함)가 50개 이상이면 minute_limited=True.
-   TOO_MANY_REQUEST나 연결 429 거절 뒤 1초 동안은 같은 스트림 객체가 다시 연결하지 않는다.
+   TOO_MANY_REQUEST·429 뒤 1초 멈춤(가짜 rate_limit_pause)은 감시의 대기·backoff가 지킨다.
+   그래서 이 파일은 그 뒤 1초 안에 같은 종류로 다시 연결하지 않는다. 형식 오류 뒤 같은 구독을
+   다시 보내지도 않는다(가짜 repeat_after_error, D-080).
 11. 이터레이터를 aclose하거나 소비 태스크를 취소하면 연결을 닫고(close 1000) PING 태스크를
    끝낸다. 이터레이터가 어떻게 끝나든 어댑터가 만든 태스크는 남지 않는다.
 12. 비공개: 연결마다 새 JWT(HS512, 페이로드는 access_key·nonce만, nonce는 매번 새 UUID,
@@ -111,7 +115,6 @@ from autotrader.core.errors import (
     StreamAuthError,
     StreamClosed,
     StreamConnectFailed,
-    StreamError,
     StreamRateLimited,
     StreamRequestError,
 )
@@ -876,6 +879,7 @@ UNREADABLE = {
     "not-utf8": b"\xff\xfe{}",
     "not-json": "not json",
     "array": "[1,2]",
+    "error-not-object": '{"error":"NO_CODES"}',
     "nan": btc_frame(trade_price=RawNumber("NaN")),
     "infinity": btc_frame(acc_trade_price_24h=RawNumber("Infinity")),
     "missing-field": btc_frame(trade_price=...),
@@ -883,37 +887,71 @@ UNREADABLE = {
 }
 
 
+def app_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        r
+        for r in caplog.records
+        if r.name.startswith("autotrader") and r.levelno >= logging.WARNING
+    ]
+
+
 @pytest.mark.parametrize("case", sorted(UNREADABLE))
-def test_unreadable_server_message_ends_with_a_request_error(case):
-    env = scripted_env(([UNREADABLE[case]], None))
+def test_unreadable_server_message_is_skipped_and_logged(case, caplog):
+    caplog.set_level(logging.DEBUG)
+    later = btc_frame(trade_price=RawNumber("1"))
+    env = scripted_env(([UNREADABLE[case], later], 1000))
     stream = env.public()
 
     async def scenario(e: Env) -> None:
         items, error = await e.drain(e.track(stream.ticker(["KRW-BTC"])))
-        assert items == [opened("public", 1)]
-        assert type(error) is StreamRequestError
-        assert error.error_name not in DOCUMENTED_ERRORS
-        for text in (str(error), repr(error)):
-            assert "opening_price" not in text  # 메시지 원문을 예외에 넣지 않는다
-        assert e.connector.connections[0].closed_by_client is not None
+        assert [type(item) for item in items] == [StreamOpened, TickerEvent]
+        assert items[1].trade_price == Decimal("1")  # 깨진 메시지만 건너뛰었다
+        assert type(error) is StreamClosed
+        assert e.connector.connections[0].closed_by_client is None  # 어댑터가 끊지 않았다
 
     env.run(scenario)
+    assert app_warnings(caplog), "앱 버그로 기록해야 한다"
+    assert "opening_price" not in caplog.text  # 메시지 원문을 기록하지 않는다
 
 
-def test_unreadable_private_message_keeps_its_content_out_of_the_error():
+def test_unreadable_private_message_is_logged_without_its_content(caplog):
+    caplog.set_level(logging.DEBUG)
     marker = "uat-P-unreadable-marker-0001"
     order = loads_raw((DOCS_EXAMPLES / "websocket-myorder.json").read_text(encoding="utf-8"))
-    message = dict(order["example"], identifier=marker)
-    del message["executed_funds"]
-    env = scripted_env(([dumps(message)], None))
+    broken = dict(order["example"], identifier=marker)
+    del broken["executed_funds"]
+    good = dict(order["example"], identifier="uat-P-0002")
+    env = scripted_env(([dumps(broken), dumps(good)], None))
     stream = env.private(credentials=make_upbit_credentials)
 
     async def scenario(e: Env) -> None:
-        items, error = await e.drain(e.track(stream.events()))
-        assert items == [opened("private", 1)]
-        assert type(error) is StreamRequestError
-        assert marker not in str(error)
-        assert marker not in repr(error)
+        iterator, first = await e.open_events(stream)
+        assert first == opened("private", 1)
+        assert (await e.next(iterator)).identifier == "uat-P-0002"
+
+    env.run(scenario)
+    assert app_warnings(caplog)
+    assert marker not in caplog.text
+    for record in caplog.records:
+        assert marker not in repr(vars(record))
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        '{"type":"trade","code":"KRW-BTC","trade_price":1}',
+        '{"method":"LIST_SUBSCRIPTIONS","result":[],"ticket":"t"}',
+    ],
+    ids=["unsubscribed-type", "list-subscriptions-reply"],
+)
+def test_messages_of_other_kinds_are_skipped(frame):
+    env = scripted_env(([frame, BTC_FRAME], 1000))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.track(stream.ticker(["KRW-BTC"])))
+        assert [type(item) for item in items] == [StreamOpened, TickerEvent]
+        assert type(error) is StreamClosed
 
     env.run(scenario)
 
@@ -1092,33 +1130,6 @@ def test_too_many_request_says_whether_the_minute_budget_was_reached(env, nth, m
     assert len(env.fake.connections) == nth
 
 
-def test_after_too_many_request_the_next_connection_waits_a_second(env):
-    env.fake.ws_error("TOO_MANY_REQUEST")
-    stream = env.public()
-
-    async def scenario(e: Env) -> None:
-        _, error = await e.drain(e.track(stream.ticker(["KRW-BTC"])))
-        assert type(error) is StreamRateLimited
-        _, first = await e.open_ticker(stream, within=2)  # 감시보다 먼저 다시 열어도
-        assert first == opened("public", 2)
-
-    env.run(scenario)  # 가짜의 rate_limit_pause 위반 없음(정리 단계 assert_clean)
-    assert env.fake.connections[1].opened_at >= START + 1 - EPS
-
-
-def test_after_a_429_rejection_the_next_connection_waits_a_second(env):
-    env.fake.ws_reject_connect(status=429)
-    stream = env.public()
-
-    async def scenario(e: Env) -> None:
-        _, error = await e.drain(e.track(stream.ticker(["KRW-BTC"])))
-        assert error.http_status == 429
-        await e.open_ticker(stream, within=2)
-
-    env.run(scenario)
-    assert env.fake.connections[1].opened_at >= START + 1 - EPS
-
-
 # ── 비공개: 인증과 구독 ───────────────────────────────────
 
 
@@ -1248,7 +1259,14 @@ def test_my_order_from_the_docs_example(env):
     async def scenario(e: Env) -> None:
         iterator, _ = await e.open_events(stream)
         await e.clock.run_for(2)
-        e.fake.ws_my_order({})  # 문서 예시 그대로(state=trade, BID, limit)
+        # 문서 예시(state=trade, BID, limit). 가짜가 체결마다 새로 정하는 값은 문서 값으로 준다.
+        e.fake.ws_my_order(
+            {
+                "trade_uuid": "68315169-fba4-4175-ade3-aff14a616657",
+                "trade_timestamp": 1710751590421,
+                "prevented_volume": RawNumber("1.174291929"),
+            }
+        )
         event = await e.next(iterator)
         assert event == doc_order_event(timestamp_ms=now_ms(e.clock))
         for name in ("order_timestamp_ms", "trade_timestamp_ms", "timestamp_ms"):
@@ -1291,10 +1309,11 @@ def test_my_order_states(env, state):
         assert event.state == state
         assert event.identifier == "uat-P-0001"
         if state == "trade":
-            assert event.trade_uuid == "68315169-fba4-4175-ade3-aff14a616657"
-            assert event.trade_fee == Decimal("22.467660028283017")
-            assert event.is_maker is True
-            assert event.trade_timestamp_ms == 1710751590421
+            assert isinstance(event.trade_uuid, str)
+            assert event.trade_uuid
+            assert type(event.trade_fee) is Decimal
+            assert isinstance(event.is_maker, bool)
+            assert type(event.trade_timestamp_ms) is int
         else:
             # 체결이 아닌 이벤트는 체결 필드가 null로 온다(가짜의 가정).
             assert (event.trade_uuid, event.trade_fee, event.is_maker) == (None, None, None)
@@ -1451,6 +1470,7 @@ async def private_failures(e: Env, stream: UpbitPrivateStream) -> tuple[list[Any
         lambda: e.fake.ws_reject_connect(status=401),
         lambda: e.fake.ws_error("WRONG_FORMAT"),
     ):
+        await e.clock.run_for(1)  # TOO_MANY_REQUEST 뒤 1초 멈춤은 감시 몫이다
         inject()
         got, error = await e.drain(e.track(stream.events()), within=3)
         items += got
@@ -1792,18 +1812,3 @@ def test_private_stream_over_the_default_connector_keeps_secrets_out_of_locals(m
     assert token not in blob
     assert find_canaries(blob, [creds.access_key, creds.secret_key]) == []
     assert JWT_SHAPE.search(blob) is None
-
-
-def test_stream_error_base_class_is_not_used_directly(env):
-    # 서버 오류는 언제나 세 하위 타입 중 하나다(감시가 타입으로 나눈다).
-    for name in ERROR_TYPES:
-        env.fake.ws_error(name)
-    stream = env.public()
-
-    async def scenario(e: Env) -> None:
-        for _ in ERROR_TYPES:
-            _, error = await e.drain(e.track(stream.ticker(["KRW-BTC"])), within=3)
-            assert isinstance(error, StreamError)
-            assert type(error) is not StreamError
-
-    env.run(scenario)

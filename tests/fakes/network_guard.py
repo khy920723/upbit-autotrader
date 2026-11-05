@@ -1,11 +1,12 @@
-"""테스트 중 실제 네트워크 차단(docs/08-quality/fakes-spec.md 2.3절 "실제 네트워크 없음", QA R17-02).
+"""테스트 중 실제 네트워크 차단(fakes-spec 2.3절 "실제 네트워크 없음", QA R17-02).
 
 tests/conftest.py의 autouse 픽스처 `_block_real_network`가 테스트마다 `install`을 부른다. 끄는
 마커·옵션·환경 변수는 두지 않는다.
 
 - 막는 것: `socket.socket`의 `connect`·`connect_ex`·`sendto`·`sendmsg`(AF_INET·AF_INET6),
   `socket.getaddrinfo`, `socket.create_connection`, asyncio Proactor 루프의 `sock_connect`와
-  Windows의 `IocpProactor.connect`(IP 주소면 `socket.connect`를 거치지 않고 ConnectEx로 바로 연결한다).
+  Windows의 `IocpProactor.connect`(IP 주소면 `socket.connect`를 거치지 않고 ConnectEx로
+  바로 연결한다).
 - 허용: 루프백(127.0.0.0/8, ::1, ::ffff:127.0.0.0/104, 이름 "localhost"), 미지정 주소(0.0.0.0, ::,
   빈 문자열, None. 바인드용), AF_UNIX와 그 밖의 주소 체계, `socket.socketpair`(루프백으로 만든다).
 - 막으면 `RealNetworkBlocked`(AssertionError 하위)를 낸다. OSError면 asyncio·anyio·httpcore·앱이

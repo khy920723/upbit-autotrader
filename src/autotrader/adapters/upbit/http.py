@@ -368,7 +368,9 @@ class UpbitHttp:
 
         error = to_error(status, body, response.headers, group=group)
         if isinstance(error, UpbitBlocked):
-            self._limiter.on_blocked(error.retry_after)
+            # Retry-After가 24시간을 넘어 24시간만 기다리면 이 418의 예외에 표시한다(D-089 보완).
+            # retry_after에는 서버가 준 원래 값을 그대로 둔다.
+            error.retry_after_capped = self._limiter.on_blocked(error.retry_after)
             # 차단 시간 형식을 확인하려고 헤더와 본문 원문을 남긴다(D-078).
             # 응답 헤더에는 비밀이 없다.
             logger.warning(

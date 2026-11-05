@@ -2,6 +2,19 @@
 
 세션이 끝날 때마다 맨 위에 추가한다. 형식: 날짜 — 단계 / 한 일 / 결정 / 남은 일 / 다음 단계.
 
+## 2026-11-05 — 개발 의존성: hypothesis 추가 (클라우드 세션)
+
+- 한 일:
+  - `pyproject.toml` dev 그룹에 `hypothesis>=6.170`을 넣었다(PyPI 최신 안정판 6.170.14). `uv lock`으로 hypothesis 6.170.14와 하위 의존성 sortedcontainers 2.4.0만 추가됐고, 다른 패키지 버전은 바뀌지 않았다. `uv sync --locked` 통과
+  - `.gitignore`에 `.hypothesis/`를 넣었다.
+  - pytest에 `slow` 마커(상태 기계 같은 장시간 테스트)를 등록했다. 기본 실행에서 빼지 않는다.
+  - [의존성 라이선스 목록](../07-security-legal/dependency-licenses.md) 4장을 갱신했다. 휠의 라이선스 파일로 확인한 값은 hypothesis MPL-2.0, sortedcontainers Apache-2.0이다. 둘 다 테스트 전용이라 번들에 없어 `packaging/NOTICE.txt` 고지는 필요 없다고 비고에 적었다.
+  - [CI 변경 제안](ci-proposals.md) 1번(커버리지 측정)은 ci.yml에 반영되어(main 5858e59) 지웠다.
+  - 린트 통과, 테스트 236개 통과, 줄·분기 커버리지 합계 93%
+- 결정: D-076(hypothesis 추가, 사용자 승인). 결정 로그와 CLAUDE.md 개발 의존성 목록은 기획/문서 세션이 따로 고친다.
+- 남은 일: 속성 기반 테스트 작성은 3단계 이후([불변식 명세](../08-quality/invariants.md) 2.2절)
+- 다음 단계: 3단계 업비트 연동
+
 ## 2026-11-05 — 기획/문서: 세션 운영 규칙 기록 (클라우드 세션)
 
 - 한 일:

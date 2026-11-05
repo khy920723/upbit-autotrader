@@ -61,6 +61,7 @@
 | altgraph | 0.17.5 | MIT | Windows, Linux, macOS | PyInstaller 의존 |
 | colorama | 0.4.6 | BSD-3-Clause | Windows | pytest 의존(Windows) |
 | coverage | 7.17.2 | Apache-2.0 | Windows, Linux, macOS | pytest-cov 의존 |
+| hypothesis | 6.170.14 | MPL-2.0 | Windows, Linux, macOS | 속성 기반 테스트(D-076, 불변식 명세 2.2절). 테스트에서만 쓰고 앱·빌드가 import하지 않아 번들에 없다. MPL-2.0 의무는 배포할 때 생기므로 NOTICE.txt 고지는 필요 없다. 벤더링한 `hypothesis/vendor/pretty.py`에는 IPython에서 온 BSD 코드가 섞여 있다 |
 | iniconfig | 2.3.1 | MIT | Windows, Linux, macOS | pytest 의존 |
 | macholib | 1.16.4 | MIT | macOS | PyInstaller 의존(macOS) |
 | packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | Windows, Linux, macOS | pytest·PyInstaller 의존. 라이선스 검사 스크립트도 씀 |
@@ -74,6 +75,7 @@
 | pytest-qt | 4.5.0 | MIT | Windows, Linux, macOS | 화면 테스트 |
 | ruff | 0.17.3 | MIT | Windows, Linux, macOS | 린트 |
 | setuptools | 84.2.1 | MIT | Windows, Linux, macOS | PyInstaller 의존 |
+| sortedcontainers | 2.4.0 | Apache-2.0 | Windows, Linux, macOS | hypothesis 의존. 휠의 LICENSE가 Apache-2.0(메타데이터에는 License-Expression 없이 "Apache 2.0"). 번들에 없음 |
 | typing_extensions | 4.16.0 | PSF-2.0 | Windows, Linux, macOS | pytest-qt 의존 |
 <!-- license-inventory:dev:end -->
 

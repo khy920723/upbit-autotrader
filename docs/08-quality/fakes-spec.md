@@ -1,8 +1,8 @@
 # 가짜 구현 명세
 
-상태: 초안 · 2026-11-05 · 구현은 각 단계의 개발 세션이 한다(8장) · 관련: [테스트 전략](test-strategy.md) 3·4장, [불변식 명세](invariants.md), [추적표](traceability.md), [녹화 응답](../../tests/fixtures/upbit/README.md), [업비트 API 연동 명세](../05-integration/upbit-api.md), [LLM 시그널 명세](../05-integration/llm-signal.md), [뉴스 수집 명세](../05-integration/news-collection.md), [텔레그램 연동 명세](../05-integration/telegram.md)
+상태: 초안 · 2026-11-05 · 구현은 각 단계의 개발 세션이 한다(8장) · 관련: [테스트 전략](test-strategy.md) 3·4장, [불변식 명세](invariants.md), [추적표](traceability.md), [녹화 응답](../../tests/fixtures/upbit/README.md), [업비트 API 연동 명세](../05-integration/upbit-api.md), [LLM 시그널 명세](../05-integration/llm-signal.md), [뉴스 수집 명세](../05-integration/news-collection.md), [디스코드 연동 명세](../05-integration/discord.md)
 
-테스트가 쓰는 가짜 구현 다섯 가지(FakeExchange, FakeLLM, FakeNews, FakeClock, FakeNotifier)가 흉내 낼 응답 형식, 오류 이름, 주입 기능을 정한다. 응답 형식과 오류 이름은 2026-11-05에 받은 공식 문서(업비트 개발자 센터 docs.upbit.com/kr, Gemini API 문서 aistudio.google.com/docs)와 같은 날 녹화한 업비트 공개 시세 응답을 기준으로 했다. 텔레그램과 네이버 문서는 이 세션의 네트워크 정책이 막아 원문을 읽지 못했다(9장).
+테스트가 쓰는 가짜 구현 다섯 가지(FakeExchange, FakeLLM, FakeNews, FakeClock, FakeNotifier)가 흉내 낼 응답 형식, 오류 이름, 주입 기능을 정한다. 응답 형식과 오류 이름은 2026-11-05에 받은 공식 문서(업비트 개발자 센터 docs.upbit.com/kr, Gemini API 문서 aistudio.google.com/docs)와 같은 날 녹화한 업비트 공개 시세 응답을 기준으로 했다. 디스코드 웹후크는 디스코드 개발자 문서의 공식 원본 저장소(discord/discord-api-docs, 커밋 da52492)를 기준으로 했다. 네이버 문서는 이 세션의 네트워크 정책이 막아 원문을 읽지 못했다(9장).
 
 ## 1. 원칙
 
@@ -332,44 +332,46 @@
 | 시세 끊김 | 120초 | TS-41 |
 | 시계 오차 | 5초. `Date` 헤더가 초 단위라 측정값에 1초 안팎의 오차가 있으므로 경계 시험은 4초·6초로 한다 | TS-42 |
 
-## 6. FakeNotifier (텔레그램)
+## 6. FakeNotifier (디스코드)
 
 ### 6.1 두 층
 
 - **포트 가짜:** `Notifier.send(text)`를 구현한다. 예외 대신 `SendResult`(sent·failed·rate_limited)를 돌려준다. 보낸 글, 시각, 알림 ID(NTF-xx)를 기록한다.
-- **와이어 가짜:** 텔레그램 Bot API를 흉내 낸다.
+- **와이어 가짜:** 디스코드 채널 웹후크 실행(Execute Webhook)을 흉내 낸다([디스코드 연동 명세](../05-integration/discord.md)).
 
 ### 6.2 응답 형식
 
-- 전송: `POST https://api.telegram.org/bot<token>/sendMessage`, 본문 `chat_id`, `text`.
-- 성공: `{"ok": true, "result": {"message_id": 1, "chat": {"id": 1}, "date": 1793844121, "text": "..."}}`.
-- 실패: `{"ok": false, "error_code": 429, "description": "Too Many Requests: retry after 5", "parameters": {"retry_after": 5}}`. 그 밖에 400(예: 채팅을 찾지 못함), 401(토큰 오류), 403(봇이 차단됨).
-- chat_id 찾기: `getUpdates` → `{"ok": true, "result": [{"update_id": 1, "message": {"chat": {"id": 1}, "text": "/start"}}]}`.
+- 전송: `POST https://discord.com/api/webhooks/{id}/{token}?wait=true`, JSON 본문 `content`, `allowed_mentions`.
+- 성공(`wait=true`): 200과 만든 메시지 객체(예: `{"id": "1", "channel_id": "1", "content": "..."}`). `wait`가 없으면 204(본문 없음).
+- 429: 본문 `{"message": "You are being rate limited.", "retry_after": 1.5, "global": false}`, 헤더 `Retry-After`와 `X-RateLimit-*`.
+- 그 밖의 실패: 404 `{"message": "Unknown Webhook", "code": 10015}`(지운 웹후크), 401 `{"message": "Invalid Webhook Token", "code": 50027}`, 400 `{"message": "Cannot send an empty message", "code": 50006}`·`{"code": 50035}`(잘못된 본문), 5xx. `code` 값은 공식 오류 코드 표를 따르고, `message` 문구는 예시다.
 
 ### 6.3 주입 기능
 
 | 주입 | 동작 | 쓰는 곳 |
 |---|---|---|
-| `rate_limited(retry_after)` | 429와 `parameters.retry_after` | TS-48 |
-| `fail(kind)` | 네트워크 오류, 5xx, 400, 401, 403 | TS-48, TS-127 |
+| `rate_limited(retry_after)` | 429와 `retry_after`, `Retry-After` 헤더 | TS-48 |
+| `gone()` | 404, `code` 10015(웹후크가 지워짐) | TS-48 |
+| `fail(kind)` | 네트워크 오류, 5xx, 400, 401(50027) | TS-48, TS-127 |
 | `slow(seconds)` | 늦은 응답 | TS-127 |
-| `no_updates` | `getUpdates` 결과 없음(사용자가 `/start`를 안 보냄) | TS-54 |
+| `remaining_zero(reset_after)` | 성공 응답이지만 `X-RateLimit-Remaining: 0`, `X-RateLimit-Reset-After` | TS-48 |
 
 ### 6.4 검사
 
-- 초당 1건 이하(FakeClock 기준), 4096자 이하, 서식 없음(`parse_mode` 없음).
+- 초당 1건 이하(FakeClock 기준), `content` 2000자 이하, 모든 요청에 `allowed_mentions: {"parse": []}`와 `wait=true`, `embeds`·`tts` 없음.
 - 보낸 글에 카나리아 비밀, 계정 정보, 잔고 총액이 없음(7장).
-- 토큰이 URL에 들어가므로, 전송 실패 때 예외 메시지·로그에 URL이 찍혀 토큰이 새지 않는지 카나리아로 본다.
+- 웹후크 주소에 토큰이 들어가므로, 전송 실패 때 예외 메시지·로그에 주소가 찍혀 토큰이 새지 않는지 카나리아로 본다.
+- 404를 받은 뒤에는 같은 웹후크로 더 보내지 않음.
 - 전송이 실패해도 매매 흐름이 멈추지 않음(같은 시험에서 손절 점검이 계속 도는지).
 
 ## 7. 카나리아(비밀 검사 도구)
 
 카나리아는 고유 표식을 넣은 가짜 비밀값이다. 이 값이 keyring 밖에서 발견되면 유출이다. INV-07(비밀이 로그·DB·프롬프트 등에 없음)을 증명하는 도구다.
 
-- **만들기:** 업비트 Access·Secret Key, Gemini 키, 네이버 Client Secret, 텔레그램 토큰의 가짜 값을 테스트 실행 중에 만든다. 서비스별 형식(길이, 문자 종류, 텔레그램은 `<숫자>:<문자열>`)은 맞추고, 값 안에 고유 표식을 넣는다. 실제 형식과 같은 문자열을 소스와 문서에 상수로 적지 않는다(GitHub 비밀 검사 오탐 방지).
+- **만들기:** 업비트 Access·Secret Key, Gemini 키, 네이버 Client Secret, 디스코드 웹후크 주소의 가짜 값을 테스트 실행 중에 만든다. 서비스별 형식(길이, 문자 종류, 디스코드 웹후크는 `https://discord.com/api/webhooks/<숫자>/<문자열>`)은 맞추고, 값 안에 고유 표식을 넣는다. 실제 형식과 같은 문자열을 소스와 문서에 상수로 적지 않는다(GitHub 비밀 검사 오탐 방지).
 - **넣기:** 가짜 `SecretStore`에 넣고 마법사·설정·주문·알림·오류 경로를 모두 지나는 시나리오를 돌린다.
 - **찾을 곳:** 로그 파일, DB의 모든 TEXT 열(특히 events.context_json, order_events.payload_json, signals.raw_response), 설정 파일과 백업(`.bak`), `self-test-report.txt`, CSV, 진단 묶음, FakeLLM이 받은 프롬프트, FakeNotifier가 보낸 글, 로그에 남은 예외 traceback.
-- **찾을 모양:** 원문, URL 인코딩, base64·base64url(시작 위치 3가지), JWT 모양(`eyJ...`로 시작하는 점 2개짜리 문자열), `Authorization`, `Bearer `, `api.telegram.org/bot`.
+- **찾을 모양:** 원문, URL 인코딩, base64·base64url(시작 위치 3가지), JWT 모양(`eyJ...`로 시작하는 점 2개짜리 문자열), `Authorization`, `Bearer `, `discord.com/api/webhooks/`.
 
 ## 8. 구현 단계
 
@@ -379,7 +381,7 @@
 | FakeExchange | 5단계(브로커·주문 관리) | 3단계(업비트 어댑터, "가짜 거래소" 포함) | 로드맵 3·5단계 |
 | FakeLLM | 5단계(결정 엔진) | 4단계(Gemini 어댑터) | 로드맵 4·5단계 |
 | FakeNews | 4단계 | 4단계 | 로드맵 4단계 |
-| FakeNotifier | 7단계(텔레그램) | 7단계 | 로드맵 7단계 |
+| FakeNotifier | 7단계(디스코드) | 7단계 | 로드맵 7단계 |
 | 카나리아 | 2단계(로그 설정)부터 단계마다 검사 범위를 넓힘 | - | INV-07 |
 
 - 가짜를 만들거나 바꾸는 PR은 이 문서의 해당 절을 함께 고친다. 문서에 없는 주입을 추가하면 표에 줄을 더한다.
@@ -393,7 +395,7 @@
 | 주문 검증의 identifier가 실제 주문의 identifier 이력에 들어가는지 | 문서에 없다 | 앱은 모드 글자로 접두어를 나눠 겹치지 않게 한다. 확인은 필요 없을 수 있음 |
 | Gemini 생성 차단 코드가 HTTP 오류로 오는지 `status=failed`로 오는지 | 오류 문서에 "이 코드를 받으면"으로만 나온다 | 4단계 실호출(사용자 PC) |
 | Interactions 응답의 `model`이 실제 응답 모델인지 | 문서에 없다(LLM 시그널 명세 6장도 같은 지적) | 4단계 실호출 |
-| 텔레그램 Bot API 원문 | 이 세션에서 core.telegram.org 접근이 막혔다 | 텔레그램 연동 명세(확정)와 검색 요약으로 확인. 7단계 전에 원문 대조 |
+| 디스코드 개발자 문서 사이트 원문 | 이 세션에서 discord.com 접근이 막혔다 | 공식 원본 저장소(discord/discord-api-docs, 커밋 da52492)로 확인(디스코드 연동 명세). 7단계 전에 사이트와 대조 |
 | 네이버 검색 API 원문(인증 실패·호출 한도 초과 오류 형식 포함) | developers.naver.com 접근이 막혔다 | 4단계 전 약관 확인 때 함께 대조 |
 | RSS 피드 실제 형식 | 이 세션에서 받지 않았다 | 4단계 세션이 녹화 |
 | Windows 10에서 잠자기 동안 `time.monotonic()`이 흐르는지 | 리눅스 세션에서 확인할 수 없다 | [수동 점검표](manual-checklist-windows10.md) M-25 |

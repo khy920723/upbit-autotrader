@@ -11,7 +11,7 @@
 
 ## 2. 남기지 않는 것
 
-- API 키, Secret, JWT, `Authorization` 헤더, 텔레그램 토큰이 들어간 URL, 네이버 Client Secret.
+- API 키, Secret, JWT, `Authorization` 헤더, 디스코드 웹후크 주소(토큰 포함), 네이버 Client Secret.
 - 로그 기록기에 비밀 가리기 필터를 넣고, 비밀이 섞인 로그 줄이 실제로 가려지는지 테스트한다.
 - 계정 식별 정보(이메일, 계좌 정보)는 받지도 저장하지도 않는다.
 - `GET /v1/api_keys` 응답에 들어 있는 다른 키의 Access Key는 로그와 DB에 남기지 않는다(자기 키의 만료일만 쓴다).

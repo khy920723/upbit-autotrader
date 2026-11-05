@@ -358,7 +358,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | at | TEXT | 필수 | |
 | ntf_code | TEXT | 필수 | NTF-01 등 |
 | dedupe_key | TEXT | 필수 | 중복 억제 기준. 예: `NTF-03:no_authorization_ip` |
-| channel | TEXT | 필수 | telegram, ui |
+| channel | TEXT | 필수 | discord, ui |
 | status | TEXT | 필수 | sent, failed, rate_limited, suppressed, batched |
 | event_id | INTEGER | FK events | |
 | error | TEXT | | 실패 이유(토큰이 들어간 URL은 넣지 않음) |

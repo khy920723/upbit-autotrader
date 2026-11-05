@@ -56,10 +56,11 @@
 1. developers.naver.com → Application → 애플리케이션 등록.
 2. 사용 API에서 "검색"을 고르고 Client ID와 Client Secret을 받는다.
 
-### 텔레그램 (선택)
+### 디스코드 알림 (선택)
 
-1. BotFather에서 `/newbot`으로 봇을 만들고 토큰을 받는다.
-2. 만든 봇에게 `/start`를 보낸다.
+1. 디스코드 서버에 비공개 채널 `app-alarm`을 만든다. GitHub 알림용 `git-alarm` 채널과 다른 채널이다.
+2. `app-alarm` 채널의 웹후크를 만들고 웹후크 주소를 복사한다(디스코드 앱의 채널 설정에서 만든다. 정확한 메뉴 위치는 [디스코드 연동 명세](../05-integration/discord.md) 6장의 확인 필요 항목).
+3. 앱의 마법사(W5)나 설정에 붙여 넣는다. 주소는 비밀값이라 메모장·메신저·저장소에 남기지 않는다.
 
 ## 3. 설치
 
@@ -92,5 +93,5 @@ Start-Process -FilePath .\autotrader.exe -ArgumentList '--self-test' -WorkingDir
 
 - [ ] 시작 점검 통과
 - [ ] 테스트 알림 수신
-- [ ] PC를 재부팅했을 때 자동 로그인 → 앱 실행 → 텔레그램 시작 알림
+- [ ] PC를 재부팅했을 때 자동 로그인 → 앱 실행 → 디스코드 시작 알림
 - [ ] 트레이 아이콘이 초록색

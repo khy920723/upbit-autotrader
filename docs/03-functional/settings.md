@@ -61,8 +61,7 @@
 | `upbit.key_issued_at` | 키 발급일(보조 값). 만료일은 `GET /v1/api_keys`의 `expire_at`을 우선 쓰고, 조회하지 못할 때만 발급일 + 1년으로 계산한다(D-050) | - | 설정 파일 |
 | `gemini.api_key` | Gemini API 키 | - | keyring |
 | `naver.client_id`, `naver.client_secret` | 네이버 검색 API | - | keyring |
-| `telegram.bot_token` | 텔레그램 봇 토큰(선택) | - | keyring |
-| `telegram.chat_id` | 알림 받을 채팅 ID | - | 설정 파일 |
+| `discord.webhook_url` | 디스코드 `app-alarm` 채널의 웹후크 주소(선택). 비밀값이라 화면에 다시 보여 주지 않는다 | - | keyring |
 
 ### 코인
 
@@ -115,7 +114,7 @@
 
 | 키 | 설명 | 기본값 |
 |---|---|---|
-| `notify.telegram.enabled` | 텔레그램 알림 | 마법사 결과 |
+| `notify.discord.enabled` | 디스코드 알림 | 마법사 결과 |
 | `notify.levels` | 받을 등급(긴급과 일일 요약은 항상) | 긴급, 경고, 정보 |
 | `notify.daily_summary_time` | 일일 요약 시각(KST) | 09:00 |
 

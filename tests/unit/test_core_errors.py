@@ -34,7 +34,8 @@ UPBIT_SUBCLASSES = (
 ALL_UPBIT_ERRORS = [errors.UpbitError, *UPBIT_SUBCLASSES]
 
 UPBIT_FIELDS = ("http_status", "error_name", "message", "rate_group", "remaining_sec")
-BLOCKED_FIELDS = (*UPBIT_FIELDS, "retry_after", "raw_body")
+# retry_after_capped: Retry-After가 24시간을 넘어 24시간만 기다린다는 표시(D-089 보완, R17-09).
+BLOCKED_FIELDS = (*UPBIT_FIELDS, "retry_after", "raw_body", "retry_after_capped")
 
 
 def upbit_kwargs(**overrides):
@@ -180,6 +181,46 @@ def test_upbit_blocked_retry_after_may_be_unknown():
 
     assert err.retry_after is None
     assert err.raw_body == ""
+
+
+def test_upbit_blocked_is_not_marked_as_capped_by_default():
+    # 대부분의 418(헤더 없음, 24시간 이하)은 상한과 무관하다. 기존 생성 경로는 그대로 동작한다.
+    err = make_error(errors.UpbitBlocked)
+
+    assert err.retry_after_capped is False
+
+
+def test_upbit_blocked_keeps_the_capped_mark_and_the_original_retry_after():
+    # 앱 계층이 이 표시로 긴급 알림을 보낸다. retry_after는 서버가 준 원래 값이다(D-089 보완).
+    err = errors.UpbitBlocked(
+        **upbit_kwargs(http_status=418, error_name=None, message=None, rate_group="default"),
+        retry_after=90000.0,
+        raw_body="",
+        retry_after_capped=True,
+    )
+
+    assert err.retry_after_capped is True
+    assert err.retry_after == 90000.0
+
+
+@pytest.mark.parametrize(
+    "clone",
+    [copy.copy, copy.deepcopy, lambda e: pickle.loads(pickle.dumps(e))],
+    ids=["copy", "deepcopy", "pickle"],
+)
+def test_upbit_blocked_capped_mark_survives_copy_and_pickle(clone):
+    err = errors.UpbitBlocked(
+        **upbit_kwargs(http_status=418, error_name=None, message=None, rate_group="ticker"),
+        retry_after=999_999_999.0,
+        raw_body="blocked",
+        retry_after_capped=True,
+    )
+
+    cloned = clone(err)
+
+    assert type(cloned) is errors.UpbitBlocked
+    assert cloned.retry_after_capped is True
+    assert vars(cloned) == vars(err)
 
 
 def test_str_names_the_error_for_logs():

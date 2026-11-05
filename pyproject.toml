@@ -24,6 +24,7 @@ autotrader = "autotrader.__main__:main"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.170",
     "pytest>=9.2",
     "pytest-qt>=4.5",
     "pytest-cov>=7.1",
@@ -51,6 +52,9 @@ testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
 xfail_strict = true
 qt_api = "pyside6"
+markers = [
+    "slow: 상태 기계 같은 장시간 속성 기반 테스트. 기본 실행과 CI에서도 돈다(`-m \"not slow\"`로 뺄 수 있다)",
+]
 
 [tool.coverage.run]
 source = ["autotrader"]

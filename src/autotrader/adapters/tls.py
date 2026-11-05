@@ -1,8 +1,11 @@
 """앱의 TLS 설정 하나(D-093): 업비트 REST(httpx)와 웹소켓(websockets), 자가 점검이 함께 쓴다.
 
 - 믿을 CA 인증서는 앱에 묶은 certifi 묶음 파일 하나다(`CA_SOURCE`). 운영체제 저장소
-  (`load_default_certs`, `set_default_verify_paths`)와 환경 변수 `SSL_CERT_FILE`·`SSL_CERT_DIR`는
-  보지 않는다. PC마다 같은 결과를 내기 위해서다. 출처를 바꾸려면 이 모듈만 고친다.
+  (`load_default_certs`, `set_default_verify_paths`)와 환경 변수 `SSL_CERT_FILE`·`SSL_CERT_DIR`·
+  `SSLKEYLOGFILE`는 보지 않는다(세션 키를 파일로 남기지 않는다: `keylog_filename`은 None).
+  PC마다 같은 결과를 내기 위해서다. 출처를 바꾸려면 이 모듈만 고친다.
+- `ssl.create_default_context`·`ssl.SSLContext(`를 부르는 곳은 src/에서 이 모듈뿐이다
+  (tests/unit/test_architecture.py가 검사한다).
 - 최소 TLS 1.2, 호스트 이름 확인, 인증서 필수.
 - 문맥은 부를 때마다 새로 만든다. 한쪽이 고쳐도 다른 쪽에 번지지 않는다.
 - 네트워크에 연결하지 않는다(파일만 읽는다).
@@ -45,4 +48,6 @@ def create_tls_context(*, cafile: str | None = None) -> ssl.SSLContext:
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED
+    # create_default_context는 SSLKEYLOGFILE이 있으면 그 파일에 세션 키를 쓰게 한다. 끈다.
+    context.keylog_filename = None
     return context

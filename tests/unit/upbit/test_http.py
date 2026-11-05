@@ -27,10 +27,10 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote
 
-import certifi
 import httpx
 import pytest
 from fakes.canary import find_canaries, find_secret_shapes, make_upbit_credentials
+from fakes.certs import certifi_cert_count, write_one_cert_bundle
 from fakes.clock import FakeClock
 
 import autotrader
@@ -761,25 +761,12 @@ def test_default_transport_does_not_retry():
 # --- TLS 설정(D-093): 기본 전송은 앱의 TLS 문맥 하나(autotrader.adapters.tls)를 쓴다 ----------
 #
 # UpbitHttp(..., tls_context: ssl.SSLContext | None = None)
-#   transport가 없으면 AsyncHTTPTransport(retries=0, verify=tls_context or create_tls_context()).
-#   transport를 넘기면 tls_context는 쓰지 않고 TLS 문맥을 만들지도 않는다.
+#   transport가 없으면 AsyncHTTPTransport(retries=0, verify=tls_context or create_tls_context(),
+#   trust_env=False). AsyncClient도 trust_env=False다(환경 변수의 프록시·인증서 설정을 읽지 않는다).
+#   tls_context는 그대로 쓰되 검증한다: ssl.SSLContext가 아니면 TypeError, check_hostname True·
+#   CERT_REQUIRED·최소 TLS 1.2 이상이 아니면 ValueError. transport와 함께 주면 ValueError.
+#   transport만 넘기면 TLS 문맥을 만들지 않는다.
 # 문맥은 httpx 내부 속성(_client._transport._pool._ssl_context)으로 확인한다. 연결하지 않는다.
-
-_BEGIN_CERTIFICATE = "-----BEGIN CERTIFICATE-----"
-_END_CERTIFICATE = "-----END CERTIFICATE-----"
-
-
-def _certifi_ca_count() -> int:
-    return Path(certifi.where()).read_text(encoding="utf-8").count(_BEGIN_CERTIFICATE)
-
-
-def _write_one_cert_bundle(path: Path) -> Path:
-    """certifi 묶음의 첫 인증서 하나만 든 임시 묶음."""
-    text = Path(certifi.where()).read_text(encoding="utf-8")
-    start = text.index(_BEGIN_CERTIFICATE)
-    end = text.index(_END_CERTIFICATE, start) + len(_END_CERTIFICATE)
-    path.write_text(text[start:end] + "\n", encoding="ascii")
-    return path
 
 
 def _default_transport_context(**options) -> ssl.SSLContext:
@@ -797,17 +784,24 @@ def _default_transport_context(**options) -> ssl.SSLContext:
     return run(scenario)
 
 
+def _strict_context(cafile: Path) -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_verify_locations(cafile=str(cafile))
+    return context
+
+
 def test_default_transport_uses_the_app_tls_context(monkeypatch, tmp_path):
     from autotrader.adapters.tls import create_tls_context
 
     # httpx 기본값은 SSL_CERT_FILE·SSL_CERT_DIR를 읽는다. 앱 문맥은 certifi 묶음만 읽는다.
-    monkeypatch.setenv("SSL_CERT_FILE", str(_write_one_cert_bundle(tmp_path / "one.pem")))
+    monkeypatch.setenv("SSL_CERT_FILE", str(write_one_cert_bundle(tmp_path / "one.pem")))
     monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
 
     context = _default_transport_context()
     expected = create_tls_context()
 
-    assert context.cert_store_stats()["x509_ca"] == _certifi_ca_count()
+    assert context.cert_store_stats()["x509_ca"] == certifi_cert_count()
     assert context.cert_store_stats() == expected.cert_store_stats()
     assert context.get_ca_certs(binary_form=True) == expected.get_ca_certs(binary_form=True)
     assert context.minimum_version == expected.minimum_version == ssl.TLSVersion.TLSv1_2
@@ -819,7 +813,7 @@ def test_default_transport_follows_the_single_ca_source(monkeypatch, tmp_path):
     from autotrader.adapters import tls
 
     # CA 출처는 tls 모듈 한 곳에서 정한다. 거기를 바꾸면 기본 전송도 따라간다.
-    one_cert = _write_one_cert_bundle(tmp_path / "one.pem")
+    one_cert = write_one_cert_bundle(tmp_path / "one.pem")
     monkeypatch.setattr(tls, "ca_bundle_path", lambda: str(one_cert))
 
     context = _default_transport_context()
@@ -827,9 +821,44 @@ def test_default_transport_follows_the_single_ca_source(monkeypatch, tmp_path):
     assert context.cert_store_stats()["x509_ca"] == 1
 
 
+def test_default_transport_and_client_do_not_trust_the_environment(monkeypatch):
+    # 동작은 httpx 기본과 같다(문맥을 직접 주고 transport를 넘긴다). 의도를 코드에 드러낸다.
+    seen: list[dict] = []
+    original = httpx.AsyncHTTPTransport
+
+    class RecordingTransport(original):
+        def __init__(self, *args, **kwargs):
+            seen.append(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", RecordingTransport)
+
+    async def scenario():
+        clock = FakeClock()
+        http = UpbitHttp(clock=clock, limiter=RateLimiter(clock))
+        try:
+            return http._client.trust_env
+        finally:
+            await http.aclose()
+
+    client_trust_env = run(scenario)
+
+    assert len(seen) == 1
+    assert seen[0]["trust_env"] is False
+    assert seen[0]["retries"] == 0
+    assert client_trust_env is False
+
+
+def test_client_with_a_given_transport_does_not_trust_the_environment():
+    async def scenario():
+        async with connect() as h:
+            return h.http._client.trust_env
+
+    assert run(scenario) is False
+
+
 def test_given_tls_context_is_used_as_is(tmp_path):
-    given = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    given.load_verify_locations(cafile=str(_write_one_cert_bundle(tmp_path / "one.pem")))
+    given = _strict_context(write_one_cert_bundle(tmp_path / "one.pem"))
 
     context = _default_transport_context(tls_context=given)
 
@@ -837,16 +866,62 @@ def test_given_tls_context_is_used_as_is(tmp_path):
     assert context.cert_store_stats()["x509_ca"] == 1
 
 
-@pytest.mark.parametrize("with_context", [True, False], ids=["tls_context", "no_tls_context"])
-def test_given_transport_wins_over_tls_context(monkeypatch, tmp_path, with_context):
+def _weaken(context: ssl.SSLContext, how: str) -> ssl.SSLContext:
+    if how == "no_hostname_check":
+        context.check_hostname = False
+    elif how == "cert_none":
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    elif how == "cert_optional":
+        context.verify_mode = ssl.CERT_OPTIONAL
+    elif how == "minimum_supported":
+        context.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
+    elif how == "tls1_1":
+        context.minimum_version = ssl.TLSVersion.TLSv1_1
+    return context
+
+
+@pytest.mark.parametrize(
+    "how", ["no_hostname_check", "cert_none", "cert_optional", "minimum_supported", "tls1_1"]
+)
+def test_weak_tls_context_is_rejected(tmp_path, how):
+    weak = _weaken(_strict_context(write_one_cert_bundle(tmp_path / "one.pem")), how)
+    clock = FakeClock()
+
+    with pytest.raises(ValueError, match="tls_context"):
+        UpbitHttp(clock=clock, limiter=RateLimiter(clock), tls_context=weak)
+
+
+@pytest.mark.parametrize("value", [True, "cacert.pem"], ids=["bool", "path"])
+def test_tls_context_must_be_an_ssl_context(value):
+    clock = FakeClock()
+
+    with pytest.raises(TypeError, match="tls_context"):
+        UpbitHttp(clock=clock, limiter=RateLimiter(clock), tls_context=value)
+
+
+def test_tls_context_together_with_transport_is_rejected(tmp_path):
+    # 함께 주면 tls_context를 말없이 버리게 된다. 보내기 전에 거부한다.
+    given = _strict_context(write_one_cert_bundle(tmp_path / "one.pem"))
+    clock = FakeClock()
+
+    with pytest.raises(ValueError, match="tls_context"):
+        UpbitHttp(
+            clock=clock,
+            limiter=RateLimiter(clock),
+            transport=httpx.MockTransport(reply()),
+            tls_context=given,
+        )
+
+
+def test_given_transport_builds_no_tls_context(monkeypatch, tmp_path):
     from autotrader.adapters import tls
 
     # transport를 넘기면 TLS 문맥을 만들지 않는다(묶음 파일이 없어도 만들어진다).
     monkeypatch.setattr(tls, "ca_bundle_path", lambda: str(tmp_path / "missing.pem"))
-    options = {"tls_context": ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)} if with_context else {}
 
     async def scenario():
-        async with connect(**options) as h:
+        async with connect() as h:
             await h.http.get("/v1/ticker", [("markets", "KRW-BTC")])
             client = h.http._client
             return client._transport, dict(client._mounts), len(h.wire.requests)

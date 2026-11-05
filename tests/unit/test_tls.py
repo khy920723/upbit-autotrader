@@ -2,15 +2,15 @@
 
 정한 인터페이스(`autotrader.adapters.tls`):
 
-- `CA_SOURCE = "certifi"`: CA 인증서 출처. D-093은 사용자 선택 대기(A certifi 묶음 / B Windows
-  저장소)이고 지금 구현은 A다. 출처는 이 모듈 한 곳에서만 정한다. REST·웹소켓·자가 점검은
-  `create_tls_context()`를 부르기만 한다.
+- `CA_SOURCE = "certifi"`: CA 인증서 출처. D-093은 사용자 결정 A(2026-11-05, certifi 묶음)다.
+  출처는 이 모듈 한 곳에서만 정한다. REST·웹소켓·자가 점검은 `create_tls_context()`를 부르기만
+  한다.
 - `create_tls_context(*, cafile: str | None = None) -> ssl.SSLContext`:
   cafile을 주지 않으면 `ca_bundle_path()`를 부를 때마다 찾아서 쓴다(모듈 상수로 미리 잡지 않는다).
   그 파일 하나만 읽는다. 운영체제 저장소(`load_default_certs`, `set_default_verify_paths`)와
-  환경 변수 `SSL_CERT_FILE`·`SSL_CERT_DIR`는 보지 않는다.
+  환경 변수 `SSL_CERT_FILE`·`SSL_CERT_DIR`·`SSLKEYLOGFILE`는 보지 않는다(keylog_filename은 None).
   PROTOCOL_TLS_CLIENT, 최소 TLSv1_2, check_hostname True, CERT_REQUIRED. 부를 때마다 새 문맥.
-  예외: cafile이 없으면 FileNotFoundError, 빈 파일·PEM이 아닌 파일(DER 포함)·깨진 PEM이면
+  예외: cafile이 없거나 빈 문자열이면 FileNotFoundError, 빈 파일·PEM이 아닌 파일(DER 포함)·깨진 PEM이면
   ssl.SSLError. 둘 다 OSError의 하위 타입이라 부르는 쪽은 OSError 하나로 잡을 수 있다.
 - `ca_bundle_path() -> str`: `certifi.where()`.
 - `ca_bundle_version() -> str`: certifi 배포 버전(예: "2026.10.23").
@@ -19,34 +19,20 @@
 """
 
 import importlib.metadata
-import re
 import ssl
 from pathlib import Path
 
 import certifi
 import pytest
-
-from autotrader.adapters import tls
-
-BEGIN_CERTIFICATE = "-----BEGIN CERTIFICATE-----"
-PEM_BLOCK = re.compile(
-    r"-----BEGIN CERTIFICATE-----\r?\n.+?\r?\n-----END CERTIFICATE-----\r?\n", re.DOTALL
+from fakes.certs import (
+    BEGIN_CERTIFICATE,
+    block_os_store,
+    certifi_cert_count,
+    first_certifi_pem,
+    write_one_cert_bundle,
 )
 
-
-def certifi_text() -> str:
-    return Path(certifi.where()).read_text(encoding="utf-8")
-
-
-def certifi_cert_count() -> int:
-    """묶음 파일의 인증서 수. 문맥과 상관없이 파일을 직접 세어 얻는다."""
-    return certifi_text().count(BEGIN_CERTIFICATE)
-
-
-def first_certifi_pem() -> str:
-    match = PEM_BLOCK.search(certifi_text())
-    assert match is not None, "certifi 묶음에서 PEM 인증서를 찾지 못했다"
-    return match.group(0)
+from autotrader.adapters import tls
 
 
 def ca_count(context: ssl.SSLContext) -> int:
@@ -56,28 +42,20 @@ def ca_count(context: ssl.SSLContext) -> int:
 @pytest.fixture
 def one_cert_bundle(tmp_path: Path) -> Path:
     """certifi 묶음의 첫 인증서 하나만 든 임시 묶음."""
-    path = tmp_path / "one-cert.pem"
-    path.write_text(first_certifi_pem(), encoding="ascii")
-    return path
+    return write_one_cert_bundle(tmp_path / "one-cert.pem")
 
 
 @pytest.fixture
 def forbid_os_store(monkeypatch: pytest.MonkeyPatch) -> None:
-    """운영체제 저장소와 SSL_CERT_* 환경 변수를 읽는 길을 막는다."""
-
-    def forbidden(*args, **kwargs):
-        raise AssertionError("운영체제 CA 저장소를 읽으려 했다")
-
-    monkeypatch.setattr(ssl.SSLContext, "load_default_certs", forbidden)
-    monkeypatch.setattr(ssl.SSLContext, "set_default_verify_paths", forbidden)
-    monkeypatch.setattr(ssl, "get_default_verify_paths", forbidden)
+    """운영체제 저장소를 읽는 길을 막는다."""
+    block_os_store(monkeypatch)
 
 
 # --- 출처: certifi 묶음 하나 ------------------------------------------------------------
 
 
 def test_ca_source_is_the_certifi_bundle():
-    # D-093 선택 대기(A/B). 지금 구현은 A. 출처를 바꾸려면 이 모듈만 고친다.
+    # D-093 사용자 결정 A(2026-11-05, certifi 묶음). 출처를 바꾸려면 이 모듈만 고친다.
     assert tls.CA_SOURCE == "certifi"
 
 
@@ -172,6 +150,20 @@ def test_context_policy(one_cert_bundle, given):
     assert context.verify_mode == ssl.CERT_REQUIRED
 
 
+@pytest.mark.parametrize("given", [False, True], ids=["default_bundle", "given_cafile"])
+def test_sslkeylogfile_environment_variable_is_ignored(monkeypatch, tmp_path, one_cert_bundle, given):
+    # ssl.create_default_context는 SSLKEYLOGFILE이 있으면 세션 키를 그 파일에 쓰도록 문맥을 맞춘다.
+    # 앱 문맥은 그 설정을 지운다(파일은 문맥을 만들 때 빈 채로 생길 수 있지만 키는 쓰지 않는다).
+    keylog = tmp_path / "keys.log"
+    monkeypatch.setenv("SSLKEYLOGFILE", str(keylog))
+
+    context = (
+        tls.create_tls_context(cafile=str(one_cert_bundle)) if given else tls.create_tls_context()
+    )
+
+    assert context.keylog_filename is None
+
+
 def test_each_call_returns_a_new_context():
     # 한쪽(예: 웹소켓)이 문맥을 고쳐도 다른 쪽(REST)에 번지지 않는다.
     first = tls.create_tls_context()
@@ -194,6 +186,12 @@ def _write_bad_bundle(tmp_path: Path, kind: str) -> Path:
     elif kind == "broken_pem":
         path.write_text(f"{BEGIN_CERTIFICATE}\nAAAA\n-----END CERTIFICATE-----\n", encoding="ascii")
     return path
+
+
+def test_empty_cafile_raises_file_not_found_without_reading_the_os_store(forbid_os_store):
+    # 빈 문자열을 그대로 넘기면 ssl.create_default_context가 운영체제 저장소를 읽는다.
+    with pytest.raises(FileNotFoundError):
+        tls.create_tls_context(cafile="")
 
 
 def test_missing_cafile_raises_file_not_found(tmp_path):

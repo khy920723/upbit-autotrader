@@ -546,7 +546,7 @@ def test_success_after_block_resets_the_wait():
     assert asyncio.run(scenario()) == pytest.approx(300.0)
 
 
-# --- 418 세부(D-089 제안: 오케스트레이터 결정 D·E·F) ---------------------------------------
+# --- 418 세부(D-089: 오케스트레이터 결정 D·E·F를 사용자가 확정) ------------------------------
 
 
 def test_418_arriving_while_already_blocked_does_not_raise_the_step():

@@ -8,7 +8,7 @@
   초당 1건이 안 되는 그룹(order-cancel-all)은 앞 요청에서 최소 간격을 둔다.
 - Remaining-Req는 sec만 읽는다(min은 폐기). sec=0이거나 429면 그 그룹만
   `max(floor(now)+1, now+1)`까지(최소 1초) 멈춘다.
-- 418(D-078, D-089 제안): 모든 요청을 멈춘다. Retry-After가 있으면 그 시간,
+- 418(D-078, D-089): 모든 요청을 멈춘다. Retry-After가 있으면 그 시간,
   없으면 5·10·20·40·60분. 차단 중에 도착한 418(함께 나갔던 요청)은 단계를 올리지 않는다.
 - 418 만기 뒤 반개방: 성공 응답을 받기 전까지는 처리 중인 확인 요청을 1건만 허용하고,
   그동안 다른 요청은 네트워크 없이 UpbitBlocked다. 확인 요청이 성공(2xx)이면 단계를 처음으로
@@ -208,7 +208,7 @@ class RateLimiter:
         self._pause_group(group)
 
     def on_blocked(self, retry_after: float | None) -> None:
-        """418을 받았다. 모든 요청을 차단 시간 동안 멈춘다(D-078, D-089 제안)."""
+        """418을 받았다. 모든 요청을 차단 시간 동안 멈춘다(D-078, D-089)."""
         if retry_after is not None and not (math.isfinite(retry_after) and retry_after > 0):
             retry_after = None
         now = self._clock.monotonic()

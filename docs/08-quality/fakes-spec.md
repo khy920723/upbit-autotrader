@@ -47,7 +47,7 @@
 | 대기 목록 | GET /v1/orders/open?market=&states[]=&page=&limit= | 200, 배열 | `default` | `wait`, `watch` |
 | 종료 목록 | GET /v1/orders/closed?market=&states[]=&start_time=&end_time=&limit= | 200, 배열 | `default` | 조회 구간은 최대 7일. 넘겼을 때의 응답은 문서에 없으므로 가짜는 400 `invalid_parameter`를 기본으로 하고 바꿀 수 있게 한다 |
 | 개별 취소 | DELETE /v1/order?uuid= 또는 identifier= | 200, 주문 객체 | `default` | 본문이 있으면 400 `QUERY_PARAMETER_NOT_SUPPORTED` |
-| 일괄 취소 | DELETE /v1/orders/open?pairs=... | 200, `{success: {count, orders: [{uuid, market}]}, failed: {count, orders}}` | `order-cancel-all` | 2초에 1회. 앱은 사용자 주문까지 취소되는 이 API를 쓰지 않는다(D-069 대기). 가짜는 호출을 위반으로 기록하는 선택 검사를 둔다 |
+| 일괄 취소 | DELETE /v1/orders/open?pairs=... | 200, `{success: {count, orders: [{uuid, market}]}, failed: {count, orders}}` | `order-cancel-all` | 2초에 1회. 앱은 사용자 주문까지 취소되는 이 API를 쓰지 않는다(D-069). 가짜는 호출을 위반으로 기록하는 선택 검사를 둔다 |
 | 키 목록 | GET /v1/api_keys | 200, `[{access_key, expire_at}]` | `default` | `expire_at`은 KST(`+09:00`) |
 | 공개 웹소켓 | wss://api.upbit.com/websocket/v1 | ticker 등 | - | 2.5절 |
 | 비공개 웹소켓 | wss://api.upbit.com/websocket/v1/private | myOrder, myAsset, announcement | - | JWT 필요 |

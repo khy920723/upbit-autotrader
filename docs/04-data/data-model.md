@@ -1,6 +1,6 @@
 # 데이터 모델
 
-상태: 초안(1단계 제안, 사용자 결정 대기: D-041 DB 접근 방식, D-044 실행 모드 저장 위치, D-049 live-validate 일수, D-067 잔량 원가, D-069 정지 상태 저장) · 관련: [로그·감사 기록 정의서](logging-audit.md), [상태 전이 정의서](../03-functional/state-machines.md), [매매 로직 명세](../03-functional/trading-logic.md), [시스템 구성도](../06-architecture/system-architecture.md)
+상태: 초안(1단계 제안, 사용자 결정 대기: D-041 DB 접근 방식, D-044 실행 모드 저장 위치, D-049 live-validate 일수) · 관련: [로그·감사 기록 정의서](logging-audit.md), [상태 전이 정의서](../03-functional/state-machines.md), [매매 로직 명세](../03-functional/trading-logic.md), [시스템 구성도](../06-architecture/system-architecture.md)
 
 저장소는 SQLite 파일 하나다: `%LOCALAPPDATA%\upbit-autotrader\data\autotrader.db`(같은 폴더에 `-wal`, `-shm` 파일이 생긴다). 아래 테이블·열·인덱스는 1단계 제안이며 2단계 구현 전에 사용자 확인을 받는다.
 
@@ -95,7 +95,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | `install_id` | UUID | 진단 묶음 구분용 |
 | `mode` | paper, signal-only, live-validate, live | 현재 실행 모드. 설정 파일이 아니라 DB에 둔다(D-044 대기, [설정 항목 정의서](../03-functional/settings.md) 1장) |
 | `mode_changed_at` | 시각 | |
-| `trading_state` | RUNNING, PAUSED, BUY_BLOCKED, STOPPED | 재시작 때 복원할 직전 상태. [정지]·[정지 후 전량 매도]는 취소·매도보다 먼저 STOPPED를 저장한다(LIQUIDATING은 저장하지 않음, D-069 대기) |
+| `trading_state` | RUNNING, PAUSED, BUY_BLOCKED, STOPPED | 재시작 때 복원할 직전 상태. [정지]·[정지 후 전량 매도]는 취소·매도보다 먼저 STOPPED를 저장한다(LIQUIDATING은 저장하지 않음, D-069) |
 | `buy_blocked_date_kst` | `YYYY-MM-DD` | 일일 손실 한도·주문 수 상한에 닿은 날 |
 | `paper_started_at` | 시각 | |
 | `live_validate_started_at` | 시각 | |
@@ -317,7 +317,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | realized_pnl_krw | INTEGER | 필수 | |
 | exit_reason | TEXT | 필수 | 마지막 매도의 purpose |
 | dust_volume | TEXT | 필수, 기본 `'0'` | 최소 주문 금액 미만이라 팔지 못한 잔량 |
-| dust_cost_written_off | TEXT | 필수, 기본 `'0'` | 손실로 처리한 잔량 원가(Decimal). 매도 없이 잔량으로 옮긴 경우 그날 일일 손실 한도 판단에 더한다(제안, D-067 대기) |
+| dust_cost_written_off | TEXT | 필수, 기본 `'0'` | 손실로 처리한 잔량 원가(Decimal). 매도 없이 잔량으로 옮긴 경우 그날 일일 손실 한도 판단에 더한다(D-067) |
 
 ### daily_stats: 일별 집계(09:00 KST 기준)
 
@@ -326,7 +326,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | date_kst | TEXT | PK(1) | |
 | mode | TEXT | PK(2) | |
 | realized_pnl_krw | INTEGER | 필수, 기본 0 | 그날 매도 체결의 실현 손익 합(순, 보고용) |
-| realized_loss_krw | INTEGER | 필수, 기본 0 | 그날 손실이 난 매도 체결의 손실 합(양수). 일일 손실 한도와 같은 기준(보고용. 한도 판단은 fills의 Decimal 값과, D-067을 채택하면 그날 round_trips의 `dust_cost_written_off`로 한다) |
+| realized_loss_krw | INTEGER | 필수, 기본 0 | 그날 손실이 난 매도 체결의 손실 합(양수). 일일 손실 한도와 같은 기준(보고용. 한도 판단은 fills의 Decimal 값과, D-067에 따라 그날 round_trips의 `dust_cost_written_off`로 한다) |
 | fees_krw | INTEGER | 필수, 기본 0 | |
 | orders_count | INTEGER | 필수, 기본 0 | 그날 거래소(또는 가상 거래소)로 보낸 주문 수. 거절 포함 |
 | buy_blocked | INTEGER | 필수, 기본 0 | 일일 손실 한도·주문 수 상한 도달 |

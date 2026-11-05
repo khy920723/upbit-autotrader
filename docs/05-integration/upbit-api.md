@@ -1,6 +1,6 @@
 # 업비트 API 연동 명세
 
-상태: 확정(2026-11 기준 사실, 2026-11-05 공식 문서로 재확인. 체크리스트 A 확인 방법(D-048), 클라이언트 선택(D-038), 매수·매도 값 구분(D-067), 일괄 취소 미사용(D-069), 418 대기·공지·웹소켓 오류 처리(D-078~D-080)는 대기) · 출처: https://docs.upbit.com/kr (각 쪽은 끝에 `.md`를 붙이면 본문과 OpenAPI 정의를 받을 수 있다) · 관련: [매매 로직 명세](../03-functional/trading-logic.md), [운영 런북](../09-operations/runbook.md), [ADR-0006 업비트 클라이언트](../06-architecture/adr/0006-upbit-client.md)
+상태: 확정(2026-11 기준 사실, 2026-11-05 공식 문서로 재확인. 체크리스트 A 확인 방법(D-048), 클라이언트 선택(D-038), 418 대기·공지·웹소켓 오류 처리(D-078~D-080)는 대기) · 출처: https://docs.upbit.com/kr (각 쪽은 끝에 `.md`를 붙이면 본문과 OpenAPI 정의를 받을 수 있다) · 관련: [매매 로직 명세](../03-functional/trading-logic.md), [운영 런북](../09-operations/runbook.md), [ADR-0006 업비트 클라이언트](../06-architecture/adr/0006-upbit-client.md)
 
 ## 1. 키 정책
 
@@ -38,7 +38,7 @@
 | 호가 | GET /v1/orderbook | 없음 | orderbook(초당 10, IP) | 페이퍼 체결 계산. 숫자는 JSON 숫자로 온다 |
 | 호가 단위 | GET /v1/orderbook/instruments | 없음 | orderbook | `tick_size`(2025-07-31 추가) |
 | 잔고(포켓 잔고) | GET /v1/accounts | 자산조회 | default(초당 30, 포켓) | 그 포켓의 잔고. 시작 점검, 대조, JOB-14 |
-| 주문 가능 정보 | GET /v1/orders/chance | 주문조회 | default | `bid_fee`, `ask_fee`, `market.bid.min_total`(매수), `market.ask.min_total`(매도), `market.max_total`, `market.state`, `bid_types`·`ask_types`. 매수 판단은 bid 값, 매도 판단은 ask 값을 쓴다(D-067 대기). `bid_types`에 `best_fok`가 없으면 그 코인 매수 보류 |
+| 주문 가능 정보 | GET /v1/orders/chance | 주문조회 | default | `bid_fee`, `ask_fee`, `market.bid.min_total`(매수), `market.ask.min_total`(매도), `market.max_total`, `market.state`, `bid_types`·`ask_types`. 매수 판단은 bid 값, 매도 판단은 ask 값을 쓴다(D-067). `bid_types`에 `best_fok`가 없으면 그 코인 매수 보류 |
 | 주문 생성 | POST /v1/orders | 주문하기 | order(초당 12, 포켓) | JSON만, `smp_type` 항상 명시, 자동 재시도 금지 |
 | 주문 검증 | POST /v1/orders/test | 주문하기 | order-test(초당 8, 포켓) | live-validate. 응답 UUID·identifier로 조회·취소 불가 |
 | 주문 조회 | GET /v1/order | 주문조회 | default | uuid 또는 identifier. 없으면 404 `order_not_found` |
@@ -46,7 +46,7 @@
 | 미체결 목록 | GET /v1/orders/open | 주문조회 | default | `states[]` wait·watch, limit 최대 100, page |
 | 종료 주문 | GET /v1/orders/closed | 주문조회 | default | 조회 구간 최대 7일, limit 최대 1,000 |
 | 주문 취소 | DELETE /v1/order | 주문하기 | default | uuid 또는 identifier. 쿼리 파라미터만 |
-| (쓰지 않음) 일괄 취소 | DELETE /v1/orders/open | 주문하기 | order-cancel-all(2초에 1회) | 최대 300건(기본 20), `pairs`로 코인 지정. identifier로 거를 수 없어 사용자가 직접 낸 주문까지 취소하므로 쓰지 않는다. 정지 때는 앱 주문만 `DELETE /v1/order?identifier=`로 하나씩 취소한다(D-069 대기) |
+| (쓰지 않음) 일괄 취소 | DELETE /v1/orders/open | 주문하기 | order-cancel-all(2초에 1회) | 최대 300건(기본 20), `pairs`로 코인 지정. identifier로 거를 수 없어 사용자가 직접 낸 주문까지 취소하므로 쓰지 않는다. 정지 때는 앱 주문만 `DELETE /v1/order?identifier=`로 하나씩 취소한다(D-069) |
 | 키 만료일 | GET /v1/api_keys | 인증만 | default | 1장 |
 
 ### 웹소켓

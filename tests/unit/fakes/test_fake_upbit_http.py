@@ -921,18 +921,15 @@ def test_same_header_twice_is_a_violation_regardless_of_case(env, headers):
 
 
 def test_content_type_twice_on_post_is_a_violation(env):
+    # 실제 서버는 Content-Type 중복에 400을 준다(헤더 중복 공지). 가짜는 위반으로 잡는다.
+    headers = [
+        ("Content-Type", "application/json"),
+        ("content-type", "application/json; charset=utf-8"),
+    ]
+
     async def scenario(w):
-        await expect_violation(
-            "duplicate_header",
-            w.order(
-                market_buy("uat-test-1"),
-                content_type=None,
-                headers=[
-                    ("Content-Type", "application/json"),
-                    ("content-type", "application/json; charset=utf-8"),
-                ],
-            ),
-        )
+        with pytest.raises(FakeProtocolViolation):
+            await w.order(market_buy("uat-test-1"), content_type=None, headers=headers)
 
     env.run(scenario, clean=False)
     assert "duplicate_header" in rules(env.server)

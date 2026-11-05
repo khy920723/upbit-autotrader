@@ -1,0 +1,70 @@
+# PR 열림·새 커밋·병합과 ci·build-exe 결과를 디스코드 채널로 알린다.
+# 필요한 비밀값: DISCORD_WEBHOOK_SECRET(디스코드 웹후크 URL, 저장소 Settings → Secrets and variables → Actions).
+# 비밀값이 없으면 아무것도 보내지 않고 성공으로 끝난다. 필수 검사가 아니라서 자동 병합을 막지 않는다.
+name: notify-discord
+
+on:
+  # 충돌 중인 PR에서도 돌도록 pull_request_target을 쓴다. PR 코드는 체크아웃하지 않는다.
+  pull_request_target:
+    types: [opened, reopened, synchronize, closed]
+  # workflow_run은 이 파일이 기본 브랜치(main)에 있을 때만 동작한다.
+  workflow_run:
+    workflows: [ci, build-exe]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    # 이 저장소 브랜치만 알린다(포크 PR 제외). 새 커밋으로 취소된 실행은 알리지 않는다.
+    if: >-
+      (github.event_name == 'pull_request_target'
+        && github.event.pull_request.head.repo.full_name == github.repository)
+      || (github.event_name == 'workflow_run'
+        && github.event.workflow_run.head_repository.full_name == github.repository
+        && github.event.workflow_run.conclusion != 'cancelled')
+    steps:
+      - name: 디스코드로 보내기
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_SECRET }}
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          MERGED: ${{ github.event.pull_request.merged }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK_SECRET 비밀값이 없어 건너뜀"
+            exit 0
+          fi
+          if [ "$EVENT" = "pull_request_target" ]; then
+            case "$ACTION" in
+              opened|reopened) head="🟡 PR #$PR_NUMBER 열림, 검사 시작" ;;
+              synchronize) head="🔄 PR #$PR_NUMBER 새 커밋, 검사 다시 시작" ;;
+              closed)
+                if [ "$MERGED" = "true" ]; then
+                  head="🟣 PR #$PR_NUMBER 병합됨"
+                else
+                  head="⚪ PR #$PR_NUMBER 병합 없이 닫힘"
+                fi ;;
+              *) exit 0 ;;
+            esac
+            msg="$head"$'\n'"$PR_TITLE"$'\n'"$PR_URL"
+          else
+            case "$RUN_CONCLUSION" in
+              success) head="✅ $RUN_NAME 성공" ;;
+              failure) head="❌ $RUN_NAME 실패" ;;
+              *) head="⚠️ $RUN_NAME $RUN_CONCLUSION" ;;
+            esac
+            msg="$head ($RUN_BRANCH)"$'\n'"$RUN_URL"
+          fi
+          # 멘션(@everyone 등)은 막는다. 제목 같은 외부 값은 env로만 넘겨 스크립트 주입을 막는다.
+          jq -n --arg content "$msg" '{content: $content, allowed_mentions: {parse: []}}' \
+            | curl -fsS -H "Content-Type: application/json" -d @- "$WEBHOOK" > /dev/null

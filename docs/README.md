@@ -34,7 +34,7 @@
 | | [설정 항목 정의서](03-functional/settings.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | 04 데이터 | [데이터 모델](04-data/data-model.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [로그·감사 기록 정의서](04-data/logging-audit.md) | 초안 |
-| 05 연동 | [업비트 API 연동 명세](05-integration/upbit-api.md) | 확정(2026-11 기준, 2026-11-05 재확인) |
+| 05 연동 | [업비트 API 연동 명세](05-integration/upbit-api.md) | 확정(2026-11 기준 사실, 2026-11-05 재확인, 결정 대기 있음) |
 | | [LLM 시그널 명세](05-integration/llm-signal.md) | 초안(1단계 확인 반영, 결정 대기 있음) |
 | | [뉴스 수집 명세](05-integration/news-collection.md) | 초안 |
 | | [텔레그램 연동 명세](05-integration/telegram.md) | 확정 |
@@ -46,7 +46,7 @@
 | | [법·약관·라이선스 검토](07-security-legal/legal-compliance.md) | 초안(일부 미확인) |
 | 08 품질 | [테스트 전략](08-quality/test-strategy.md) | 초안 |
 | | [테스트 시나리오](08-quality/test-scenarios.md) | 초안 |
-| | [페이퍼 운영 평가 기준](08-quality/paper-evaluation.md) | 확정 |
+| | [페이퍼 운영 평가 기준](08-quality/paper-evaluation.md) | 확정(결정 대기 있음) |
 | 09 운영 | [빌드·배포 절차](09-operations/build-release.md) | 확정 |
 | | [설치·초기 설정 가이드](09-operations/install-guide.md) | 초안 |
 | | [운영 런북](09-operations/runbook.md) | 초안 |

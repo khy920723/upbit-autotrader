@@ -38,7 +38,7 @@ stateDiagram-v2
     RUNNING --> PAUSED: 일시정지
     PAUSED --> RUNNING: 재개
     RUNNING --> BUY_BLOCKED: 일일 손실 한도·주문 수 상한
-    BUY_BLOCKED --> RUNNING: 09:00 KST 리셋
+    BUY_BLOCKED --> RUNNING: 09시 KST 리셋
     RUNNING --> DEGRADED: 시세 끊김·시계 오차
     PAUSED --> DEGRADED: 시세 끊김·시계 오차
     BUY_BLOCKED --> DEGRADED: 시세 끊김·시계 오차
@@ -136,7 +136,7 @@ stateDiagram-v2
     EXITING --> FLAT: 전량 체결
     EXITING --> HOLDING: 일부만 체결
     EXITING --> COOLDOWN: 손절 체결 + 재진입 제한 옵션
-    COOLDOWN --> FLAT: 시간 경과·09:00·재진입 허용 버튼
+    COOLDOWN --> FLAT: 시간 경과·09시·재진입 허용 버튼
     FLAT --> BLOCKED: 경고 종목·거래지원 종료 예정
     BLOCKED --> FLAT: 경고 해제
 ```

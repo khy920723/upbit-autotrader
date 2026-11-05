@@ -83,7 +83,7 @@
 ### FR-23 트레이와 중복 실행 방지
 
 - 창 닫기(X)는 트레이로 숨긴다. 종료는 트레이 메뉴에서만 하고 MSG-C005로 확인한다.
-- 두 번째 실행은 기존 창을 띄우고 바로 끝난다. 방법은 QLockFile(데이터 폴더의 `app.lock`) + QLocalServer다([시스템 구성도](../06-architecture/system-architecture.md) 8장, D-052).
+- 두 번째 실행은 기존 창을 띄우고 바로 끝난다. 방법은 QLockFile(데이터 폴더의 `app.lock`) + QLocalServer다([시스템 구성도](../06-architecture/system-architecture.md) 8장, 제안, D-052 대기).
 
 ### FR-24 백테스트
 

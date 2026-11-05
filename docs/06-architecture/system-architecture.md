@@ -51,8 +51,7 @@ flowchart TB
     MW <--> BR
     WZ <--> BR
     TR <--> BR
-    BR -- "명령<br/>run_coroutine_threadsafe" --> CORE
-    CORE -- "알림<br/>Qt 시그널(큐 연결)" --> BR
+    BR <-- "명령·알림" --> CORE
     SCH --> DEC
     DEC --> RULE
     DEC --> RISK
@@ -60,12 +59,13 @@ flowchart TB
     OM --> BRK
     BRK --> ADP
     DEC --> ADP
-    CORE --> DBW
-    CORE --> CFG
-    CORE -. 작업 스레드 .-> SEC
+    HC -- "설정 읽기" --> CFG
+    ADP -. "키 읽기(작업 스레드)" .-> SEC
     BR --> DBR
     BR --> PLT
 ```
+
+명령은 `run_coroutine_threadsafe`로 core 루프에 넣고, 알림은 Qt 시그널(큐 연결)로 GUI 스레드에 전한다(3장).
 
 | 구성 요소 | 책임 |
 |---|---|
@@ -219,7 +219,7 @@ class PublicIpResolver(Protocol):
     async def current_ipv4(self) -> str | None: ...   # 8장. 실패하면 None
 
 # ── 매매 핵심 ─────────────────────────────────────────────
-class EntryRule(Protocol):                           # ADR-0007 후보가 이 형태로 들어온다
+class EntryRule(Protocol):                           # ADR-0007 후보를 담기 위한 가안. 후보가 다른 입력(호가, 다른 마켓 캔들 등)을 쓰면 바꾼다
     name: str
     def required_candles(self) -> Mapping[CandleUnit, int]: ...
     def evaluate(self, market: str, candles: CandleSet, ticker: Ticker) -> RuleResult: ...
@@ -341,16 +341,16 @@ AutotraderError
 
 ## 8. 단일 인스턴스와 공인 IP 확인 (제안)
 
-### 단일 인스턴스 (D-052)
+### 단일 인스턴스 (D-052 대기)
 
-1. `QLockFile`로 `%LOCALAPPDATA%\upbit-autotrader\app.lock`을 잡는다. 이 잠금이 기준이다. 앱이 켜져 있는 내내 잡는 잠금이므로 `setStaleLockTime(0)`으로 두고 `tryLock`은 짧게 기다린다(Qt 문서 권장). 비정상 종료로 남은 잠금은 QLockFile이 파일에 적힌 프로세스 ID로 확인해 정리한다.
-2. 잠금을 잡은 프로세스는 `QLocalServer`(이름: `upbit-autotrader-` + 사용자별 해시)를 연다. 이 서버는 창을 띄우라는 신호를 받는 통로일 뿐이다. Windows에서는 두 서버가 같은 파이프 이름으로 동시에 listen할 수 있어 중복 실행 판정에 쓸 수 없다(Qt 문서). `removeServer`도 Windows에서는 아무 일도 하지 않는다.
+1. `QLockFile`로 `%LOCALAPPDATA%\upbit-autotrader\app.lock`을 잡는다. 이 잠금이 기준이다. 앱이 켜져 있는 내내 잡는 잠금이므로 `setStaleLockTime(0)`으로 두고 `tryLock`은 짧게 기다린다(Qt 문서 권장). 비정상 종료로 남은 잠금은 QLockFile이 파일에 적힌 정보로 판단해 지운다. 같은 PC(머신 ID로 비교)에서 부팅 ID가 다르거나, 적힌 프로세스 ID의 프로세스가 없거나 이름이 다르면 남은 잠금으로 본다.
+2. 잠금을 잡은 프로세스는 `QLocalServer`(이름: `upbit-autotrader-` + 사용자별 해시)를 연다. 이 서버는 창을 띄우라는 신호를 받는 데만 쓴다. Windows에서는 두 서버가 같은 파이프 이름으로 동시에 listen할 수 있고 들어온 연결은 그중 아무 서버로나 가므로, 중복 실행 판정에 쓸 수 없다(Qt 문서). `removeServer`도 Windows에서는 아무 일도 하지 않는다.
 3. 잠금을 못 잡은 두 번째 프로세스는 `getLockInfo`로 첫 프로세스의 ID를 읽고 `AllowSetForegroundWindow(그 ID)`를 부른 뒤, `QLocalSocket`으로 "show"를 보내고 바로 끝난다. 사용자가 방금 실행한 두 번째 프로세스는 앞으로 나올 권한이 있으므로 그 권한을 첫 프로세스에 넘겨 줄 수 있다.
 4. 첫 프로세스는 "show"를 받으면 창을 띄우고 앞으로 가져온다.
-5. 잠금을 못 잡았는데 서버에도 연결되지 않으면(남은 잠금을 정리하지 못한 경우) 사용자 확인을 받아 `removeStaleLockFile`로 정리하고 다시 시도한다. Qt 문서에 따르면 Windows에서 PC 이름에 ASCII 밖 문자(예: 한글)가 있으면 남은 잠금 감지가 잘 안 될 수 있다.
+5. 잠금을 못 잡았는데 서버에도 연결되지 않으면(남은 잠금을 정리하지 못한 경우) 사용자 확인을 받아 `removeStaleLockFile`로 정리하고 다시 시도한다. Windows에서는 잠금을 가진 프로세스가 아직 실행 중이면 이 호출이 실패한다. 잠금 파일에는 PC 이름(Windows는 `COMPUTERNAME`)을 UTF-8로 적고 같은 PC인지는 머신 ID로 판단하므로, PC 이름에 한글이 있어도 판단 방식은 같다.
 
 - 잠금이 DB와 주문을 지키는 장치다. 두 프로세스가 같은 DB에 주문을 쓰면 중복 주문이 날 수 있기 때문이다.
-- 출처: Qt 문서 QLockFile(doc.qt.io/qt-6.8/qlockfile.html), QLocalServer(doc.qt.io/qt-6.1/qlocalserver.html), Microsoft Learn AllowSetForegroundWindow. 이 세션에서는 웹 검색 요약으로만 확인했다(본문 직접 열람은 네트워크 정책으로 막힘). 2단계 구현 때 Windows 10에서 동작을 확인한다(TS-45).
+- 출처: Qt 6.12.0 소스의 문서 주석과 구현(qtbase 태그 v6.12.0의 `src/corelib/io/qlockfile.cpp`·`qlockfile_win.cpp`, `src/network/socket/qlocalserver.cpp`·`qlocalserver_win.cpp`). Microsoft Learn의 `AllowSetForegroundWindow` 본문은 이 세션의 네트워크 정책에서 열 수 없어 검색 요약으로만 확인했다(확인 필요). 2단계 구현 때 Windows 10에서 동작을 확인한다(TS-45).
 
 ### 공인 IP 확인 (D-051 대기)
 
@@ -379,6 +379,7 @@ AutotraderError
 | asyncio와 Qt 연결 | core 전용 스레드에서 asyncio 루프(3장, [ADR-0009](adr/0009-gui-asyncio-bridge.md)) | 대기(D-040) |
 | 업비트 클라이언트 | [ADR-0006](adr/0006-upbit-client.md) | 대기(D-038) |
 | 인터페이스 시그니처, 오류 타입 | 6·7장 | 유효(초안, 구현하면서 이름 조정 가능) |
+| EntryRule·ExitRule 입력 | 6장 가안(한 마켓의 캔들과 ticker) | 대기(ADR-0007, D-021) |
 | DB 접근 방식 | 표준 `sqlite3` + 직접 SQL([데이터 모델](../04-data/data-model.md) 1장) | 대기(D-041) |
-| 단일 인스턴스 | QLockFile + QLocalServer(8장) | 유효(초안, D-052) |
+| 단일 인스턴스 | QLockFile + QLocalServer(8장) | 대기(D-052) |
 | 공인 IP 확인 | 필요할 때만 외부 조회(8장) | 대기(D-051) |

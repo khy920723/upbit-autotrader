@@ -387,7 +387,7 @@ PK와 UNIQUE 제약(`orders.upbit_uuid`, `news_items.url`, `fills(identifier, tr
 |---|---|
 | 같음 | 그대로 진행 |
 | DB가 더 낮음 | `backup\pre-migrate-v{현재}-{시각}.db`로 백업(SQLite 백업 API) → 번호 순서대로 적용. 파일 하나를 한 트랜잭션으로 적용하고 같은 트랜잭션에서 `user_version`과 `schema_migrations`를 갱신 |
-| DB가 더 높음 | 앱보다 새 버전이 만든 DB다. 매매를 시작하지 않고 시작 점검 실패로 안내한다(새 버전을 쓰거나 백업 복원). [운영 런북](../09-operations/runbook.md) 3장의 되돌리기와 맞물린다 |
+| DB가 더 높음 | 앱보다 새 버전이 만든 DB다. 매매를 시작하지 않고 시작 점검 실패로 안내한다(새 버전을 쓰거나 백업 복원). 이전 버전 앱으로 되돌릴 때는 [운영 런북](../09-operations/runbook.md) 3장 5번에 따라 `backup\`의 이전 DB를 복원한다 |
 | 적용 중 오류 | 트랜잭션을 되돌리고 시작 점검 실패. 백업 파일 위치를 안내한다 |
 
 - 열 삭제·형식 변경은 SQLite 권장 절차(새 테이블 생성 → 복사 → 교체)로 한다.

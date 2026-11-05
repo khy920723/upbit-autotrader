@@ -1,6 +1,6 @@
 # 페이퍼 운영 평가 기준
 
-상태: 확정 · 관련: [위험 관리 정책서](../03-functional/risk-policy.md) 6장, [ADR-0003](../06-architecture/adr/0003-paper-first-risk-precedence.md)
+상태: 확정(체크리스트 A 확인 방법은 D-048 대기) · 관련: [위험 관리 정책서](../03-functional/risk-policy.md) 6장, [ADR-0003](../06-architecture/adr/0003-paper-first-risk-precedence.md)
 
 ## 1. 목적
 

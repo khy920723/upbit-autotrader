@@ -47,6 +47,11 @@
 | | [의존성 라이선스 목록](07-security-legal/dependency-licenses.md) | 초안 |
 | 08 품질 | [테스트 전략](08-quality/test-strategy.md) | 초안 |
 | | [테스트 시나리오](08-quality/test-scenarios.md) | 초안 |
+| | [요구사항 추적표](08-quality/traceability.md) | 초안 |
+| | [불변식 명세](08-quality/invariants.md) | 초안 |
+| | [가짜 구현 명세](08-quality/fakes-spec.md) | 초안 |
+| | [PR 검토 기준](08-quality/review-checklist.md) | 초안 |
+| | [Windows 10 수동 점검표](08-quality/manual-checklist-windows10.md) | 초안 |
 | | [페이퍼 운영 평가 기준](08-quality/paper-evaluation.md) | 확정(결정 대기 있음) |
 | 09 운영 | [빌드·배포 절차](09-operations/build-release.md) | 확정 |
 | | [설치·초기 설정 가이드](09-operations/install-guide.md) | 초안 |
@@ -68,5 +73,9 @@
 | NTF- | 알림 | 알림 정의서 |
 | RSK- | 리스크 | 리스크 관리 대장 |
 | TS- | 테스트 시나리오 | 테스트 시나리오 |
+| INV- | 불변식 | 불변식 명세 |
+| Q- | 명세 공백(결정 필요) | 요구사항 추적표 6장 |
+| RC- | PR 검토 항목 | PR 검토 기준 |
+| M- | 수동 점검 항목 | Windows 10 수동 점검표 |
 | D- | 결정 | 결정 로그 |
 | ADR- | 아키텍처 결정 | 결정 기록(ADR) |

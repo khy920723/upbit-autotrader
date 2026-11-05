@@ -36,6 +36,10 @@ class FakeClock:
     def exchange_now(self) -> datetime:
         return self.utc_now() + timedelta(seconds=self._exchange_offset)
 
+    def true_utc_now(self) -> datetime:
+        """PC 시계 오차를 뺀 실제 UTC 시각. 가짜 서버의 기준 시각용이고 앱 코드는 쓰지 않는다."""
+        return self._start_utc + timedelta(seconds=self._elapsed)
+
     def set_pc_offset(self, seconds: float) -> None:
         """PC 시계만 틀어진다(절대값)."""
         self._pc_offset = seconds

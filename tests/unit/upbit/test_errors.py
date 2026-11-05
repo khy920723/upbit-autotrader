@@ -213,6 +213,7 @@ def test_numeric_name_never_matches_a_string_name_table_entry():
 # --- message가 바뀌어도 같은 분류 ------------------------------------------------------------
 
 OTHER_NAMES = [name for name, _, _ in KNOWN_NAMES]
+KNOWN_NAME_SET = set(OTHER_NAMES)
 
 
 @given(
@@ -289,10 +290,12 @@ def test_to_error_never_raises_and_keeps_status_classes(status, body, remaining)
     assert error.http_status == status
     if status == 418:
         assert isinstance(error, UpbitBlocked)
-    elif status == 429:
-        assert isinstance(error, UpbitRateLimited)
-    elif status >= 500:
-        assert isinstance(error, UpbitServerError)
+    elif error.error_name not in KNOWN_NAME_SET:
+        # 표에 있는 이름과 5xx·429가 함께 오는 경우는 문서에 없으므로 여기서 정하지 않는다.
+        if status == 429:
+            assert isinstance(error, UpbitRateLimited)
+        elif status >= 500:
+            assert isinstance(error, UpbitServerError)
 
 
 # --- 429 ------------------------------------------------------------------------------------
@@ -341,6 +344,17 @@ def test_418_is_blocked_with_raw_body_and_retry_after(body, retry_after, expecte
     assert error.retry_after == expected
     assert error.raw_body == body.decode("utf-8")
     assert error.rate_group == "ticker"
+
+
+@pytest.mark.parametrize(
+    "name", ["too_many_requests", "invalid_parameter", "out_of_scope", 418], ids=str
+)
+def test_418_is_blocked_even_if_the_body_carries_a_name(name):
+    # 418은 모든 업비트 요청을 멈춰야 하므로 본문에 이름이 있어도 이름 표보다 상태가 먼저다.
+    error = to_error(418, error_body(name), headers(), group="order")
+
+    assert category(error) is UpbitBlocked
+    assert error.http_status == 418
 
 
 # --- rate_group·remaining_sec ---------------------------------------------------------------

@@ -848,7 +848,8 @@ def test_candle_group_spelling_in_a_response_only_warns(caplog):
 def test_429_raises_rate_limited_and_pauses_that_group_until_the_next_second():
     async def scenario():
         async with connect(
-            reply(429, content=b"", remaining="group=ticker; min=600; sec=0"),
+            # Remaining-Req 없이 429만 온다(sec=0으로 멈추는 경로와 섞이지 않게).
+            reply(429, content=b"", remaining=None),
             reply(remaining=DEFAULT_REMAINING),
             reply(remaining="group=ticker; min=600; sec=9"),
         ) as h:
@@ -938,23 +939,26 @@ def test_418_again_on_the_check_doubles_the_wait_and_a_success_resets_it():
     assert run(scenario) == [2, 2, 3, 4, 5]
 
 
-def test_requests_queued_by_the_rate_limit_do_not_go_out_after_a_418():
+def test_a_request_queued_by_the_rate_limit_does_not_go_out_after_a_418():
     # INV-13: 418이면 차단 시간 동안 요청이 0건이다. 한도 때문에 기다리던 요청도 나가지 않는다.
+    blocked = reply(418, content=b"", remaining=None)
+
     async def scenario():
         clock = FakeClock()
-        async with connect(reply(418, content=b"", remaining=None), clock=clock) as h:
-            tasks = [
-                asyncio.create_task(h.http.get("/v1/ticker", [("markets", "KRW-BTC")]))
-                for _ in range(6)
-            ]
-            await drive(clock, tasks, step=1 / 16, limit=10.0)
-            return [task.exception() for task in tasks], h.wire.sent_at
+        async with connect(*[reply(remaining=None)] * 5, blocked, reply(), clock=clock) as h:
+            for _ in range(5):  # ticker 그룹의 이번 초 몫(5)을 다 쓴다
+                await h.http.get("/v1/ticker", [("markets", "KRW-BTC")])
+            queued = asyncio.create_task(h.http.get("/v1/ticker", [("markets", "KRW-BTC")]))
+            await settle()  # 여섯 번째는 다음 초까지 한도 장치에서 기다린다
+            with pytest.raises(UpbitBlocked):
+                await h.http.get("/v1/accounts", auth=True)  # 그사이 다른 요청이 418을 받는다
+            await drive(clock, [queued], step=1 / 16, limit=10.0)
+            return queued.exception(), h.wire.sent_at
 
-    errors, sent_at = run(scenario)
+    error, sent_at = run(scenario)
 
-    assert all(isinstance(error, UpbitBlocked) for error in errors)
-    assert 1 <= len(sent_at) <= 5
-    assert set(sent_at) == {START}
+    assert isinstance(error, UpbitBlocked)
+    assert sent_at == [START] * 6  # 기다리던 요청은 차단 뒤 나가지 않았다
 
 
 # --- 비밀 -----------------------------------------------------------------------------------

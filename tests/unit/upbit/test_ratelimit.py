@@ -201,10 +201,10 @@ BURST_TASKS = st.lists(
     st.tuples(
         st.sampled_from(PER_SECOND_GROUPS),
         st.integers(min_value=0, max_value=40),  # 시작 시각(TICK 단위)
-        st.integers(min_value=1, max_value=8),  # 그 작업이 차례로 보내는 요청 수
+        st.integers(min_value=1, max_value=12),  # 그 작업이 차례로 보내는 요청 수
     ),
     min_size=1,
-    max_size=6,
+    max_size=8,
 )
 PAUSES = st.lists(
     st.tuples(st.sampled_from(PER_SECOND_GROUPS), st.integers(min_value=0, max_value=40)),
@@ -239,7 +239,7 @@ async def run_burst(tasks, pauses):
     return sends, paused_at
 
 
-@settings(max_examples=40, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@settings(max_examples=100, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 @given(tasks=BURST_TASKS, pauses=PAUSES)
 def test_concurrent_bursts_stay_within_half_of_the_limit_in_every_second(tasks, pauses):
     """INV-13·TS-143: 여러 작업이 동시에 내는 임의 요청 폭주에서도 창별 요청 수가 절반 이하."""

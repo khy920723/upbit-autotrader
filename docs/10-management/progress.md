@@ -23,6 +23,7 @@
   - 가짜: `slow`, `lookup_error`, `cancel_error`, `manual_order`, `exchange_only_order`, `balance_drift`, SMP `prevented`, 체결에 따른 잔고 변화, 실제 네트워크 차단 픽스처(fakes-spec 2.3).
   - 확인 필요(사용자 PC, 실제 키): 배열 파라미터의 `[]` 미인코딩이 실제로 통과하는지(upbit-api 3장), 418 응답의 실제 형식.
   - 새 개발 의존성은 넣지 않았다(asyncio 테스트는 표준 `asyncio.run`으로 했다).
+- PR #17 Windows 빌드 실패와 조치: 번들 검사가 "개발·빌드 전용 패키지가 번들에 들어갔습니다: _pytest, pygments"로 실패했다(job 127231215977). Linux에서 같은 실패를 재현하고 xref로 확인하니 `anyio._backends._asyncio`가 pytest 연동 함수 안에서 `_pytest.outcomes`를, httpx 명령줄 도구 `httpx._main`이 pygments를 끌어왔다(`hook-anyio`는 `anyio._backends`만 모은다). spec의 excludes에 `_pytest`, `pytest`, `httpx._main`, `pygments`를 더했다(`httpx/__init__.py`는 `_main` import의 ImportError를 처리한다). 번들 검사는 그대로다. 다시 빌드한 Linux exe의 self-test가 6/6 통과했고, 새 런타임 패키지 8개의 라이선스 파일이 번들의 `*.dist-info`에 들어 있음을 확인했다(NOTICE.txt가 그 위치와 certifi 소스 주소를 안내한다).
 - 다음 단계: 3b(시세·비공개 웹소켓, 재연결 뒤 REST 대조, D-079 공지 매수 차단, D-080 웹소켓 오류 처리, 웹소켓 가짜). 최신 main에서 새 브랜치로 한다.
 
 ## 2026-11-05 — 기획/문서: 분할 매매 결정 5건 반영(D-082~D-085, D-043) (클라우드 세션)

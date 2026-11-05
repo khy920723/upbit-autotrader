@@ -366,6 +366,13 @@ def test_analysis_excludes_build_only_packages(calls):
         "pkg_resources",
         "packaging",
         "PySide6.QtNetwork",
+        # anyio의 asyncio 백엔드가 pytest 연동 함수 안에서 `_pytest.outcomes`를 import한다.
+        "_pytest",
+        "pytest",
+        # httpx의 명령줄 도구(앱은 쓰지 않음)가 pygments·click·rich를 끌어온다.
+        # httpx/__init__.py는 이 import의 ImportError를 처리한다.
+        "httpx._main",
+        "pygments",
     } <= set(excludes)
     # typing_extensions는 anyio(httpx 의존성)가 런타임에 쓴다.
     assert "typing_extensions" not in excludes

@@ -168,6 +168,13 @@ a = Analysis(
         "pkg_resources",
         "packaging",
         "PySide6.QtNetwork",
+        # anyio의 asyncio 백엔드가 pytest 연동 함수 안에서만 `_pytest.outcomes`를 import한다.
+        "_pytest",
+        "pytest",
+        # httpx 명령줄 도구가 pygments·click·rich를 끌어온다. 앱은 쓰지 않고,
+        # httpx/__init__.py가 이 import의 ImportError를 처리한다.
+        "httpx._main",
+        "pygments",
     ],
     # LGPL-3.0 4(d)(1): PySide6·shiboken6의 Python 부분도 exe(PYZ) 밖 .py로 두어 바꿀 수 있게 한다.
     module_collection_mode={"PySide6": "py", "shiboken6": "py"},

@@ -96,16 +96,17 @@ asyncio 이벤트 루프를 GUI와 다른 스레드(core 스레드)에서 돌린
 - **넘기는 값:** 바뀌지 않는 스냅샷(frozen dataclass, Decimal, str)만 넘긴다. 가변 객체를 스레드 사이에 공유하지 않는다.
 - **양 조절:** 시세처럼 자주 바뀌는 값은 core가 코인별로 초당 1회 이하로 묶어 보낸다.
 - **긴급 정지:** "정지"·"정지 후 전량 매도"도 같은 명령 경로로 간다. core 루프가 GUI와 독립이라 화면이 바빠도 바로 처리된다.
+- **주문 직렬화:** core 안에서 주문을 만드는 코루틴은 코인별 `asyncio.Lock`을 거친다. 잠금 안에서는 DB에서 상태를 다시 읽어 위험 검사를 하고 CREATED 커밋까지 기다림 없이 처리한다. 사용자 명령(정지, 전량 매도, 선택 해제, 모드 전환)도 같은 잠금을 거친다([매매 로직 명세](../03-functional/trading-logic.md) 4장, D-066).
 
 ### 시작과 종료
 
 1. 시작: 단일 인스턴스 잠금(8장) → 설정 읽기 → QApplication 생성 → core 스레드 시작(루프 준비 완료 신호를 최대 10초 기다림) → 마법사 또는 대시보드 표시 → 시작 점검.
 2. 마법사의 키 검증도 core 명령(`validate_keys`)으로 한다. 네트워크 호출은 항상 core 스레드에서만 한다.
-3. 종료: 트레이 → 종료 → MSG-C005 확인 → `shutdown` 명령(스케줄러 정지, 작업 취소, 웹소켓·HTTP 종료, APP_STOP 기록, `clean_shutdown=1`, NTF-02는 최대 5초) → 루프 정지 → 스레드 join(최대 10초) → QApplication 종료.
+3. 종료: 트레이 → 종료 → MSG-C005 확인 → `shutdown` 명령(스케줄러 정지, 작업 취소, 웹소켓·HTTP 종료, APP_STOP 기록, `clean_shutdown=1`, NTF-02는 최대 5초) → 루프 정지 → 스레드 join(최대 10초) → QApplication 종료. join이 10초 안에 끝나지 않으면 로그를 비우고 프로세스를 강제로 끝낸다(`os._exit(1)`). 이때 `clean_shutdown`은 0으로 남아 다음 시작에서 비정상 종료로 기록하고 거래소 기준으로 대조한다. 강제 종료로 단일 인스턴스 잠금도 풀린다(D-067).
 
 ### 감시와 예외
 
-- core는 5초마다 heartbeat를 보낸다. 앱 계층이 30초 넘게 받지 못하면 화면과 트레이를 빨강으로 바꾸고 MSG-E016을 보이고 로그에 남긴다. 이때 손절도 멈춰 있을 수 있으므로 사용자가 앱을 다시 시작한다(시작 점검이 거래소 기준으로 맞춘다).
+- core는 5초마다 heartbeat를 보낸다. heartbeat에는 JOB-02(위험 점검)가 마지막으로 끝난 시각(monotonic)을 넣는다. 루프는 돌지만 JOB-02가 타임아웃 없는 기다림에 걸리면 heartbeat만으로는 알 수 없기 때문이다. JOB-02 완료가 180초 넘게 없으면 heartbeat가 끊긴 것과 같게 처리한다. 모든 외부 호출에는 타임아웃을 두고, 주기 작업 한 회차에는 전체 시간 상한(예: JOB-02 45초)을 둔다(D-067). 앱 계층이 heartbeat를 30초 넘게 받지 못하면 화면과 트레이를 빨강으로 바꾸고 MSG-E016을 보이고 로그에 남긴다. 이때 손절도 멈춰 있을 수 있으므로 사용자가 앱을 다시 시작한다(시작 점검이 거래소 기준으로 맞춘다).
 - core가 멈추면 core의 텔레그램 알림도 나가지 않는다. 그래서 앱 계층에 비상 전송 경로를 하나 둔다(제안, D-060 대기): 작업 스레드에서 텔레그램 `sendMessage`를 동기로 한 번 보내 NTF-21(MSG-E016)을 알린다. core와 상태를 나누지 않고 토큰은 keyring에서 직접 읽는다. "네트워크 호출은 core 스레드에서만" 규칙의 유일한 예외다. 대안은 heartbeat가 2분 넘게 없으면 앱이 스스로 다시 시작하는 것이다(시작 점검이 거래소 기준으로 대조).
 - core 작업의 예외는 작업 단위로 잡아 로그·이벤트로 남기고 다음 주기에 다시 한다. 위험 점검(JOB-02)과 주문 관리에서 3회 연속이면 HALTED로 간다(모든 모드, 이벤트 INTERNAL_ERROR, NTF-03·MSG-E017). 나머지 작업은 경고만 한다. HALTED에서는 손절도 멈추므로 이 규칙은 사용자 결정 대상이다(D-058 대기, [위험 관리 정책서](../03-functional/risk-policy.md) 2장).
 - GUI 쪽 예외는 `sys.excepthook`으로 로그에 남기고 core에 영향을 주지 않는다.
@@ -181,8 +182,7 @@ class ExchangeApi(Protocol):                         # 비공개 REST(키 필요
     async def list_open_orders(self, market: str | None = None) -> list[OrderSnapshot]: ...
     async def list_closed_orders(self, *, market: str | None,
                                  start: datetime, end: datetime) -> list[OrderSnapshot]: ...  # 최대 7일
-    async def cancel_order(self, *, identifier: str) -> OrderSnapshot: ...
-    async def cancel_open_orders(self, *, markets: Sequence[str]) -> CancelAllResult: ...      # 2초에 1회
+    async def cancel_order(self, *, identifier: str) -> OrderSnapshot: ...    # 정지 때 앱 주문만 하나씩(일괄 취소 API는 쓰지 않음)
     async def list_api_keys(self) -> list[ApiKeyInfo]: ...                     # GET /v1/api_keys(만료일)
 
 class PublicStream(Protocol):                        # wss://api.upbit.com/websocket/v1
@@ -235,7 +235,7 @@ class RiskManager(Protocol):                         # I/O 없는 순수 계산.
     def approve_buy(self, ctx: RiskContext, market: str) -> Approval | Rejection: ...
     def approve_sell_all(self, ctx: RiskContext, market: str, reason: SellReason) -> Approval | Rejection: ...
     # RiskContext: 설정 한도, 노출, 잔고, 일일 실현 손익, 일일 주문 수, 끝나지 않은 주문, 재진입 상태,
-    #              OrderChance(min_total, max_total, bid_fee), 매매 상태
+    #              OrderChance(bid_min_total, ask_min_total, bid_fee, ask_fee, max_total, state, bid_types), 매매 상태
 
 # ── 저장 ──────────────────────────────────────────────────
 class Repository(Protocol):                          # 쓰기 연결. core 스레드 전용, 메서드 하나 = 트랜잭션 하나
@@ -243,7 +243,9 @@ class Repository(Protocol):                          # 쓰기 연결. core 스�
     def transition_order(self, identifier: str, to_state: OrderState, *,
                          source: EventSource, exchange_state: str | None = None,
                          payload: Mapping[str, object] | None = None) -> None: ... # 상태 + order_events
-    def add_fill(self, fill: FillRecord) -> bool: ...                          # 이미 있으면 False
+    def apply_fill(self, fill: FillRecord, effect: FillEffect) -> bool: ...    # 체결 1건 반영. 이미 있으면 False(아무것도 안 바꿈)
+    # FillEffect: 주문 갱신(executed_*, paid_fee, 상태), 포지션 갱신, realized_pnl, round_trip 또는 None, daily_stats 증분.
+    # fills·orders·positions·round_trips·daily_stats를 한 트랜잭션으로 커밋한다(데이터 모델 1장, D-066)
     def unfinished_orders(self, market: str | None = None) -> list[OrderRecord]: ...
     def record_signal(self, s: SignalRecord) -> int: ...
     def record_decision(self, d: DecisionRecord) -> int: ...
@@ -274,7 +276,7 @@ class CoreObserver(Protocol):                        # core 스레드에서 불�
     def on_coin(self, snap: CoinSnapshot) -> None: ...          # 코인별 초당 1회 이하
     def on_event(self, ev: EventView) -> None: ...
     def on_check_report(self, report: CheckReport) -> None: ...
-    def on_heartbeat(self) -> None: ...                         # 5초마다
+    def on_heartbeat(self, last_risk_check_done: float | None) -> None: ...  # 5초마다. JOB-02 마지막 완료(monotonic)
 
 # ── 플랫폼(앱 계층, GUI 스레드) ──────────────────────────
 class Autostart(Protocol):
@@ -327,8 +329,8 @@ AutotraderError
 | 오류 | live 주문 생성(`POST /v1/orders`) 중이면 | 다른 호출이면(live-validate 주문 검증 포함) | 매매 상태 | 알림 |
 |---|---|---|---|---|
 | NetworkError, RequestTimeout | UNKNOWN(매매 로직 명세 9장) | 백오프 후 다시. 계속되면 SUSPENDED | 통신 불가가 이어지면 SUSPENDED | NTF-04 |
-| UpbitAuthError, UpbitPermissionError | REJECTED | 중단 | live 계열은 HALTED, paper·signal-only는 경고 | NTF-03 |
-| UpbitOrderRejected | REJECTED(error_name) | - | 유지. 잔고 부족이면 잔고 다시 조회 | NTF-18 |
+| UpbitAuthError, UpbitPermissionError | REJECTED | 중단 | live 계열은 HALTED, paper·signal-only는 경고. paper에 exit_only 실보유분이 있으면 그 주문만 멈추고 긴급 알림(D-064 대기) | NTF-03(paper의 exit_only는 NTF-23) |
+| UpbitOrderRejected | REJECTED(error_name). `duplicated_identifier`는 UNKNOWN(매매 로직 명세 8장) | - | 유지. 잔고 부족이면 잔고 다시 조회 | NTF-18 |
 | UpbitMarketOffline | REJECTED | - | 그 코인 매수만 보류 | NTF-18 |
 | UpbitNotFound | - | 조회면 `None`으로 바꾼다 | 유지 | - |
 | UpbitRateLimited(429) | REJECTED(RATE_LIMIT_429) | 다음 초에 같은 요청 | 유지, 그 그룹 요청 속도를 낮춤 | 반복되면 NTF-19 |
@@ -383,3 +385,5 @@ AutotraderError
 | DB 접근 방식 | 표준 `sqlite3` + 직접 SQL([데이터 모델](../04-data/data-model.md) 1장) | 대기(D-041) |
 | 단일 인스턴스 | QLockFile + QLocalServer(8장) | 대기(D-052) |
 | 공인 IP 확인 | 필요할 때만 외부 조회(8장) | 대기(D-051) |
+| 주문 직렬화(코인별 잠금), 체결 1건 반영 = 한 트랜잭션 | 3·6장 | 유효(초안, D-066) |
+| JOB-02 완료 시각 감시, 종료 시간 초과 시 강제 종료 | 3장 | 유효(초안, D-067) |

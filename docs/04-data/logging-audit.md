@@ -48,12 +48,16 @@
 | SMP_PREVENTED | 자전거래 방지로 주문 수량 일부가 취소됨 |
 | SETTING_EXTERNAL_CHANGE | 설정 파일이 앱 밖에서 바뀐 것을 감지 |
 | SCHEMA_MIGRATED | DB·설정 파일 마이그레이션 적용 |
-| CORE_UNRESPONSIVE | core 스레드 heartbeat 끊김(MSG-E016) |
+| CORE_UNRESPONSIVE | core 스레드 heartbeat 끊김, 또는 위험 점검(JOB-02)이 180초 넘게 끝나지 않음(MSG-E016) |
 | MANUAL_ORDER_DETECTED | 같은 포켓에서 앱이 만들지 않은 주문(`uat-` 접두어 없음, 예약 주문 포함)을 발견 |
 | BALANCE_RECONCILED | 대조로 보유 수량·평균 단가를 거래소 값으로 고침(MSG-W010) |
 | UNMANAGED_HOLDING | 선택하지 않은 코인의 보유분을 처음 발견 |
 | DUST_RECORDED | 팔 수 없는 잔량을 기록 |
 | INTERNAL_ERROR | 불변식 위반, 위험 점검·주문 관리 예외 3회 연속(MSG-E017) |
+| IDENTIFIER_CONFLICT | `duplicated_identifier`를 받고 조회한 주문이 이번 주문과 다름(버그) |
+| POSITION_RECALCULATED | 시작 점검에서 fills로 다시 계산한 포지션이 저장된 값과 달라 고침 |
+| ORDER_TYPE_UNSUPPORTED | 주문 가능 정보의 `bid_types`에 `best_fok`가 없어 그 코인 매수를 보류 |
+| EXIT_ONLY_BLOCKED | paper에서 exit_only 실보유분의 주문을 키·IP 오류로 낼 수 없음(MSG-E019) |
 
 ## 5. 보관과 공유
 

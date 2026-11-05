@@ -66,8 +66,15 @@ flowchart TD
 
 - 코인마다 포지션은 하나다. 보유 중에 다시 긍정이 나오면, 분할 매수를 쓸 때만 다음 회차로 산다(ADR-0008).
 - 매수와 매도 주문을 같은 코인에 동시에 걸지 않는다(자기체결 방지). 같은 코인에 끝나지 않은 주문(CREATED, SUBMITTED, OPEN, PARTIAL, UNKNOWN)이 있으면 새 주문을 만들지 않는다.
+- **코인별 직렬화(D-066):** 주문을 만드는 경로(JOB-02 손절·익절, JOB-03 매수·LLM 부정 매도, 정지·전량 매도·선택 해제 매도·모드 전환 매도, 429 재시도)는 코인별 잠금 하나를 거친다. 주문 가능 정보 같은 외부 조회는 잠금 전에 끝내고, 잠금 안에서 매매 상태·코인 상태·끝나지 않은 주문·재진입·노출을 DB에서 다시 읽어 위험 검사를 한 뒤 CREATED 커밋까지 기다림(await) 없이 처리한다. 전체 노출과 원화 잔고가 걸린 매수 승인은 전역 잠금으로 한 번에 하나씩 한다.
 - 꺼져 있던 동안 놓친 평가는 나중에 몰아서 실행하지 않는다.
 - live에서 paper로 바꿀 때 "실보유분은 손절·청산만 계속 관리"를 고르면, 그 실제 보유분은 mode=live 포지션(exit_only)으로 남아 손절·청산 대상이 된다. 신규 매수는 하지 않는다.
+- **exit_only 실보유분 관리(제안, D-064 대기):**
+  - exit_only 포지션이 하나라도 있으면 실행 모드와 상관없이 live와 같은 실자산 감시를 돌린다: 비공개 웹소켓(myOrder), JOB-05 주문 대조, JOB-14 키·IP·잔고 점검, 시작 점검의 키 검증과 잔고 대조.
+  - exit_only 주문은 실제 주문이다. LiveBroker로 `POST /v1/orders`에 보내고 identifier 글자는 `l`, `orders.mode=live`이며 9장 결과 불명 절차와 11장 재조정을 그대로 따른다.
+  - 키·IP 오류가 나면 HALTED로 가지 않고(가상 매매는 계속) exit_only 주문만 멈추며, 긴급 알림 MSG-E019(NTF-23)로 실보유분을 손절할 수 없다고 알린다(이벤트 EXIT_ONLY_BLOCKED).
+  - exit_only가 남아 있으면 paper에서 signal-only·live-validate로 바꾸지 못한다.
+  - "시장가 매도 후 전환"을 고르면 먼저 그 포지션들을 exit_only로 표시해 커밋한 뒤 매도한다. 매도가 끝나지 않거나 팔 수 있는 수량이 남으면 exit_only로 남는다(도중에 꺼져도 관리가 이어진다).
 
 ## 5. 시그널 유효 시간 (제안, D-045 대기)
 
@@ -111,8 +118,10 @@ flowchart TD
   - 주문 가능 원화는 live에서는 `/v1/orders/chance`의 `bid_account.balance`, paper·live-validate에서는 가상 잔고다.
   - `bid_fee`, `min_total`, `max_total`, `market.state`는 `/v1/orders/chance`에서 읽는다. 시작 점검 때와 주문 직전(10분 캐시)에 읽고 하드코딩하지 않는다.
   - 업비트 키 없이 paper로 운영하면 이 API를 부를 수 없다(주문조회 권한 필요). 이때만 공식 문서의 값(KRW 마켓 최소 주문 5,000원은 KRW 마켓 안내 문서, 수수료 0.05%와 최대 10억 원은 주문 가능 정보 API의 응답 예시)을 "추정값"으로 쓰고 화면·기록에 추정값임을 표시한다. 키를 넣으면 바로 API 값으로 바꾸고 예산 하한을 다시 검사한다. live 계열은 키가 필수이므로 추정값을 쓰지 않는다(제안, D-059 대기).
-- 승인 금액이 `min_total`(현재 5,000원) 미만이면 주문하지 않는다(RISK_MIN_ORDER). `max_total`(현재 10억 원)을 넘으면 거부한다.
-- **매도 수량**은 포지션 수량 전체다(live는 거래소 `balance`). 매도 금액(수량 × 현재가)이 `min_total` 미만이면 팔 수 없으므로 주문하지 않고 잔량으로 기록한다.
+- 승인 금액이 매수 `min_total`(`market.bid.min_total`, 현재 5,000원) 미만이면 주문하지 않는다(RISK_MIN_ORDER). `max_total`(현재 10억 원)을 넘으면 거부한다.
+- **첫 매수의 예산 하한(제안, D-063 대기):** 포지션이 FLAT일 때의 매수(첫 회차)는 승인 금액이 예산 하한(매도 `min_total`과 손절%로 그 자리에서 다시 계산, [위험 관리 정책서](risk-policy.md) 2장)보다 작으면 사지 않는다(RISK_BELOW_FLOOR). 원화 잔고, 전체 노출 상한, 남은 예산 때문에 승인 금액이 설정값보다 작아질 수 있기 때문이다. 추가 회차는 포지션이 커지기만 하므로 매수 `min_total`만 본다.
+- **매수·매도 값 구분(D-063):** 주문 가능 정보는 매수·매도 값을 따로 준다(`market.bid.min_total`·`market.ask.min_total`, `bid_fee`·`ask_fee`). 매수 승인은 bid 값, 매도 가능 판단·잔량 규칙·예산 하한은 ask `min_total`, 페이퍼 매도 수수료는 `ask_fee`를 쓴다. `market.bid_types`에 `best_fok`가 없으면 그 코인 매수를 보류하고 경고 이벤트 ORDER_TYPE_UNSUPPORTED를 남긴다.
+- **매도 수량**은 포지션 수량 전체다(live는 거래소 `balance`). 매도 금액(수량 × 현재가)이 매도 `min_total` 미만이면 팔 수 없으므로 주문하지 않고 잔량으로 기록한다.
 - 최유리 매수는 총액만, 시장가 매도는 수량만 보내므로 호가 단위 반올림이 필요 없다. 호가 단위는 페이퍼 체결 계산과 지정가를 쓰게 될 때만 쓴다. `GET /v1/orderbook/instruments`의 `tick_size`를 우선 쓰고, 실패하면 KRW 마켓 호가 단위 표를 쓴다.
 
 ## 8. 주문 흐름
@@ -149,6 +158,7 @@ sequenceDiagram
 
 - **자동 재시도 금지:** HTTP 클라이언트나 SDK의 자동 재시도는 주문 생성(POST)에 쓰지 않는다. 재시도가 필요한지는 주문 관리가 정한다.
 - **429:** 주문 생성이 429를 받으면 REJECTED(RATE_LIMIT_429)로 기록한다. 손절·청산 매도는 다음 초에 새 identifier로 위험 검사부터 다시 해서 보낸다. 거래소가 접수하지 않은 주문은 최소 주문 간격 계산에서 빠지므로 이 재시도는 60초 간격에 막히지 않는다(제안, D-061 대기). 조회(GET)의 429는 다음 초에 같은 요청을 다시 보낸다.
+- **`duplicated_identifier`(400, D-066):** 앱은 같은 identifier를 다시 보내지 않으므로, 이 오류는 같은 요청이 중간에서 한 번 더 전달돼 주문이 이미 접수됐을 가능성이 크다. REJECTED로 닫지 않고 UNKNOWN으로 두어 9장 절차로 확인한다. 찾은 주문의 market·side·ord_type이 이번 주문과 같고 생성 시각이 `submitted_at` 근처면 그 결과를 쓴다. 다르면(정말로 identifier가 겹친 경우) REJECTED(`reject_reason=DUPLICATED_IDENTIFIER`)로 닫고 이벤트 IDENTIFIER_CONFLICT를 남긴다.
 - **418:** REJECTED(RATE_LIMIT_418)로 기록하고 SUSPENDED로 간다. 응답에 담긴 차단 시간이 지난 뒤 CHECKING에서 대조한다.
 - **4xx:** `error.name`으로 처리한다. 인증 계열(`no_authorization_ip`, `expired_access_key`, `jwt_verification`, `invalid_query_payload`, `nonce_used`, `no_authorization_token`, `out_of_scope`)은 live 계열에서 HALTED로 간다([시스템 구성도](../06-architecture/system-architecture.md) 7장).
 - **paper:** 같은 흐름을 가상 거래소로 처리한다. 가상 거래소는 바로 결과를 돌려준다.
@@ -167,8 +177,8 @@ UNKNOWN이 되는 경우: 주문 생성 요청을 보낸 뒤 응답을 받지 �
 | 429, 5xx, 타임아웃, 네트워크 오류 | 세지 않는다. 다음 간격에 다시 조회한다 |
 | REJECTED 확정 | UNKNOWN이 된 지 60초가 지났고, "없음"을 3회 이상 받았고, 마지막 확인에서 `GET /v1/orders/uuids?identifiers[]=...`와 `GET /v1/orders/open?market=...`에도 없을 때. `reject_reason=NOT_FOUND_AFTER_UNKNOWN` |
 | myOrder 이벤트 | 같은 identifier의 이벤트가 오면 바로 반영하고 조회를 멈춘다 |
-| 늦게 나타난 주문 | REJECTED 확정 뒤 24시간 동안 JOB-05가 `/v1/orders/closed`(최근 구간)와 `/v1/orders/open`에서 그 identifier를 확인한다. 나타나면 실제 상태로 고치고 체결을 반영하며, 이벤트(ORDER_RECONCILED)와 경고를 남긴다 |
-| 알림 | 5분 넘게 풀리지 않으면 NTF-16(긴급) |
+| 늦게 나타난 주문 | REJECTED 확정 뒤 24시간 동안 JOB-05가 `GET /v1/orders/uuids?identifiers[]=...`(최대 100개)로 그 identifier를 직접 확인한다(`/v1/orders/closed`의 시각 구간은 주문 생성 시각 기준이라 놓칠 수 있다). 나타나면 실제 상태로 고치고 체결을 반영하며, 이벤트(ORDER_RECONCILED)와 경고를 남긴다 |
+| 알림 | 5분 넘게 풀리지 않으면 NTF-16(긴급). 앱 주문은 즉시 체결형이므로 OPEN·PARTIAL로 5분 넘게 남은 주문도 같은 알림을 보낸다(D-066) |
 | 그동안 | 같은 코인의 새 주문은 만들지 않는다(손절 포함). 다른 코인은 영향이 없다 |
 
 - 이 절차의 요청은 초당 1회를 넘지 않는다(default 그룹 한도는 포켓당 초당 30회).
@@ -184,7 +194,8 @@ UNKNOWN이 되는 경우: 주문 생성 요청을 보낸 뒤 응답을 받지 �
 | 상황 | 앱 주문 상태 | 비고 |
 |---|---|---|
 | POST 201 | 아래 state 표로 결정 | 응답은 그 순간의 모습이다. 최종 상태는 myOrder나 조회로 확인한다 |
-| POST 400·401·403·404(`error.name` 있음) | REJECTED | `error_name` 저장. 인증 계열은 HALTED(live 계열) |
+| POST 400·401·403·404(`error.name` 있음, `duplicated_identifier` 제외) | REJECTED | `error_name` 저장. 인증 계열은 HALTED(live 계열) |
+| POST 400 `duplicated_identifier` | UNKNOWN | 8장. 9장 절차로 확인하고, 이번 주문이 아니면 REJECTED(DUPLICATED_IDENTIFIER) |
 | POST 429 | REJECTED | `reject_reason=RATE_LIMIT_429` |
 | POST 418 | REJECTED | `reject_reason=RATE_LIMIT_418`, SUSPENDED |
 | POST 5xx, 타임아웃, 연결 끊김 | UNKNOWN | 9장. live의 `POST /v1/orders`에만 해당 |
@@ -206,11 +217,13 @@ UNKNOWN이 되는 경우: 주문 생성 요청을 보낸 뒤 응답을 받지 �
 | myOrder | `prevented` | - | 상태 유지(잔량이 없으면 뒤이어 `cancel`) | 변화 없음 | `prevented_volume` 기록, 경고 이벤트(SMP_PREVENTED) |
 | REST | 응답에 `prevented_volume` > 0 | - | 위 표대로 | | 경고 이벤트(SMP_PREVENTED) |
 | live-validate | 201 | - | 가상 체결 결과(FILLED 또는 CANCELLED) | 가상 포지션 | `test_uuid` 저장 |
+| live-validate | 매도 검증 400 `insufficient_funds_ask` | - | 가상 체결 결과(FILLED 또는 CANCELLED). REJECTED가 아니다 | 가상 포지션 | `error_name` 기록, `expected_reject=1`. 같은 매도를 다시 내지 않는다(D-066) |
 | paper | - | - | 가상 체결 결과 | 가상 포지션 | |
 
 - 코인 상태의 최종 기준은 체결(fills) 합계다. 주문 상태가 CANCELLED라도 체결분이 있으면 포지션에 반영한다.
-- 분할 매수의 추가 회차 주문이 진행되는 동안 코인 상태는 HOLDING을 유지하고 손절 점검 대상에서 빠지지 않는다.
-- **잔량(dust) 규칙:** 매도 체결 뒤 남은 수량의 평가금액(수량 × 현재가)이 매도 `min_total` 미만이면 그 수량을 팔 수 없는 잔량으로 보고 `positions.dust_volume`으로 옮긴 뒤 FLAT으로 바꾼다. 잔량은 손절·매수 판단에서 보유로 치지 않고, 다음 매수가 체결되면 포지션 수량에 합친다(그래야 다음 매도 때 함께 팔 수 있다). 포지션 전체 평가금액이 `min_total` 아래로 떨어져 손절 매도를 낼 수 없을 때도 같은 규칙으로 잔량으로 옮기고, 경고 이벤트(DUST_RECORDED)와 NTF-18(MSG-E013, 최소 주문 금액 미만)로 알린다.
+- 분할 매수의 추가 회차 주문이 진행되는 동안 코인 상태는 HOLDING을 유지한다. 그 주문이 끝날 때까지(보통 1초 안, UNKNOWN이면 9장 절차) 그 코인은 손절 주문을 낼 수 없고, 끝나는 즉시 손절을 다시 점검한다(D-066).
+- **최종 상태(D-066):** FILLED, CANCELLED, 다시 열지 않는 REJECTED는 최종 상태다. 그 뒤에 온 myOrder `trade`·`wait` 이벤트나 조회 결과는 체결만 fills에 더하고(`trade_uuid`로 중복 제거) 주문 상태는 바꾸지 않는다.
+- **잔량(dust) 규칙:** 매도 체결 뒤 남은 수량의 평가금액(수량 × 현재가)이 매도 `min_total` 미만이면 그 수량을 팔 수 없는 잔량으로 보고 `positions.dust_volume`으로 옮긴 뒤 FLAT으로 바꾼다. 잔량은 손절·매수 판단에서 보유로 치지 않고, 다음 매수가 체결되면 포지션 수량에 합친다(그래야 다음 매도 때 함께 팔 수 있다). 잔량의 원가는 FLAT이 될 때 실현 손실로 처리하고 잔량은 원가 0으로 남긴다(12장, 제안, D-063 대기). 포지션 전체 평가금액이 `min_total` 아래로 떨어져 손절 매도를 낼 수 없을 때도 같은 규칙으로 잔량으로 옮기고, 경고 이벤트(DUST_RECORDED)와 NTF-18(MSG-E013, 최소 주문 금액 미만)로 알린다.
 - **REJECTED 다시 열기:** `NOT_FOUND_AFTER_UNKNOWN`으로 닫은 주문이 9장 규칙에 따라 늦게 나타나면 REJECTED에서 실제 상태(OPEN, PARTIAL, FILLED, CANCELLED)로 고친다. 다른 이유의 REJECTED는 최종 상태다.
 - REST 응답에서 값이 NULL인 필드(예: 2026-11-09 전의 `smp_type`)는 아예 빠질 수 있다. 빠진 필드는 "모름"으로 다룬다.
 
@@ -223,20 +236,20 @@ UNKNOWN이 되는 경우: 주문 생성 요청을 보낸 뒤 응답을 받지 �
 | 시작 점검 6번(FR-02) | 주문 + 잔고 |
 | 웹소켓 재연결 뒤, 잠자기 복귀 뒤, SUSPENDED·HALTED·DEGRADED에서 CHECKING으로 갈 때 | 주문 + 잔고 |
 | JOB-05(30초) | 끝나지 않은 주문(CREATED, SUBMITTED, OPEN, PARTIAL, UNKNOWN)과 `NOT_FOUND_AFTER_UNKNOWN`으로 닫은 지 24시간이 안 된 주문 |
-| JOB-14(10분, live 계열) | 잔고(허용 IP·키 확인을 겸함) |
+| JOB-14(10분, live 계열. paper에 exit_only 실보유분이 있으면 paper에서도, D-064 대기) | 잔고(허용 IP·키 확인을 겸함) |
 
 **주문**
 
-1. 로컬에서 끝나지 않은 주문은 identifier로 조회해 10장 표로 맞춘다(`/v1/orders/uuids`로 최대 100개씩).
-2. 거래소 미체결 목록(`/v1/orders/open`, `states[]=wait&states[]=watch`)과 최근 종료 목록(`/v1/orders/closed`, 마지막 대조 시각부터, 최대 7일 구간. `start_time`은 밀리초 타임스탬프로 보낸다. ISO 8601도 받지만 `:`·`+`가 들어가 인코딩 실수가 생기기 쉽다)에서 `uat-` 접두어인데 로컬에 없는 주문은 들여온다(`decision_id` NULL, source=reconcile, 경고 이벤트 ORDER_IMPORTED). DB를 백업에서 복원했을 때 생길 수 있다.
+1. 로컬에서 끝나지 않은 주문은 identifier로 조회해 10장 표로 맞춘다(`/v1/orders/uuids`로 최대 100개씩). 목록 조회는 체결 목록(trades)을 주지 않으므로, 응답의 `executed_volume`이 fills 합계와 다르면 그 주문을 `GET /v1/order?identifier=...`로 다시 조회해 `trades`로 fills를 채운다(`UNIQUE(identifier, trade_uuid)`로 중복 방지). REST 체결에는 수수료가 없으므로 주문의 `paid_fee`를 체결 금액 비율로 나눠 넣고(마지막 체결에 나머지), `is_maker`는 NULL, `source=api`로 둔다(D-066).
+2. 거래소 미체결 목록(`/v1/orders/open`, `states[]=wait&states[]=watch`)과 최근 종료 목록(`/v1/orders/closed`, 마지막 대조 시각(`app_meta.last_order_reconcile_at`)부터, 최대 7일 구간. 공백이 7일보다 길면 7일씩 나눠 조회한다. `start_time`은 밀리초 타임스탬프로 보낸다. ISO 8601도 받지만 `:`·`+`가 들어가 인코딩 실수가 생기기 쉽다)에서 `uat-` 접두어인데 로컬에 없는 주문은 들여온다(`orders.source=reconcile`, `purpose=IMPORTED`, `decision_id` NULL, 경고 이벤트 ORDER_IMPORTED). DB를 백업에서 복원했을 때 생길 수 있다. 한 주문을 들여오다 실패하면 그 주문만 건너뛰고 이벤트를 남기며, 내부 오류 연속 횟수(D-058)에는 세지 않는다. 대조가 끝나면 마지막 대조 시각을 갱신한다(D-066).
 3. `uat-` 접두어가 없는 미체결 주문(같은 포켓에서 사용자가 직접 낸 주문)은 관리하지 않는다. 선택한 코인의 주문이면 경고 이벤트 MANUAL_ORDER_DETECTED를 남긴다(자기체결 위험).
 
 **잔고**
 
 1. 선택 코인의 보유 수량은 거래소 `balance + locked`, 평균 단가는 `avg_buy_price`(`unit_currency`가 KRW일 때)다.
-2. 로컬 수량과 다르면 거래소 값으로 덮어쓰고, 원가(`cost_krw`)를 수량 × 평균 단가 × (1 + `bid_fee`)로 다시 계산해 `cost_estimated=1`로 표시한다. 이벤트 BALANCE_RECONCILED를 남기고 MSG-W010(NTF-20)으로 알린다.
+2. 거래소 수량을 로컬의 `volume + dust_volume`(잔량 포함)과 비교한다. 다르면 거래소 값으로 덮어쓰고, 원가(`cost_krw`)를 수량 × 평균 단가 × (1 + `bid_fee`)로 다시 계산해 `cost_estimated=1`로 표시한다. 이벤트 BALANCE_RECONCILED를 남기고 MSG-W010(NTF-20)으로 알린다.
 3. 차이 무시 기준: 수량 차이가 0.00000001 이하이거나 평가금액 차이가 1원 미만.
-4. 선택하지 않은 코인의 보유분은 관리하지 않는다. 처음 발견했을 때만 경고 이벤트 UNMANAGED_HOLDING으로 남긴다.
+4. 선택하지 않은 코인의 보유분은 관리하지 않는다. 처음 발견했을 때만 경고 이벤트 UNMANAGED_HOLDING으로 남긴다. 보유 중인 코인을 선택에서 빼면 MSG-C007로 처리를 고르게 하고, 응답 전까지는 계속 관리한다(제안, D-064 대기).
 5. KRW 잔고는 화면 표시와 매수 가능 금액 계산에만 쓴다.
 
 ## 12. 손익 계산 (D-056)
@@ -244,10 +257,11 @@ UNKNOWN이 되는 경우: 주문 생성 요청을 보낸 뒤 응답을 받지 �
 - **평균 단가(avg_price):** 수수료를 뺀 매수 체결가의 가중 평균이다. 손절·익절의 기준이다. live는 대조할 때 거래소 `avg_buy_price`로 맞춘다.
 - **원가(cost_krw):** 매수 체결 금액과 매수 수수료의 합이다. 매도할 때마다 판 수량 비율만큼 줄인다.
 - **실현 손익(매도 체결 1건)** = 매도 금액 − 매도 수수료 − 원가 × (판 수량 ÷ 매도 직전 수량).
-- **일일 실현 손실**은 그날(09:00 KST 기준) 매도 체결 가운데 실현 손익이 음수인 것의 절댓값 합이다. 이익이 난 체결과 상계하지 않는다([위험 관리 정책서](risk-policy.md) 2장의 "실현 손실 합계"). 일일 손실 한도는 이 값이 한도 이상인지로 판단한다(Decimal, 반올림 전).
+- **일일 실현 손실**은 그날(09:00 KST 기준) 매도 체결 가운데 실현 손익이 음수인 것의 절댓값 합이다. 이익이 난 체결과 상계하지 않는다([위험 관리 정책서](risk-policy.md) 2장의 "실현 손실 합계"). 일일 손실 한도는 이 값이 한도 이상인지로 판단한다(Decimal, 반올림 전). 아래 잔량 원가 제안(D-063)을 채택하면 매도 없이 잔량으로 옮긴 포지션의 원가도 더한다.
 - **일일 실현 손익(순)**은 이익과 손실을 합친 값으로, 화면·일일 요약·평가 지표에만 쓴다.
 - **평가손실률** = (현재가 − 평균 단가) ÷ 평균 단가 × 100. 현재가는 시세 웹소켓 ticker의 `trade_price`, DEGRADED에서는 REST 현재가다.
-- 최소 주문 금액 미만이라 팔지 못한 잔량은 `round_trips.dust_volume`에 남기고, 평가손익에는 현재가로 포함한다.
+- 최소 주문 금액 미만이라 팔지 못한 잔량은 `round_trips.dust_volume`에 남긴다.
+- **잔량 원가(제안, D-063 대기):** 잔량의 원가(잔량으로 옮길 때 남아 있는 `cost_krw`)는 포지션이 FLAT이 될 때 실현 손실로 처리하고, 잔량은 원가 0으로 남긴다. 매도 체결로 FLAT이 되면 그 체결의 실현 손익에서 잔량 원가도 뺀다. 매도 없이 잔량으로 옮기면(포지션 전체가 매도 `min_total` 미만) 그 원가를 round_trips와 그날 일일 실현 손실에 더한다. 다음 매수에 합칠 때 평균 단가는 잔량의 평균 단가와 새 매수 체결가를 수량으로 가중 평균하고, 원가에는 새 매수분만 더한다. live는 대조 때 거래소 `avg_buy_price`로 맞춘다.
 
 ## 13. 이유 코드 (초안)
 
@@ -259,7 +273,7 @@ UNKNOWN이 되는 경우: 주문 생성 요청을 보낸 뒤 응답을 받지 �
 | LOW_CONFIDENCE | 긍정·부정이지만 확신도가 임계값 미만 | HOLD |
 | NOT_RUNNING | 긍정이지만 RUNNING이 아님 | HOLD |
 | RULE_NOT_MET | 규칙 조건 미충족 | HOLD |
-| RISK_BUDGET, RISK_EXPOSURE, RISK_MIN_ORDER, RISK_ORDER_INTERVAL, RISK_DAILY_ORDERS, RISK_DAILY_LOSS, RISK_PENDING_ORDER, RISK_REENTRY, RISK_KRW_BALANCE | 위험 한도 거부 | HOLD |
+| RISK_BUDGET, RISK_EXPOSURE, RISK_MIN_ORDER, RISK_BELOW_FLOOR, RISK_ORDER_INTERVAL, RISK_DAILY_ORDERS, RISK_DAILY_LOSS, RISK_PENDING_ORDER, RISK_REENTRY, RISK_KRW_BALANCE | 위험 한도 거부(RISK_BELOW_FLOOR는 첫 매수 금액이 예산 하한 미만, D-063 대기) | HOLD |
 | LLM_NEGATIVE | 부정(확신도 ≥ 임계값). 매도 옵션이 꺼져 있으면 HOLD, 켜져 있고 보유 중이면 SELL | HOLD 또는 SELL |
 | ENTRY | 매수 | BUY |
 | STOP_LOSS, TAKE_PROFIT, RULE_EXIT, LIQUIDATE, DESELECT_SELL, MODE_EXIT_SELL | 매도 이유 | SELL |
@@ -273,7 +287,8 @@ UNKNOWN이 되는 경우: 주문 생성 요청을 보낸 뒤 응답을 받지 �
 | RATE_LIMIT_418 | 주문 생성이 418(일시 차단) |
 | NOT_FOUND_AFTER_UNKNOWN | 결과 불명 확인 절차(9장)에서 주문을 찾지 못함. 24시간 안에 나타나면 다시 연다 |
 | VALIDATE_TIMEOUT | live-validate 주문 검증의 타임아웃·5xx, 또는 재시작 때 남은 검증 주문 |
-| VALIDATE_ERROR | live-validate 주문 검증이 4xx로 거절(예상된 `insufficient_funds_ask`는 `expected_reject=1`) |
+| VALIDATE_ERROR | live-validate 주문 검증이 4xx로 거절. 매도 검증의 예상된 `insufficient_funds_ask`는 REJECTED가 아니라 가상 체결로 처리하고 `expected_reject=1`만 남긴다(10장) |
+| DUPLICATED_IDENTIFIER | `duplicated_identifier`를 받고 조회한 주문이 이번 주문과 다름(버그, 8장) |
 | PAPER_RESTART | paper 주문이 전송 전에 앱이 꺼져 남음 |
 
 ## 14. 의사코드
@@ -288,7 +303,7 @@ on_signal_tick(coin):
     if sig.signal == POSITIVE and sig.confidence >= cfg.confidence_threshold:
         if trading_state != RUNNING: record_decision(coin, HOLD, "NOT_RUNNING"); return
         if not rules.entry_ok(coin, features): record_decision(coin, HOLD, "RULE_NOT_MET"); return
-        order = risk.approve_buy(coin)          # 거부하면 RISK_* 이유 코드
+        order = risk.approve_buy(coin)          # 코인별 잠금 안에서 다시 읽고 검사. 거부하면 RISK_* 이유 코드(첫 매수는 예산 하한 포함)
         if order.rejected: record_decision(coin, HOLD, order.reason); return
         orders.submit(order)                    # 최유리 FOK, 미체결이면 그 평가는 끝
     elif sig.signal == NEGATIVE and sig.confidence >= cfg.confidence_threshold:
@@ -304,8 +319,8 @@ every 60s (JOB-02):
         for coin in holdings():
             if unrealized_pct(coin) <= -cfg.stop_loss_pct: notify_once(NTF_17, coin)
         return
-    if trading_state in (SUSPENDED, HALTED, LIQUIDATING): return
-    # RUNNING, PAUSED, BUY_BLOCKED, DEGRADED(DEGRADED는 REST 현재가 사용)
+    if trading_state not in (RUNNING, PAUSED, BUY_BLOCKED, DEGRADED): return
+    # STARTING·CHECKING(대조 전), SUSPENDED, HALTED, LIQUIDATING은 손절 주문 없음. DEGRADED는 REST 현재가 사용
     for coin in holdings():                     # live→paper 후 남긴 실보유분 포함
         if has_unfinished_order(coin): continue # UNKNOWN·미체결이 있으면 새 주문 없음
         pnl = unrealized_pct(coin)
@@ -332,3 +347,7 @@ every 60s (JOB-02):
 | 손익 계산(일일 손실은 손실만 합산) | 12장 | 유효(초안, D-056) |
 | 키 없는 paper의 수수료·최소 주문 금액 | 공식 문서 값을 추정값으로(7장) | 대기(D-059) |
 | 거절된 주문과 최소 주문 간격 | 거래소가 접수한 주문만 셈(8장) | 대기(D-061) |
+| 첫 매수의 예산 하한, 매수·매도 값 구분, 잔량 원가 | 7·10·12장 | 대기(D-063) |
+| exit_only 실보유분 관리, 보유 코인 선택 해제 | 4·11장 | 대기(D-064) |
+| 정지·전량 매도(정지 상태 먼저 저장, 앱 주문만 취소, 주문 수 상한 예외, 대기 후 매도) | [위험 관리 정책서](risk-policy.md) 3장 | 대기(D-065) |
+| 코인별 직렬화, duplicated_identifier, 최종 상태, 체결 복구, 들여온 주문 | 4·8~11장 | 유효(초안, D-066) |

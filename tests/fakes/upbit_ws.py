@@ -12,18 +12,31 @@ headers=...)`가 `FakeWsConnection`(send/recv/ping/close/close_code)을 돌려�
 - 서명은 앱 코드를 쓰지 않고 여기서 따로 검증한다(PyJWT 디코드).
 - 계약 전체는 tests/unit/fakes/test_fake_upbit_ws.py 맨 위 docstring에 있다.
 
+사용법: 가짜 하나는 asyncio.run 하나 안에서 쓴다(첫 connect의 이벤트 루프를 기억하고 다른
+루프에서 connect하면 RuntimeError). 시간은 `await clock.run_for(...)`로 움직인다.
+`FakeClock(auto_advance=True)`는 받지 않는다(ValueError): 백그라운드 태스크(120초 감시,
+status UP)가 sleep할 때마다 시간을 당긴다.
+
 문서에 없어 가짜가 정한 것(가정):
 - 120초 무송수신 끊김의 종료 코드는 1001, ws_drop은 1006(close 프레임 없는 끊김)이다.
 - "PING" 문자열의 첫 `{"status":"UP"}`은 첫 PING 10초 뒤다(녹화에 PING 시각이 없어 가장 늦은 경우).
 - 같은 연결의 새 구독은 앞 구독을 바꾼다. 한 요청에 같은 type이 둘이면 형식 위반으로 본다.
 - announcement의 빈 categories 배열은 뜻이 문서에 없어 형식 위반으로 본다.
 - myOrder의 state가 trade가 아니면 trade_uuid·trade_fee·is_maker·trade_timestamp는 null이다.
+- myOrder 기본값: trade면 trade_uuid는 메시지마다 새 UUID(seed로 정해짐), trade_timestamp는 지금.
+  order_timestamp는 주문 uuid마다 처음 보낸 시각을 기억해 쓴다. state가 prevented가 아니면
+  prevented_volume·prevented_locked는 0이다. 준 값은 그대로 쓴다.
+- ticker의 trade_timestamp·trade_date·trade_time(UTC)은 지금 시각을 넘지 않게 지금으로 맞춘다
+  (녹화 체결 시각이 가짜 시계보다 늦을 때). push_ticker로 셋 중 하나라도 주면 준 값 그대로 쓴다.
+- 같은 연결의 recv를 동시에 두 번 부르면 websockets 17.4처럼 ConcurrencyError(RuntimeError 하위,
+  websockets의 클래스)를 던지고 `concurrent_recv` 위반을 남긴다.
 - delisting_date는 "YYYY-MM-DD" 문자열이다(문서 예시는 null뿐).
 - 연결 객체의 백그라운드 타이머(120초, status UP)는 connect를 부른 이벤트 루프의 태스크다.
   같은 asyncio.run 안에서만 쓴다.
 """
 
 import asyncio
+import contextlib
 import json
 import random
 import re
@@ -42,13 +55,19 @@ from websockets.exceptions import ConcurrencyError
 
 from autotrader.core.errors import StreamClosed, StreamConnectFailed
 from autotrader.core.models import UpbitCredentials
-from fakes.canary import make_upbit_credentials
+from fakes.canary import MIN_CANARY_LENGTH, find_canaries, make_upbit_credentials
 from fakes.clock import FakeClock
 from fakes.upbit_http import FakeProtocolViolation
-from fakes.upbit_json import RawNumber, fmt_decimal, loads_raw
+from fakes.upbit_json import RawNumber, dumps, loads_raw
 from fakes.upbit_orders import kst_text, seeded_uuid_factory
 
-__all__ = ["FakeProtocolViolation", "FakeUpbitWs", "FakeWsConnection", "WsConnectionRecord"]
+__all__ = [
+    "ConcurrencyError",
+    "FakeProtocolViolation",
+    "FakeUpbitWs",
+    "FakeWsConnection",
+    "WsConnectionRecord",
+]
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "upbit"
 DOCS_EXAMPLES = FIXTURES / "docs_examples"
@@ -93,6 +112,8 @@ ASK_BID = ("BID", "ASK")
 ORDER_TYPES = ("limit", "price", "market", "best")
 EVENT_TYPES = ("CREATED", "UPDATED")
 NULL_UNLESS_TRADE = ("trade_uuid", "trade_fee", "is_maker", "trade_timestamp")
+PREVENTED_FIELDS = ("prevented_volume", "prevented_locked")
+TRADE_TIME_FIELDS = frozenset({"trade_timestamp", "trade_date", "trade_time"})
 SERVER_FIELDS = frozenset({"type", "code", "timestamp", "stream_type"})  # 가짜가 정하는 값
 ASSET_KEYS = frozenset({"currency", "balance", "locked"})
 
@@ -107,6 +128,8 @@ ERROR_MESSAGES = {
     "TOO_MANY_REQUEST": "요청 수 제한을 초과했습니다.",
 }
 UNKNOWN_ERROR_MESSAGE = "알 수 없는 오류입니다."
+# D-080: 이 오류(와 모르는 이름) 뒤에는 같은 요청을 되풀이하지 않는다.
+FORMAT_ERRORS = frozenset({"WRONG_FORMAT", "NO_TICKET", "NO_TYPE", "NO_CODES", "INVALID_PARAM"})
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
@@ -119,29 +142,8 @@ def _load_plain(path: Path) -> Any:
 
 
 def _dumps(value: Any) -> str:
-    """녹화처럼 공백 없는 JSON. RawNumber는 원문, Decimal은 지수 없는 표기, float는 거부."""
-    if value is None:
-        return "null"
-    if value is True:
-        return "true"
-    if value is False:
-        return "false"
-    if isinstance(value, RawNumber):
-        return str(value)
-    if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, Decimal):
-        return fmt_decimal(value)
-    if isinstance(value, float):
-        raise TypeError("float는 쓰지 않는다(Decimal이나 RawNumber를 쓴다)")
-    if isinstance(value, Mapping):
-        items = (f"{json.dumps(str(k), ensure_ascii=False)}:{_dumps(v)}" for k, v in value.items())
-        return "{" + ",".join(items) + "}"
-    if isinstance(value, list | tuple):
-        return "[" + ",".join(_dumps(item) for item in value) + "]"
-    raise TypeError(f"직렬화할 수 없는 값: {type(value).__name__}")
+    """녹화처럼 공백 없는 JSON(fakes.upbit_json.dumps)."""
+    return dumps(value, compact=True)
 
 
 def _check_stream(stream: str | None) -> None:
@@ -156,33 +158,53 @@ def _check_market(market: Any) -> None:
         raise ValueError(f"마켓 코드 모양(KRW-BTC)이 아니다: {market!r}")
 
 
-def _check_scalar(name: str, value: Any) -> Any:
-    """주입 값 검사: float는 TypeError. date는 'YYYY-MM-DD'로 바꾼다."""
+def _check_number(name: str, value: Any) -> Any:
+    """숫자 값: Decimal(유한)·RawNumber(JSON 숫자 토큰)·int만. bool·문자열·float는 TypeError."""
     if isinstance(value, float):
         raise TypeError(f"{name}: float는 쓰지 않는다(Decimal이나 RawNumber를 쓴다)")
+    if isinstance(value, bool) or not isinstance(value, Decimal | RawNumber | int):
+        raise TypeError(f"{name}: 숫자(Decimal·RawNumber·int)여야 한다: {type(value).__name__}")
+    if isinstance(value, Decimal) and not value.is_finite():
+        raise ValueError(f"{name}: 유한한 Decimal만 쓴다: {value}")
+    if isinstance(value, RawNumber) and not JSON_NUMBER.fullmatch(value):
+        raise ValueError(f"{name}: JSON 숫자 토큰이 아니다: {value!r}")
+    return value
+
+
+def _check_scalar(name: str, value: Any) -> Any:
+    """숫자가 아닌 필드의 주입 값. date는 'YYYY-MM-DD'로 바꾸고 숫자는 _check_number로 본다."""
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str) and not isinstance(value, RawNumber):
+        return value
     if isinstance(value, datetime):
         raise TypeError(f"{name}: datetime이 아니라 date를 쓴다")
     if isinstance(value, date):
         return value.isoformat()
-    if isinstance(value, Decimal):
-        if not value.is_finite():
-            raise ValueError(f"{name}: 유한한 Decimal만 쓴다: {value}")
-        return value
-    if isinstance(value, RawNumber):
-        if not JSON_NUMBER.fullmatch(value):
-            raise ValueError(f"{name}: JSON 숫자 토큰이 아니다: {value!r}")
-        return value
-    if value is None or isinstance(value, bool | int | str):
-        return value
-    raise TypeError(f"{name}: 쓸 수 없는 값 타입 {type(value).__name__}")
+    return _check_number(name, value)
 
 
-def _check_number(name: str, value: Any) -> Any:
-    if isinstance(value, bool) or not isinstance(value, Decimal | RawNumber | int):
-        if isinstance(value, float):
-            raise TypeError(f"{name}: float는 쓰지 않는다")
-        raise TypeError(f"{name}: 숫자(Decimal·RawNumber·int)여야 한다: {type(value).__name__}")
-    return _check_scalar(name, value)
+def _check_field(name: str, value: Any, *, numeric: bool, nullable: bool = False) -> Any:
+    """예시에서 숫자 토큰인 필드(numeric)는 숫자만(nullable이면 None도) 받는다."""
+    if not numeric:
+        return _check_scalar(name, value)
+    if value is None and nullable:
+        return None
+    return _check_number(name, value)
+
+
+def _check_times(times: Any) -> None:
+    if times is None:
+        return
+    if isinstance(times, bool) or not isinstance(times, int):
+        raise TypeError(f"times는 정수나 None이다: {times!r}")
+    if times < 1:
+        raise ValueError(f"times는 1 이상이다: {times}")
+
+
+def _request_key(objects: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    """구독 요청의 Data Type 목록(ticket·Format 제외, 순서 무시)."""
+    return tuple(sorted(json.dumps(obj, sort_keys=True, ensure_ascii=False) for obj in objects))
 
 
 @dataclass(repr=False, eq=False)
@@ -195,7 +217,8 @@ class WsConnectionRecord:
     opened_at: float  # 시도 시각(monotonic)
     accepted: bool = False
     received: list[tuple[float, str | bytes]] = field(default_factory=list)
-    delivered: list[tuple[float, str]] = field(default_factory=list)
+    # 보낸 프레임. 바이너리도 텍스트로 남긴다(ws_raw의 UTF-8 아닌 bytes만 bytes 그대로).
+    delivered: list[tuple[float, str | bytes]] = field(default_factory=list)
     pings: list[float] = field(default_factory=list)
     closed_at: float | None = None
     close_code: int | None = None
@@ -220,6 +243,7 @@ class _ErrorInjection:
     message: str | None
     stream: str | None
     close_code: int | None
+    times: int | None  # None이면 계속
 
 
 @dataclass
@@ -238,6 +262,7 @@ class FakeWsConnection:
         self.stream: str = record.stream or ""
         self._inbox: deque[str | bytes] = deque()
         self._waiters: list[asyncio.Future[None]] = []
+        self._receiving = False
         self._tasks: list[asyncio.Task[None]] = []
         self._message_times: list[float] = []
         self._pause_until: float | None = None
@@ -264,17 +289,26 @@ class FakeWsConnection:
         self._fake._on_message(self, text)
 
     async def recv(self) -> str | bytes:
-        while True:
-            if self._inbox:
-                return self._inbox.popleft()
-            self._raise_if_closed()
-            waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-            self._waiters.append(waiter)
-            try:
-                await waiter
-            finally:
-                if waiter in self._waiters:
-                    self._waiters.remove(waiter)
+        if self._receiving:
+            self._fake._note("concurrent_recv", "같은 연결에서 recv를 동시에 두 번 불렀다")
+            raise ConcurrencyError(
+                "cannot call recv while another coroutine is already running recv or recv_streaming"
+            )
+        self._receiving = True
+        try:
+            while True:
+                if self._inbox:
+                    return self._inbox.popleft()
+                self._raise_if_closed()
+                waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+                self._waiters.append(waiter)
+                try:
+                    await waiter
+                finally:
+                    if waiter in self._waiters:
+                        self._waiters.remove(waiter)
+        finally:
+            self._receiving = False
 
     async def ping(self) -> None:
         """PING 프레임. 응답(PONG)은 기다리지 않는다. 메시지 한도에 세지 않는다."""
@@ -316,7 +350,25 @@ class FakeUpbitWs:
         *,
         seed: int = 0,
         random_message: bool = False,
+        markets: Iterable[str] | None = None,
     ) -> None:
+        """markets를 주면 그 마켓과 push_ticker·ws_ticker_state로 알린 마켓만 스냅숏을 준다.
+
+        나머지 마켓 구독은 스냅숏 없이 기록만 한다. None이면 어떤 마켓이든 녹화 값을 복사해 준다.
+        """
+        if getattr(clock, "_auto_advance", False):
+            raise ValueError(
+                "FakeClock(auto_advance=True)는 쓰지 않는다: 백그라운드 태스크가 시간을 당긴다. "
+                "await clock.run_for(...)로 시간을 움직인다"
+            )
+        if isinstance(markets, str):
+            raise TypeError("markets는 마켓 코드의 목록이다(문자열 하나가 아니다)")
+        self._known_markets: set[str] | None = None
+        if markets is not None:
+            self._known_markets = set()
+            for market in markets:
+                _check_market(market)
+                self._known_markets.add(market)
         self._clock = clock
         self._creds = credentials if credentials is not None else make_upbit_credentials()
         self._random_message = random_message
@@ -335,6 +387,10 @@ class FakeUpbitWs:
         self._connect_pause_until: dict[str, float] = {}
         self._binary = True
         self._silence_until: dict[str, float] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._failed_requests: dict[str, set[tuple[str, ...]]] = {s: set() for s in STREAMS}
+        self._given_trade_time: set[str] = set()  # trade 시각을 push_ticker로 준 마켓
+        self._order_first_ts: dict[Any, Any] = {}  # 주문 uuid → 처음 order_timestamp
 
         recording = _load(FIXTURES / "ws_public_recording.json")
         snapshot = next(s for s in recording["sessions"] if s["name"] == "ticker_snapshot_btc_eth")
@@ -343,10 +399,12 @@ class FakeUpbitWs:
         self._tickers: dict[str, dict[str, Any]] = {t["code"]: dict(t) for t in tickers}
         ticker_doc = _load_plain(DOCS_EXAMPLES / "websocket-ticker.json")
         self._ticker_fields = frozenset(ticker_doc["example"]) - SERVER_FIELDS
+        self._ticker_numbers = _number_fields(self._ticker_template)
         self._order_template: dict[str, Any] = _load(DOCS_EXAMPLES / "websocket-myorder.json")[
             "example"
         ]
         self._order_fields = frozenset(self._order_template) - {"type", "timestamp", "stream_type"}
+        self._order_numbers = _number_fields(self._order_template)
         self._asset_template: dict[str, Any] = _load(DOCS_EXAMPLES / "websocket-myasset.json")[
             "example"
         ]
@@ -381,12 +439,22 @@ class FakeUpbitWs:
     # ── WsConnector ──────────────────────────────────────
 
     async def connect(self, url: str, *, headers: Sequence[tuple[str, str]]) -> FakeWsConnection:
+        loop = asyncio.get_running_loop()
+        if self._loop is None:
+            self._loop = loop
+        elif loop is not self._loop:
+            raise RuntimeError(
+                "FakeUpbitWs는 첫 connect를 부른 이벤트 루프에서만 쓴다"
+                "(asyncio.run 하나에 가짜 하나, 백그라운드 타이머가 그 루프에서 돈다)"
+            )
         now = self._clock.monotonic()
         header_list = tuple((str(name), str(value)) for name, value in headers)
         stream = STREAM_BY_URL.get(url)
         record = WsConnectionRecord(url=url, headers=header_list, stream=stream, opened_at=now)
         self.connections.append(record)
 
+        visible = [url] + [f"{n}: {v}" for n, v in header_list if n.lower() != "authorization"]
+        self._check_secret("연결 주소·헤더(Authorization 제외)", "\n".join(visible))
         if stream is None:
             self._violate("url", f"웹소켓 주소가 두 주소({PUBLIC_URL}, …/private)가 아니다")
         times = self._connect_times[stream]
@@ -425,6 +493,8 @@ class FakeUpbitWs:
             reject.times -= 1
             if reject.times <= 0:
                 self._rejects.remove(reject)
+            if reject.status == 429:
+                self._connect_pause_until[stream] = now + PAUSE_SECONDS
             raise StreamConnectFailed(http_status=reject.status, reason="연결 거절(주입)")
 
         record.accepted = True
@@ -445,9 +515,16 @@ class FakeUpbitWs:
         unknown = sorted(set(fields) - self._ticker_fields)
         if unknown:
             raise TypeError(f"문서 ticker 필드가 아니거나 가짜가 정하는 필드: {unknown}")
-        values = {name: _check_scalar(name, value) for name, value in fields.items()}
+        values = {
+            name: _check_field(name, value, numeric=name in self._ticker_numbers)
+            for name, value in fields.items()
+        }
         if "market_state" in values and values["market_state"] not in MARKET_STATES:
             raise ValueError(f"모르는 market_state: {values['market_state']!r}")
+        if self._known_markets is not None:
+            self._known_markets.add(market)
+        if TRADE_TIME_FIELDS & set(values):
+            self._given_trade_time.add(market)
         state = self._ticker_state(market)
         state.update(values)
         self._tickers[market] = state
@@ -466,11 +543,23 @@ class FakeUpbitWs:
         self.push_ticker(market, market_state=market_state, delisting_date=delisting_date)
 
     def ws_my_order(self, event: Mapping[str, Any], *, duplicate: bool = False) -> None:
-        """문서 myOrder 예시에 event(문서 필드 이름)를 덮어 보낸다. duplicate면 두 번."""
+        """문서 myOrder 예시에 event(문서 필드 이름)를 덮어 보낸다. duplicate면 두 번.
+
+        기본값(가정): trade면 새 trade_uuid와 지금 trade_timestamp, order_timestamp는 주문 uuid별
+        첫 시각, prevented가 아니면 prevented_volume·prevented_locked는 0.
+        """
         unknown = sorted(set(event) - self._order_fields)
         if unknown:
             raise TypeError(f"문서 myOrder 필드가 아니다(code·ask_bid·order_type ...): {unknown}")
-        values = {name: _check_scalar(name, value) for name, value in event.items()}
+        values = {
+            name: _check_field(
+                name,
+                value,
+                numeric=name in self._order_numbers,
+                nullable=name in NULL_UNLESS_TRADE,
+            )
+            for name, value in event.items()
+        }
         if "code" in values:
             _check_market(values["code"])
         for name, allowed in (
@@ -480,12 +569,24 @@ class FakeUpbitWs:
         ):
             if name in values and values[name] not in allowed:
                 raise ValueError(f"모르는 {name}: {values[name]!r}")
+        now = self._now_ms()
         message = dict(self._order_template)
-        if values.get("state", message["state"]) != "trade":
+        state = values.get("state", message["state"])
+        if state == "trade":
+            if "trade_uuid" not in values:
+                message["trade_uuid"] = self._new_uuid()
+            message["trade_timestamp"] = now
+        else:
             for name in NULL_UNLESS_TRADE:
                 message[name] = None
+        if state != "prevented":
+            for name in PREVENTED_FIELDS:
+                message[name] = 0
         message.update(values)
-        message["timestamp"] = self._now_ms()
+        first = self._order_first_ts.setdefault(message["uuid"], values.get("order_timestamp", now))
+        if "order_timestamp" not in values:
+            message["order_timestamp"] = first
+        message["timestamp"] = now
         message["stream_type"] = "REALTIME"
         text = _dumps(message)
         for conn in self._open_conns("private"):
@@ -591,15 +692,17 @@ class FakeUpbitWs:
         message: str | None = None,
         stream: str | None = None,
         close_code: int | None = ERROR_CLOSE_CODE,
+        times: int | None = 1,
     ) -> None:
-        """다음 구독 요청(LIST 제외) 하나에 `{"error": ...}`로 답하고 close_code로 끊는다.
+        """다음 구독 요청(LIST 제외) times개(None이면 계속)에 `{"error": ...}`로 답하고 끊는다.
 
         close_code=None이면 연결을 열어 둔다. 여러 번 부르면 차례로 쓴다.
         """
         if not isinstance(name, str) or not name:
             raise ValueError(f"오류 이름은 빈 아닌 문자열이다: {name!r}")
         _check_stream(stream)
-        self._errors.append(_ErrorInjection(name, message, stream, close_code))
+        _check_times(times)
+        self._errors.append(_ErrorInjection(name, message, stream, close_code, times))
 
     def ws_drop(self, after: int | None = None, *, stream: str | None = None) -> None:
         """열린 연결을 close 1006으로 끊는다(after=N이면 서버 메시지 N개 뒤).
@@ -631,10 +734,24 @@ class FakeUpbitWs:
         """True(처음 상태)면 UTF-8 바이너리 프레임, False면 텍스트 프레임으로 보낸다."""
         self._binary = bool(enabled)
 
+    def ws_raw(self, frame: str | bytes, *, stream: str | None = None) -> None:
+        """깨진 서버 메시지를 그대로 보낸다(str은 텍스트, bytes는 바이너리 프레임, 구독과 상관없음).
+
+        지금 열린 연결에만 보낸다. ws_silence·ws_drop(after)은 다른 서버 메시지와 같이 적용된다.
+        """
+        if not isinstance(frame, str | bytes):
+            raise TypeError(f"frame은 str이나 bytes다: {type(frame).__name__}")
+        _check_stream(stream)
+        for conn in [c for c in self._open if stream in (None, c.stream)]:
+            self._deliver(conn, frame, raw=True)
+
     def ws_reject_connect(
         self, times: int = 1, *, stream: str | None = None, status: int | None = None
     ) -> None:
-        """다음 연결 시도 times번을 StreamConnectFailed(http_status=status)로 거절한다."""
+        """다음 연결 시도 times번을 StreamConnectFailed(http_status=status)로 거절한다.
+
+        status=429면 실제 한도 거절처럼 그 종류의 연결을 1초 멈추게 한다(rate_limit_pause).
+        """
         _check_stream(stream)
         if times < 1:
             raise ValueError("times는 1 이상이다")
@@ -649,6 +766,15 @@ class FakeUpbitWs:
 
     def _violate(self, rule: str, detail: str) -> NoReturn:
         raise self._note(rule, detail)
+
+    def _check_secret(self, where: str, text: str) -> None:
+        """비밀 키나 access_key(JWT 밖)가 보이면 secret_leak. 값은 위반 문구에 넣지 않는다."""
+        keys = {"secret_key": self._creds.secret_key, "access_key": self._creds.access_key}
+        keys = {name: value for name, value in keys.items() if len(value) >= MIN_CANARY_LENGTH}
+        found = find_canaries(text, keys.values())
+        if found:
+            names = [name for name, value in keys.items() if value in found]
+            self._violate("secret_leak", f"{where}에 {'·'.join(names)}가 보인다")
 
     def _check_auth(self, values: list[str]) -> None:
         if not values:
@@ -699,12 +825,22 @@ class FakeUpbitWs:
         times.append(now)
         del times[: sum(1 for t in times if t <= now - 60.0 + EPS)]
 
+        if isinstance(message, bytes):
+            self._check_secret("보낸 메시지", message.decode("utf-8", errors="replace"))
+        else:
+            self._check_secret("보낸 메시지", message)
         if conn._pause_until is not None and now < conn._pause_until - EPS:
             self._violate("rate_limit_pause", "TOO_MANY_REQUEST 뒤 1초 안에 메시지를 보냈다")
         real_exceeded = _exceeds(times, now, MESSAGE_REAL)
         if not real_exceeded and _exceeds(times, now, MESSAGE_HALF):
             self._violate("rate_limit_half", "메시지가 초당 2회·분당 50회(한도의 절반)를 넘었다")
         request = self._parse_request(conn.stream, message)
+        failed = self._failed_requests[conn.stream]
+        if request is not None and request[1] != "LIST" and _request_key(request[1]) in failed:
+            self._violate(
+                "repeat_after_error",
+                "형식 오류·모르는 오류를 받은 요청(같은 Data Type 목록)을 되풀이했다(D-080)",
+            )
 
         if real_exceeded:
             self._note("rate_limit", "메시지가 초당 5회·분당 100회(실제 한도)를 넘었다")
@@ -729,13 +865,20 @@ class FakeUpbitWs:
             return
         injection = next((e for e in self._errors if e.stream in (None, conn.stream)), None)
         if injection is not None:
-            self._errors.remove(injection)
+            if injection.times is not None:
+                injection.times -= 1
+                if injection.times <= 0:
+                    self._errors.remove(injection)
+            if injection.name in FORMAT_ERRORS or injection.name not in ERROR_MESSAGES:
+                self._failed_requests[conn.stream].add(_request_key(objects))
             self._send_error(conn, injection.name, injection.message, injection.close_code)
             return
         conn._subscription = objects
         ticker = conn._subscribed("ticker")
         if ticker is not None and ticker.get("is_only_realtime") is not True:
             for market in dict.fromkeys(ticker["codes"]):
+                if self._known_markets is not None and market not in self._known_markets:
+                    continue  # 모르는 마켓: 구독만 기록하고 스냅숏은 없다
                 self._deliver(conn, self._ticker_text(market, "SNAPSHOT"))
                 if conn.closed:
                     break
@@ -832,15 +975,24 @@ class FakeUpbitWs:
 
     # ── 서버 보내기·끊기 ─────────────────────────────────
 
-    def _deliver(self, conn: FakeWsConnection, text: str) -> None:
+    def _deliver(self, conn: FakeWsConnection, text: str | bytes, *, raw: bool = False) -> None:
+        """서버 메시지 하나. raw(ws_raw)면 frame을 그대로, 아니면 ws_binary에 따라 보낸다."""
         if conn.closed:
             return
         now = self._clock.monotonic()
         if now < self._silence_until.get(conn.stream, float("-inf")) - EPS:
             return  # ws_silence: 버린다
+        if raw:
+            frame = text
+            if isinstance(text, bytes):
+                with contextlib.suppress(UnicodeDecodeError):  # UTF-8이 아니면 bytes 그대로
+                    text = text.decode("utf-8")
+        else:
+            assert isinstance(text, str)
+            frame = text.encode("utf-8") if self._binary else text
         conn.record.delivered.append((now, text))
         conn.last_activity = now
-        conn._push(text.encode("utf-8") if self._binary else text)
+        conn._push(frame)
         if conn.drop_after is not None:
             conn.drop_after -= 1
             if conn.drop_after <= 0:
@@ -915,7 +1067,15 @@ class FakeUpbitWs:
 
     def _ticker_text(self, market: str, stream_type: str) -> str:
         message = self._ticker_state(market)
-        message["timestamp"] = self._now_ms()
+        now_ms = self._now_ms()
+        traded = message.get("trade_timestamp")
+        if market not in self._given_trade_time and traded is not None and int(traded) > now_ms:
+            # 녹화 체결 시각이 가짜 시계보다 늦으면 지금으로 맞춘다(UTC, 문서 형식 yyyyMMdd·HHmmss)
+            now = self._clock.true_utc_now()
+            message["trade_timestamp"] = now_ms
+            message["trade_date"] = now.strftime("%Y%m%d")
+            message["trade_time"] = now.strftime("%H%M%S")
+        message["timestamp"] = now_ms
         message["stream_type"] = stream_type
         return _dumps(message)
 
@@ -927,6 +1087,11 @@ class FakeUpbitWs:
                 continue
             text = text or self._ticker_text(market, "REALTIME")
             self._deliver(conn, text)
+
+
+def _number_fields(example: Mapping[str, Any]) -> frozenset[str]:
+    """예시에서 값이 숫자 토큰인 필드."""
+    return frozenset(name for name, value in example.items() if isinstance(value, RawNumber))
 
 
 def _exceeds(times: Iterable[float], now: float, limits: Sequence[tuple[float, int]]) -> bool:

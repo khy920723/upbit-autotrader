@@ -9,8 +9,14 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
 
 이 테스트가 정하는 가짜의 계약(구현은 tests/fakes/upbit_ws.py):
 
-- 생성: `FakeUpbitWs(clock, credentials=None, *, seed=0, random_message=False)`. credentials가
-  None이면 새 카나리아 키(`make_upbit_credentials()`)를 만든다. `.clock`, `.credentials`로 꺼낸다.
+- 생성: `FakeUpbitWs(clock, credentials=None, *, seed=0, random_message=False, markets=None)`.
+  credentials가 None이면 새 카나리아 키(`make_upbit_credentials()`)를 만든다. `.clock`,
+  `.credentials`로 꺼낸다. `FakeClock(auto_advance=True)`는 ValueError다(백그라운드 태스크가
+  sleep할 때마다 시간을 당긴다). 시간은 `await clock.run_for(...)`로 움직인다. 가짜 하나는
+  asyncio.run 하나 안에서 쓴다: 첫 connect의 이벤트 루프를 기억하고 다른 루프에서 connect하면
+  RuntimeError(기록하지 않음). markets(마켓 코드 목록)를 주면 그 마켓과 push_ticker·
+  ws_ticker_state로 알린 마켓만 스냅숏을 주고 나머지는 구독만 기록한다. None이면 아래처럼 어떤
+  마켓이든 녹화 값을 준다.
   공용 픽스처 `make_fake_upbit_ws(clock=None, credentials=None, **options)`(tests/conftest.py)는
   정리 단계에서 만든 가짜마다 `assert_clean()`을 부른다.
 - 연결(WsConnector): `await fake.connect(url, *, headers) -> FakeWsConnection`. headers는
@@ -22,6 +28,9 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
   - 끊긴 뒤 recv·send·ping은 `StreamClosed`(core 오류, `.close_code`). 끊기기 전에 서버가 보낸
     메시지는 recv로 먼저 다 받고 그다음 recv가 StreamClosed다. close는 두 번 불러도 된다.
   - 받기 대기 중인 recv를 취소해도 메시지를 잃지 않는다.
+  - 같은 연결에서 recv를 동시에 두 번 부르면 websockets 17.4처럼 `ConcurrencyError`
+    (`fakes.upbit_ws`가 다시 내보내는 websockets.exceptions의 클래스, RuntimeError 하위)를 던지고
+    `concurrent_recv` 위반을 남긴다. 먼저 기다리던 recv는 그대로다.
 - 위반: fakes.upbit_http와 같은 `FakeProtocolViolation`(AssertionError 하위, `.rule`)을 던지고
   `violations`에 남긴다. 위반한 연결은 받지 않고(accepted=False), 위반한 메시지는 처리하지 않는다
   (연결은 그대로 둔다). 규칙 이름:
@@ -29,6 +38,9 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
     (끝 슬래시, 중복 슬래시, ws://, 다른 호스트, 포트 표기, 쿼리, 앱이 쓰지 않는 `/v1/info`).
   - `origin`: Origin 헤더(이름 대소문자 무시). `duplicate_header`: 같은 이름 헤더가 둘 이상.
   - `public_auth`: 공개 주소에 Authorization 헤더.
+  - `secret_leak`: 연결 주소·헤더(Authorization 제외)나 보낸 메시지(텍스트·바이너리)에 가짜
+    secret_key나 access_key가 보임(fakes.canary.find_canaries: 원문, 8자 조각, URL·JSON·base64
+    모양). 다른 검사보다 먼저 본다. 위반 문구에 값은 넣지 않는다.
   - 비공개 JWT(3a와 같은 이름): `auth`(헤더 없음, `Bearer <JWT>` 모양 아님, 서명이 가짜 비밀
     키로 검증 안 됨, access_key 다름, 페이로드에 모르는 키), `jwt_alg`(HS512 아님), `nonce`(하이픈
     있는 UUID 문자열 아님, 이미 쓴 값), `query_hash`(query_hash·query_hash_alg가 있음. 웹소켓은
@@ -50,21 +62,31 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
     close 1000으로 끊는다(아래 오류 뒤 끊기와 같다).
   - `rate_limit_pause`: TOO_MANY_REQUEST(실제 한도·ws_error 모두)를 보낸 뒤 1초 안에 그 연결에
     메시지를 보내거나(ws_error(close_code=None)로 열어 둔 경우) 같은 종류로 다시 연결함. 429로
-    연결을 거절한 뒤 1초 안에 같은 종류로 다시 연결해도 같다. 1초가 지난 시각(t + 1)부터는 된다.
+    연결을 거절한 뒤(실제 한도, ws_reject_connect(status=429) 모두) 1초 안에 같은 종류로 다시
+    연결해도 같다. 1초가 지난 시각(t + 1)부터는 된다.
+  - `repeat_after_error`(D-080): 형식 오류(WRONG_FORMAT·NO_TICKET·NO_TYPE·NO_CODES·
+    INVALID_PARAM)나 모르는 이름의 오류를 받은 구독 요청과 같은 Data Type 목록(ticket·Format
+    제외, 순서 무시)을 같은 종류(공개·비공개)에서 다시 보냄. 새 연결에서도 같다. INVALID_AUTH·
+    TOO_MANY_REQUEST 뒤 한 번 다시 요청하는 것은 위반이 아니다.
   - 창은 슬라이딩이다: 시각 t의 시도는 (t - 창 길이, t]에 든 시도를 센다. 위반·거절된 시도도
     센다. 연결은 주소를 알아본 시도만 종류별로 센다(문서: 공개는 IP, 비공개는 포켓 단위).
     메시지는 클라이언트가 보낸 텍스트·바이너리 메시지 모두("PING" 문자열 포함)이고 PING 프레임은
     세지 않는다.
-  - 검사 순서. 연결: url → origin·duplicate_header → rate_limit_pause → 한도 절반 →
-    public_auth·JWT → concurrent_connections → 거절(실제 한도 429, ws_reject_connect). 메시지:
-    rate_limit_pause → 한도 절반 → subscribe_format → 실제 한도(TOO_MANY_REQUEST) → ws_error →
-    처리. 실제 한도를 넘은 시도는 한도 절반 검사를 건너뛴다(3a와 같다).
+  - 검사 순서. 연결: secret_leak → url → origin·duplicate_header → rate_limit_pause → 한도 절반
+    → public_auth·JWT → concurrent_connections → 거절(실제 한도 429, ws_reject_connect). 메시지:
+    secret_leak → rate_limit_pause → 한도 절반 → subscribe_format → repeat_after_error → 실제
+    한도(TOO_MANY_REQUEST) → ws_error → 처리. 실제 한도를 넘은 시도는 한도 절반 검사를 건너뛴다
+    (3a와 같다).
 - 서버 동작:
   - 서버 메시지는 기본으로 UTF-8 바이너리 프레임이다(녹화: ticker·오류·status 모두 binary).
   - 구독하면 ticker 스냅숏을 codes 순서대로 마켓마다 1개(`stream_type: SNAPSHOT`) 보낸다
     (is_only_realtime이면 없음). 내용은 그 마켓의 현재 상태다. 처음 상태는 녹화한 스냅숏(KRW-BTC,
     KRW-ETH, 숫자 원문 그대로), 다른 마켓은 녹화 KRW-BTC에서 code만 바꾼 것. 녹화의 필드는 문서
-    예시와 같다(폐기 필드 포함). 비공개 type은 스냅숏이 없다.
+    예시와 같다(폐기 필드 포함). 비공개 type은 스냅숏이 없다. markets 옵션이 있으면 모르는 마켓은
+    스냅숏이 없다(위 생성 참고).
+  - ticker의 trade_timestamp·trade_date·trade_time(UTC `yyyyMMdd`·`HHmmss`)은 지금 시각을 넘지
+    않는다: 녹화 체결 시각이 가짜 시계보다 늦으면 지금으로 맞춘다(스냅숏·실시간 모두, 가정).
+    push_ticker로 셋 중 하나라도 준 마켓은 준 값 그대로다.
   - 같은 연결의 새 구독 요청은 앞 구독을 바꾼다(문서에 없음, 가정). LIST_SUBSCRIPTIONS는
     `{"method", "result", "ticket"}`(result 항목은 type과, 구독에 codes가 있었으면 codes)로 답한다.
   - 모든 서버 메시지의 `timestamp`는 실제 UTC(`clock.true_utc_now()`)의 밀리초다. 숫자는 JSON
@@ -79,8 +101,10 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
     ws_status_up은 기본 동작이고 끄는 옵션이 없다).
   - 오류 메시지(ws_error, 실제 한도의 TOO_MANY_REQUEST)를 보낸 뒤 바로 close 1000으로 끊는다
     (녹화: NO_CODES 뒤 1000으로 끊었다).
-- 주입(fakes-spec 2.5절). 검증 실패는 TypeError(모르는 필드, float)나 ValueError(모르는 값,
-  메시지에 그 값)다. stream 인자는 "public"·"private"·None(모두).
+- 주입(fakes-spec 2.5절). 검증 실패는 TypeError(모르는 필드, float, 숫자 필드에 숫자 아닌 값)나
+  ValueError(모르는 값, 메시지에 그 값)다. stream 인자는 "public"·"private"·None(모두). 숫자
+  필드(예시에서 값이 숫자 토큰인 필드)는 Decimal·RawNumber·int만 받는다(문자열·bool·float는
+  TypeError, myOrder의 trade_fee·trade_timestamp는 None도 된다).
   - `push_ticker(market, **fields)`: 상태를 바꾸고 그 마켓을 구독한 공개 연결에 REALTIME을
     보낸다(is_only_snapshot 구독 제외). fields는 문서 ticker 필드만.
   - `ws_ticker_state(market, market_state, delisting_date=None)`: market_state는 PREVIEW·ACTIVE·
@@ -90,6 +114,9 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
     ask_bid·order_type ...)를 덮어 보낸다. state는 문서의 6개 값. state가 trade가 아니면
     trade_uuid·trade_fee·is_maker·trade_timestamp는 주지 않는 한 null(문서는 trade_fee·is_maker만
     적었다, 가정). duplicate면 같은 텍스트를 두 번. 구독의 codes로 거른다(없거나 빈 배열이면 모두).
+    기본값(가정, 준 값은 그대로): trade면 trade_uuid는 메시지마다 새 UUID(seed로 정해짐),
+    trade_timestamp는 지금. order_timestamp는 주문 uuid마다 처음 보낸 시각을 기억한다.
+    state가 prevented가 아니면 prevented_volume·prevented_locked는 0.
   - `ws_my_asset(assets=None)`: 문서 myAsset 모양. assets 기본값은 문서 예시. asset_uuid는
     메시지마다 새 UUID, asset_timestamp·timestamp는 지금. 문서는 최초 구독 뒤 수분 지연을
     말하지만 가짜는 흉내 내지 않는다.
@@ -98,10 +125,11 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
     `https://www.upbit.com/service_center/notice?id=<uuid>&view=share`, first_listed_at·
     listed_at은 지금의 KST 초 단위(`+09:00`). 이미 보낸 uuid면 first_listed_at을 지킨다.
     categories로 거르고, include_body 구독이면 `body`(None이면 null), 아니면 키가 없다.
-  - `ws_error(name, *, message=None, stream=None, close_code=1000)`: 다음 구독 요청(LIST 제외)
-    하나에 구독 대신 `{"error": {"name", "message"}}`를 보내고 close_code로 끊는다. close_code=None
-    이면 연결을 열어 둔다(그 연결에서 다시 구독할 수 있다). 여러 번 부르면 차례로 쓴다. 문서에 없는
-    이름도 그대로 보낸다. 기본 문구는 INVALID_AUTH가 문서 값, NO_CODES가 녹화 값이고 나머지는
+  - `ws_error(name, *, message=None, stream=None, close_code=1000, times=1)`: 다음 구독 요청(LIST
+    제외) times개(None이면 계속)에 구독 대신 `{"error": {"name", "message"}}`를 보내고 close_code로
+    끊는다. close_code=None이면 연결을 열어 둔다(그 연결에서 다시 구독할 수 있다). 여러 번 부르면
+    차례로 쓴다. times는 1 이상 정수나 None(0 이하는 ValueError, bool·float는 TypeError). 문서에
+    없는 이름도 그대로 보낸다. 기본 문구는 INVALID_AUTH가 문서 값, NO_CODES가 녹화 값이고 나머지는
     가짜가 정한 값이다. random_message=True면 문구만 바뀐다(seed로 정해진다).
   - `ws_drop(after=None, *, stream=None)`: None이면 지금 열린 연결을 close 1006(close 프레임 없는
     끊김)으로 끊는다. after=N이면 그 뒤 서버 메시지 N개를 보낸 다음 끊는다. 열린 연결이 없으면
@@ -112,11 +140,17 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
   - `ws_binary(enabled)`: False면 그 뒤 서버 메시지를 텍스트 프레임(str)으로, True(처음 상태)면
     UTF-8 바이너리 프레임(bytes)으로 보낸다.
   - `ws_reject_connect(times=1, *, stream=None, status=None)`: 다음 연결 시도 times번을
-    StreamConnectFailed로 거절한다(rate_limit_pause는 걸지 않는다).
+    StreamConnectFailed로 거절한다. status=429면 실제 한도 거절처럼 그 종류의 연결을 1초 멈추게
+    한다(rate_limit_pause). 다른 status는 멈춤을 걸지 않는다.
+  - `ws_raw(frame, *, stream=None)`: 깨진 서버 메시지(JSON 아님, UTF-8 아닌 바이너리, 모르는
+    type, 필드 빠짐 등)를 지금 열린 연결에 그대로 보낸다(구독과 상관없음). str은 텍스트 프레임,
+    bytes는 바이너리 프레임이다(ws_binary와 상관없음). ws_silence·ws_drop(after)은 같이 적용된다.
+    str·bytes가 아니면 TypeError.
 - 검사: `connections`(시도 순서, 위반·거절 포함). 항목은 `.url`, `.headers`(받은 그대로),
   `.stream`("public"·"private", 주소를 모르면 None), `.accepted`, `.opened_at`(monotonic),
   `.received`([(monotonic, 받은 메시지)]), `.delivered`([(monotonic, 보낸 텍스트)], 바이너리도
-  텍스트로), `.pings`([monotonic]), `.closed_at`, `.close_code`. repr은 Authorization 값을 가린다.
+  텍스트로. ws_raw의 UTF-8 아닌 bytes만 bytes 그대로), `.pings`([monotonic]), `.closed_at`,
+  `.close_code`. repr은 Authorization 값을 가린다.
   `violations`, `jwt_payloads`, `assert_clean()`(위반이 있으면 목록을 보여 주며 AssertionError).
 """
 
@@ -2303,7 +2337,7 @@ def test_markets_option_learns_from_ws_ticker_state(make_env):
 
 def test_markets_option_is_checked():
     clock = FakeClock()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="btc-krw"):
         FakeUpbitWs(clock, markets=["btc-krw"])
     with pytest.raises(TypeError):
         FakeUpbitWs(clock, markets="KRW-BTC")
@@ -2461,7 +2495,7 @@ def test_ws_raw_takes_only_str_or_bytes(env, frame):
 
 
 def test_ws_raw_checks_the_stream(env):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="both"):
         env.fake.ws_raw("x", stream="both")
 
 

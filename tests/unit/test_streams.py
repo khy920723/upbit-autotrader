@@ -27,13 +27,22 @@ open_stream을 부를 때마다 다음 줄의 async generator를 준다. 줄이 
    그 끊김의 대기는 표의 처음(backoff[0])이다. 연속 실패는 표를 한 칸씩
    내려가고 표의 끝 값을 계속 쓴다.
 6. 이터레이터가 오류 없이 끝나면(StopAsyncIteration) 끊김과 같이 다룬다.
-7. 무수신(공개 스트림만): OPEN 뒤 마지막 수신(StreamOpened 포함) 이후
-   silence_timeout이 지나면 check_interval마다 하는 점검에서
-   DEGRADED(reason="silence")를 알리고 그 시각에 이터레이터를 닫고 다시 연다.
-   - DEGRADED 시각: 마지막 수신 + [silence_timeout,
+7. 무수신(공개 스트림만): StreamOpened를 받은 뒤에만 감시한다(그 전에는 연결 중이라
+   무수신으로 끊지 않는다). 마지막 수신(StreamOpened 포함) 이후 silence_timeout이
+   지나면 check_interval마다 하는 점검에서 DEGRADED(reason="silence")를 알리고 그 시각에
+   이터레이터를 닫은 뒤 RECONNECTING(reason="silence")을 알리고 다시 연다.
+   - 무수신 시간은 감시가 다음 수신을 기다리기 시작한 때부터 센다. 콜백(on_event·
+     on_reconnected)이 도는 시간은 세지 않는다.
+   - DEGRADED 시각: 마지막 수신(콜백이 끝난 때) + [silence_timeout,
      silence_timeout + check_interval] 안.
    - 다시 여는 시각: DEGRADED 시각 + [0, backoff[0]] 안.
    - 비공개 스트림은 무수신으로 끊지 않는다.
+7-1. 끊긴 채 다시 열리지 않을 때(공개 스트림만): 마지막 데이터 이벤트(StreamOpened 아님,
+   on_event가 끝난 때. 없으면 run() 시작 시각) 뒤 silence_timeout이 지나면
+   RECONNECTING을 알리기 전이나 backoff 대기 중(check_interval 단위로 나눠 잔다)
+   점검에서 DEGRADED(reason="silence")를 알린다. 끊김 한 번(StreamOpened부터 다음
+   StreamOpened 전까지)에 한 번만 알린다(무수신으로 끊은 끊김은 이미 알렸으므로 더 없다).
+   DEGRADED 시각: 마지막 데이터 + [silence_timeout, silence_timeout + check_interval] 안.
 8. D-080의 "정상 이벤트"는 StreamOpened가 아닌 데이터 이벤트다.
    어댑터는 구독 요청 직후 StreamOpened를 내고 오류 메시지는 그 뒤에 온다.
    - StreamRateLimited: RECONNECTING(retry_in=1, minute_limited면 60)을
@@ -46,10 +55,13 @@ open_stream을 부를 때마다 다음 줄의 async generator를 준다. 줄이 
      그 사이 정상 이벤트가 있었으면 다시 1번 허용한다.
    - BROKEN·AUTH_CHECK가 마지막 상태이고 run()은 예외 없이 끝난다.
      그 뒤에는 open_stream·콜백을 부르지 않는다.
-9. on_reconnected: 첫 OPEN에서는 부르지 않는다(그 전에 연결 실패가
-   있었어도). 그 뒤의 OPEN마다 OPEN 상태를 알린 다음, 그 연결의 첫 데이터
-   이벤트를 넘기기 전에 정확히 1번 끝까지 기다려 부른다.
-   - Exception을 내면 StreamStatus(kind="OPEN",
+   - 연결이 stable_after 이상 유지되면 backoff와 함께 두 허용 횟수도 처음으로
+     돌아간다(비공개 스트림은 데이터가 몇 시간 없을 수 있다).
+9. on_reconnected: 첫 StreamOpened에서는 부르지 않고 바로 OPEN을 알린다(그 전에
+   연결 실패가 있었어도). 그 뒤의 StreamOpened마다 그 연결의 첫 데이터 이벤트를
+   넘기기 전에 정확히 1번 끝까지 기다려 부르고, 훅이 끝난 뒤에 OPEN을 알린다
+   (훅이 도는 동안 앱이 DEGRADED를 풀지 않게).
+   - Exception을 내면 OPEN 대신 StreamStatus(kind="OPEN",
      reason="reconnect_hook_failed", error_name=예외 클래스 이름)를 알리고
      계속한다(이벤트도 넘긴다).
    - InvariantViolation은 버그라 삼키지 않고 run() 밖으로 올린다(D-058).
@@ -60,7 +72,16 @@ open_stream을 부를 때마다 다음 줄의 async generator를 준다. 줄이 
     run() 밖으로 올린다.
 12. run()을 취소하면 CancelledError가 그대로 올라온다. 열린 이터레이터는
     닫히고(finally가 돈다) 감시가 만든 태스크는 남지 않는다. 취소 뒤에는
-    open_stream·콜백을 더 부르지 않는다.
+    open_stream·콜백을 더 부르지 않는다. 정리 중 두 번째 취소가 와도 같다(정리를
+    서두르게 두 번째 취소를 이터레이터 쪽에 넘기고 끝날 때까지 기다린다).
+13. 두 스트림은 같은 경로로 돈다. 연결마다 태스크 하나가 이터레이터를 끝까지
+    갖는다(anext·aclose가 모두 같은 태스크에서). 그래서 어댑터가 yield를 넘어
+    TaskGroup·asyncio.timeout·contextvars를 써도 동작이 같고 오류가 사라지지 않는다.
+14. 이터레이터를 닫다가 NetworkError·StreamError 계열이 아닌 예외가 나도 원래
+    예외·CancelledError를 덮지 않는다(닫기 오류는 원래 예외의 __notes__에 적는다).
+    끊김을 정리하던 중이면 기록(logging)만 하고 다시 연다.
+15. backoff 대기가 0이어도 이벤트 루프를 한 번 놓는다(즉시 실패가 이어져도 루프를
+    독점하지 않는다).
 """
 
 import asyncio
@@ -492,8 +513,10 @@ def test_reconnect_waits_for_the_hook_before_passing_events():
 
     rec = asyncio.run(scenario())
 
-    assert rec.trace() == ["open", "event:1", "open", "hook", "hook_done", "event:2", "event:3"]
+    assert rec.trace() == ["open", "event:1", "hook", "hook_done", "open", "event:2", "event:3"]
     assert rec.hooks() == [T0 + 1]
+    # 재연결의 OPEN은 훅이 끝난 뒤에 알린다(훅이 도는 동안은 아직 RECONNECTING).
+    assert [t for t, _ in rec.statuses("OPEN")] == [T0, T0 + 6]
     second_event_at = rec.events()[1][0]
     assert second_event_at == T0 + 6
 
@@ -506,9 +529,11 @@ def test_each_reconnect_calls_the_hook_exactly_once():
     assert len(rec.statuses("OPEN")) == 5
     assert len(rec.hooks()) == 4
     trace = rec.trace()
+    assert trace[0] == "open"
     for index, item in enumerate(trace):
-        if item == "hook":
-            assert trace[index - 1] == "open"
+        if item == "hook_done":
+            assert trace[index - 1] == "hook"
+            assert trace[index + 1] == "open"
     assert trace.count("hook_done") == 4
 
 
@@ -532,7 +557,7 @@ def test_hook_failure_is_reported_and_supervision_continues(make_error):
     )
 
     assert result == "running"
-    assert rec.trace() == ["open", "event:1", "open", "hook", "hook_failed", "event:2"]
+    assert rec.trace() == ["open", "event:1", "hook", "hook_failed", "event:2"]
     (_, failed), *_ = [
         (t, s) for t, s in rec.statuses("OPEN") if s.reason == "reconnect_hook_failed"
     ]
@@ -820,26 +845,28 @@ def test_auth_allowance_returns_after_normal_data():
 # ── 예외 ──────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("stream", ["public", "private"])
 @pytest.mark.parametrize(
     "make_error",
     [lambda: RuntimeError("화면 갱신 버그"), lambda: errors.InvariantViolation("가격 음수")],
     ids=["RuntimeError", "InvariantViolation"],
 )
-def test_on_event_error_propagates_and_closes_the_iterator(make_error):
+def test_on_event_error_propagates_and_closes_the_iterator(make_error, stream):
     error = make_error()
     seen = []
+    first, second, third = (tick(n) if stream == "public" else asset_event(n) for n in (1, 2, 3))
 
     async def on_event(event):
         seen.append(event)
-        if event == tick(2):
+        if event == second:
             raise error
 
     script, _, result = simulate(
-        "public", [OPEN, tick(1), tick(2), tick(3)], seconds=300, on_event=on_event
+        stream, [OPEN, first, second, third], seconds=300, on_event=on_event
     )
 
     assert result is error
-    assert seen == [tick(1), tick(2)]
+    assert seen == [first, second]
     assert len(script.opened) == 1
     assert script.opened[0].outcome == "closed"
 
@@ -853,10 +880,12 @@ def test_on_event_error_propagates_and_closes_the_iterator(make_error):
     ],
     ids=["ValueError", "KeyError", "InvariantViolation"],
 )
-def test_unexpected_iterator_errors_propagate(make_error):
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_unexpected_iterator_errors_propagate(make_error, stream):
     error = make_error()
+    data = tick(1) if stream == "public" else asset_event(1)
 
-    script, rec, result = simulate("public", [OPEN, tick(1), error], [OPEN], seconds=300)
+    script, rec, result = simulate(stream, [OPEN, data, error], [OPEN], seconds=300)
 
     assert result is error
     assert len(script.opened) == 1
@@ -950,3 +979,594 @@ def test_cancel_during_degraded_reconnect_leaves_nothing_behind():
     outcomes = asyncio.run(scenario())
 
     assert None not in outcomes
+
+
+# ── 상태 이유 값 ──────────────────────────────────────────
+
+
+def test_reason_values_are_fixed():
+    # 화면·로그가 이 값으로 문구를 고른다. 바꾸면 앱 계층도 함께 바꾼다.
+    assert {
+        name: getattr(streams, name) for name in dir(streams) if name.startswith("REASON_")
+    } == {
+        "REASON_START": "start",
+        "REASON_OPENED": "opened",
+        "REASON_HOOK_FAILED": "reconnect_hook_failed",
+        "REASON_CLOSED": "closed",
+        "REASON_CONNECT_FAILED": "connect_failed",
+        "REASON_NETWORK_ERROR": "network_error",
+        "REASON_ENDED": "ended",
+        "REASON_SILENCE": "silence",
+        "REASON_RATE_LIMITED": "rate_limited",
+        "REASON_AUTH_FAILED": "auth_failed",
+        "REASON_REQUEST_ERROR": "request_error",
+    }
+
+
+def test_reconnecting_after_auth_error_names_the_error_and_waits_zero():
+    _, rec, _ = simulate("private", [OPEN, auth_error()], [OPEN, asset_event(2)], seconds=10)
+
+    (at, status), *_ = rec.statuses("RECONNECTING")
+    assert at == T0
+    assert (status.reason, status.error_name, status.retry_in) == (
+        "auth_failed",
+        "INVALID_AUTH",
+        0.0,
+    )
+
+
+@pytest.mark.parametrize(("minute_limited", "wait"), [(False, 1.0), (True, 60.0)])
+def test_reconnecting_after_rate_limit_names_the_error(minute_limited, wait):
+    _, rec, _ = simulate(
+        "public", [OPEN, rate_limited(minute_limited)], [OPEN, tick(2)], seconds=wait + 5
+    )
+
+    (_, status), *_ = rec.statuses("RECONNECTING")
+    assert (status.reason, status.error_name, status.retry_in) == (
+        "rate_limited",
+        "TOO_MANY_REQUEST",
+        wait,
+    )
+
+
+def test_silence_reports_degraded_then_reconnecting_with_the_same_reason():
+    _, rec, _ = simulate("public", [OPEN], [OPEN, tick(2)], seconds=200)
+
+    after_open = [(t, s.kind, s.reason) for t, s in rec.statuses()][2:4]
+    (degraded_at, *degraded), (reconnecting_at, *reconnecting) = after_open
+    assert degraded == ["DEGRADED", "silence"]
+    assert reconnecting == ["RECONNECTING", "silence"]
+    assert reconnecting_at == degraded_at
+    assert rec.statuses("RECONNECTING")[0][1].retry_in == 1
+
+
+# ── 무수신: 콜백 시간 제외, 열린 뒤에만 ───────────────────
+
+
+def test_silence_does_not_count_time_spent_in_on_event():
+    holder = {}
+
+    async def slow_on_event(event):
+        holder["rec"].log.append((holder["clock"].monotonic(), "event", event))
+        await holder["clock"].sleep(200)  # 화면 갱신·저장이 오래 걸렸다
+        holder["done"] = holder["clock"].monotonic()
+
+    async def scenario():
+        clock = FakeClock()
+        holder["clock"] = clock
+        script = Script(clock, "public", [OPEN, tick(1)], [OPEN])
+        rec = Recorder(clock)
+        holder["rec"] = rec
+        task = await start(supervisor(clock, script, rec, on_event=slow_on_event))
+        await clock.run_for(400)
+        script.freeze()
+        await stop(task)
+        return rec
+
+    rec = asyncio.run(scenario())
+
+    assert holder["done"] == T0 + 200
+    (degraded_at, _), *_ = rec.statuses("DEGRADED")
+    assert T0 + 200 + 120 <= degraded_at <= T0 + 200 + 150
+
+
+def test_silence_does_not_count_time_spent_in_the_hook():
+    holder = {}
+
+    async def slow_reconcile():
+        await holder["clock"].sleep(200)
+
+    async def scenario():
+        clock = FakeClock()
+        holder["clock"] = clock
+        script = Script(clock, "public", [OPEN, tick(1), closed()], [OPEN])
+        rec = Recorder(clock, hook=slow_reconcile)
+        task = await start(supervisor(clock, script, rec))
+        await clock.run_for(500)
+        script.freeze()
+        await stop(task)
+        return rec
+
+    rec = asyncio.run(scenario())
+
+    hook_done = next(t for t, k, _ in rec.log if k == "hook_done")
+    assert hook_done == T0 + 1 + 200
+    (degraded_at, _), *_ = rec.statuses("DEGRADED")
+    assert hook_done + 120 <= degraded_at <= hook_done + 150
+
+
+def test_no_silence_check_before_stream_opened():
+    # 열리기 전(연결 중)에는 OPEN이 아니므로 무수신으로 끊지 않는다. 연결 시간 상한은 어댑터 몫.
+    script, rec, result = simulate("public", [Wait(400), OPEN, tick(1)], seconds=300)
+
+    assert result == "running"
+    assert rec.statuses("DEGRADED") == []
+    assert len(script.opened) == 1
+    assert [s.kind for _, s in rec.statuses()] == ["CONNECTING"]
+
+
+# ── 끊긴 채 다시 열리지 않을 때의 DEGRADED(시세 끊김 120초) ─
+
+
+def test_long_reconnect_failure_degrades_once_after_the_last_data():
+    connections = [[OPEN, Wait(30), tick(1), closed()]] + [[connect_failed()] for _ in range(14)]
+
+    script, rec, result = simulate("public", *connections, seconds=600)
+
+    assert result == "running"
+    degraded = rec.statuses("DEGRADED")
+    assert len(degraded) == 1
+    degraded_at, status = degraded[0]
+    assert status.reason == "silence"
+    assert T0 + 30 + 120 <= degraded_at <= T0 + 30 + 150
+    # 대기 시간은 그대로다(나눠 자도 backoff 표와 같다).
+    assert gaps(script)[:8] == pytest.approx([30, 1, 2, 4, 8, 16, 32, 60])
+
+
+def test_long_reconnect_failure_without_any_data_degrades_from_the_start():
+    connections = [[OPEN, Wait(30), closed()]] + [[connect_failed()] for _ in range(14)]
+
+    _, rec, _ = simulate("public", *connections, seconds=600)
+
+    degraded = rec.statuses("DEGRADED")
+    assert len(degraded) == 1
+    assert T0 + 120 <= degraded[0][0] <= T0 + 150
+
+
+def test_degraded_is_reported_before_reconnecting_when_already_due():
+    # 데이터가 끊긴 지 120초가 넘은 뒤에 끊기면 RECONNECTING보다 먼저 DEGRADED를 알린다.
+    steps = [OPEN, tick(1), Wait(100), END]
+    connections = [steps, [OPEN, Wait(50), closed()], [connect_failed()]]
+
+    _, rec, _ = simulate("public", *connections, seconds=200)
+
+    kinds = [(t, s.kind) for t, s in rec.statuses() if s.kind in {"DEGRADED", "RECONNECTING"}]
+    degraded_index = [k for _, k in kinds].index("DEGRADED")
+    degraded_at = kinds[degraded_index][0]
+    assert T0 + 120 <= degraded_at <= T0 + 150
+    assert kinds[degraded_index + 1] == (degraded_at, "RECONNECTING")
+
+
+def test_each_disconnection_degrades_at_most_once():
+    # 다시 열렸다가(StreamOpened) 데이터 없이 또 끊기면 그 끊김에서 다시 한 번 알린다.
+    connections = (
+        [[OPEN, tick(1), closed()]]
+        + [[connect_failed()] for _ in range(7)]
+        + [[OPEN, closed()]]
+        + [[connect_failed()] for _ in range(3)]
+    )
+
+    _, rec, _ = simulate("public", *connections, seconds=400)
+
+    degraded = [t for t, _ in rec.statuses("DEGRADED")]
+    reopened_at = rec.statuses("OPEN")[1][0]
+    assert len(degraded) == 2
+    assert degraded[0] < reopened_at <= degraded[1]
+
+
+def test_reconnect_failure_after_silence_does_not_degrade_twice():
+    _, rec, _ = simulate("public", [OPEN], *([connect_failed()] for _ in range(10)), seconds=500)
+
+    assert len(rec.statuses("DEGRADED")) == 1
+
+
+def test_private_reconnect_failure_never_degrades():
+    _, rec, _ = simulate(
+        "private",
+        [OPEN, asset_event(1), closed()],
+        *([connect_failed()] for _ in range(14)),
+        seconds=600,
+    )
+
+    assert rec.statuses("DEGRADED") == []
+
+
+# ── D-080 허용 횟수: 오래 유지된 연결 뒤 처음으로 ─────────
+
+
+@pytest.mark.parametrize(
+    ("make_error", "final_kind"),
+    [(rate_limited, "BROKEN"), (auth_error, "AUTH_CHECK")],
+    ids=["rate_limited", "auth_error"],
+)
+@pytest.mark.parametrize(("lifetime", "reset"), [(5 * 3600, True), (60, True), (59, False)])
+def test_stable_connection_restores_the_allowance(make_error, final_kind, lifetime, reset):
+    # 비공개 스트림은 주문이 없으면 몇 시간 데이터가 없다. 오래 유지된 연결이면 다시 1번 허용한다.
+    script, rec, result = simulate(
+        "private",
+        [OPEN, make_error()],
+        [OPEN, Wait(lifetime), closed()],
+        [OPEN, make_error()],
+        [OPEN],
+        seconds=lifetime + 200,
+    )
+
+    if reset:
+        assert result == "running"
+        assert len(script.opened) == 4
+        assert final_kind not in [s.kind for _, s in rec.statuses()]
+    else:
+        assert result == "returned"
+        assert rec.statuses()[-1][1].kind == final_kind
+
+
+# ── 이벤트 루프를 놓는다 ──────────────────────────────────
+
+
+def test_zero_backoff_with_instant_failures_does_not_hog_the_loop():
+    calls = {"open": 0, "other": 0}
+    limit = 2000
+
+    def open_stream():
+        calls["open"] += 1
+
+        async def fail_at_once():
+            if calls["open"] > limit:
+                raise RuntimeError("끝")
+            raise errors.StreamConnectFailed(http_status=None, reason="거절")
+            yield  # pragma: no cover
+
+        return fail_at_once()
+
+    async def other():
+        while True:
+            calls["other"] += 1
+            await asyncio.sleep(0)
+
+    async def noop(*_):
+        pass
+
+    async def scenario():
+        clock = FakeClock()
+        side = asyncio.create_task(other())
+        sup = StreamSupervisor(
+            stream="private",
+            open_stream=open_stream,
+            clock=clock,
+            on_event=noop,
+            on_status=noop,
+            on_reconnected=noop,
+            backoff=(0,),
+        )
+        with pytest.raises(RuntimeError, match="끝"):
+            await sup.run()
+        side.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await side
+
+    asyncio.run(scenario())
+
+    assert calls["open"] == limit + 1
+    assert calls["other"] >= limit
+
+
+# ── 이터레이터를 가진 태스크 하나(13) ─────────────────────
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_one_task_owns_the_iterator_from_first_anext_to_aclose(stream):
+    seen_tasks: list[asyncio.Task] = []
+    data = tick(1) if stream == "public" else asset_event(1)
+
+    async def scenario():
+        clock = FakeClock()
+
+        async def gen():
+            try:
+                seen_tasks.append(asyncio.current_task())
+                yield models.StreamOpened(stream=stream, connection_no=1)
+                seen_tasks.append(asyncio.current_task())
+                yield data
+                seen_tasks.append(asyncio.current_task())
+                await clock.sleep(1)
+                yield data
+                await asyncio.Event().wait()
+            finally:
+                seen_tasks.append(asyncio.current_task())
+
+        rec = Recorder(clock)
+        sup = StreamSupervisor(
+            stream=stream,
+            open_stream=gen,
+            clock=clock,
+            on_event=rec.on_event,
+            on_status=rec.on_status,
+            on_reconnected=rec.on_reconnected,
+        )
+        task = await start(sup)
+        await clock.run_for(5)
+        await cancel_and_check(task)
+        return task
+
+    run_task = asyncio.run(scenario())
+
+    assert len(seen_tasks) == 4
+    assert len(set(seen_tasks)) == 1
+    assert seen_tasks[0] is not run_task
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_context_variables_survive_across_yields(stream):
+    import contextvars
+
+    var: contextvars.ContextVar[str] = contextvars.ContextVar("connection", default="없음")
+    values = []
+
+    async def scenario():
+        clock = FakeClock()
+
+        async def gen():
+            var.set("연결 1")
+            yield models.StreamOpened(stream=stream, connection_no=1)
+            for n in range(3):
+                await clock.sleep(1)
+                values.append(var.get())
+                yield tick(n) if stream == "public" else asset_event(n)
+            await asyncio.Event().wait()
+
+        rec = Recorder(clock)
+        sup = StreamSupervisor(
+            stream=stream,
+            open_stream=gen,
+            clock=clock,
+            on_event=rec.on_event,
+            on_status=rec.on_status,
+            on_reconnected=rec.on_reconnected,
+        )
+        task = await start(sup)
+        await clock.run_for(10)
+        await cancel_and_check(task)
+
+    asyncio.run(scenario())
+
+    assert values == ["연결 1"] * 3
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_task_group_error_inside_the_iterator_is_not_lost(stream):
+    # 어댑터가 yield를 넘어 TaskGroup(예: PING 태스크)을 쓰다가 그 태스크가 실패하면 그 오류가
+    # 사라지지 않고 run() 밖으로 나온다(ExceptionGroup은 core 오류가 아니다. 어댑터는 core
+    # 오류 하나로 바꿔 끝내야 한다).
+    def run_case():
+        async def scenario():
+            clock = FakeClock()
+
+            async def gen():
+                async def pinger():
+                    await clock.sleep(5)
+                    raise errors.StreamClosed(close_code=1006, reason="ping 실패")
+
+                async with asyncio.TaskGroup() as group:
+                    group.create_task(pinger())
+                    yield models.StreamOpened(stream=stream, connection_no=1)
+                    for n in range(100):
+                        await clock.sleep(1)
+                        yield tick(n) if stream == "public" else asset_event(n)
+
+            rec = Recorder(clock)
+            sup = StreamSupervisor(
+                stream=stream,
+                open_stream=gen,
+                clock=clock,
+                on_event=rec.on_event,
+                on_status=rec.on_status,
+                on_reconnected=rec.on_reconnected,
+            )
+            task = await start(sup)
+            await clock.run_for(12)
+            assert task.done()
+            await settle()
+            assert not leftover_tasks(), leftover_tasks()
+            return task.exception(), rec
+
+        return asyncio.run(scenario())
+
+    error, rec = run_case()
+
+    assert isinstance(error, BaseExceptionGroup)
+    assert error.subgroup(errors.StreamClosed) is not None
+    assert len(rec.events()) <= 5
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_timeout_scope_inside_the_iterator_is_not_lost(stream):
+    # asyncio.timeout이 yield를 넘어 걸려 있어도 만기 오류(TimeoutError)가 사라지지 않는다.
+    async def scenario():
+        clock = FakeClock()
+
+        async def gen():
+            async with asyncio.timeout(0):
+                yield models.StreamOpened(stream=stream, connection_no=1)
+                yield tick(1) if stream == "public" else asset_event(1)
+                await asyncio.Event().wait()
+
+        async def slow_status(_status):
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+        rec = Recorder(clock)
+        sup = StreamSupervisor(
+            stream=stream,
+            open_stream=gen,
+            clock=clock,
+            on_event=rec.on_event,
+            on_status=slow_status,
+            on_reconnected=rec.on_reconnected,
+        )
+        task = await start(sup)
+        await clock.run_for(5)
+        assert task.done()
+        await settle()
+        assert not leftover_tasks(), leftover_tasks()
+        return task.exception()
+
+    error = asyncio.run(scenario())
+
+    assert isinstance(error, TimeoutError)
+
+
+# ── 닫기 오류는 원래 예외를 덮지 않는다(14) ───────────────
+
+
+class CloseBug(Exception):
+    """이터레이터를 닫다가 난 버그(core 오류가 아님)."""
+
+
+def bad_closing_stream(clock, stream, steps):
+    async def gen():
+        try:
+            for step in steps:
+                if isinstance(step, Wait):
+                    await clock.sleep(step.seconds)
+                else:
+                    yield step
+            await asyncio.Event().wait()
+        finally:
+            raise CloseBug("닫기 실패")
+
+    return gen
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_close_error_does_not_replace_cancellation(stream):
+    async def scenario():
+        clock = FakeClock()
+        rec = Recorder(clock)
+        opened = models.StreamOpened(stream=stream, connection_no=1)
+        sup = supervisor(
+            clock,
+            Script(clock, stream),
+            rec,
+            open_stream=bad_closing_stream(clock, stream, [opened]),
+        )
+        task = await start(sup)
+        await clock.run_for(5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
+        await settle()
+        assert not leftover_tasks(), leftover_tasks()
+        return caught.value
+
+    cancelled = asyncio.run(scenario())
+
+    assert any("CloseBug" in note for note in getattr(cancelled, "__notes__", []))
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_close_error_does_not_replace_the_on_event_error(stream):
+    bug = RuntimeError("화면 버그")
+
+    async def on_event(_event):
+        raise bug
+
+    async def scenario():
+        clock = FakeClock()
+        rec = Recorder(clock)
+        data = tick(1) if stream == "public" else asset_event(1)
+        opened = models.StreamOpened(stream=stream, connection_no=1)
+        sup = supervisor(
+            clock,
+            Script(clock, stream),
+            rec,
+            open_stream=bad_closing_stream(clock, stream, [opened, data]),
+            on_event=on_event,
+        )
+        task = await start(sup)
+        await clock.run_for(5)
+        assert task.done()
+        return task.exception()
+
+    error = asyncio.run(scenario())
+
+    assert error is bug
+    assert any("CloseBug" in note for note in error.__notes__)
+
+
+def test_close_error_while_reconnecting_after_silence_is_logged_and_supervision_continues(
+    caplog,
+):
+    async def scenario():
+        clock = FakeClock()
+        rec = Recorder(clock)
+        opened = models.StreamOpened(stream="public", connection_no=1)
+        sup = supervisor(
+            clock,
+            Script(clock, "public"),
+            rec,
+            open_stream=bad_closing_stream(clock, "public", [opened]),
+        )
+        task = await start(sup)
+        await clock.run_for(200)
+        assert not task.done()
+        await stop(task)
+        return rec
+
+    with caplog.at_level("ERROR", logger="autotrader.core.streams"):
+        rec = asyncio.run(scenario())
+
+    assert len(rec.statuses("DEGRADED")) >= 1
+    assert len(rec.statuses("OPEN")) >= 2
+    assert any("CloseBug" in (r.exc_text or "") or r.exc_info for r in caplog.records)
+
+
+# ── 이중 취소(12) ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+@pytest.mark.parametrize("where", ["waiting", "in_on_event"])
+def test_second_cancel_during_cleanup_still_ends_cancelled(stream, where):
+    state = {"cleanup_started": False}
+
+    async def scenario():
+        clock = FakeClock()
+        data = tick(1) if stream == "public" else asset_event(1)
+
+        async def gen():
+            try:
+                yield models.StreamOpened(stream=stream, connection_no=1)
+                if where == "in_on_event":
+                    yield data
+                await asyncio.Event().wait()
+            finally:
+                state["cleanup_started"] = True
+                await clock.sleep(5)  # 연결 닫기(close_timeout)
+
+        async def on_event(_event):
+            await asyncio.Event().wait()
+
+        rec = Recorder(clock)
+        sup = supervisor(clock, Script(clock, stream), rec, open_stream=gen, on_event=on_event)
+        task = await start(sup)
+        await clock.run_for(1)
+        task.cancel()
+        await settle(3)
+        assert state["cleanup_started"]
+        task.cancel()  # 정리 중 두 번째 취소(예: 바깥 시간 상한, 종료 경로 두 개)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+        await settle()
+        assert not leftover_tasks(), leftover_tasks()
+
+    asyncio.run(scenario())

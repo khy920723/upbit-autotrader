@@ -5,18 +5,28 @@
 announcement_blocks(event, coins) -> frozenset[str]: 신규 매수를 막을 market.
 
 - category가 정확히 "trade"인 공지만 본다. 다른 카테고리는 항상 빈 집합이다.
-- 글 = 제목, 본문(body)이 있으면 제목 + 줄바꿈 + 본문. 제목 끝과 본문 앞이 붙어
-  티커가 새로 생기지 않는다. 비교 전에 제목·본문·코인 이름을 모두 NFC로 맞춘다.
-- 코인 언급 = 티커 또는 한글 이름.
+- 글 = 제목과 본문(body가 있으면). 둘은 따로 본다(이어 붙이지 않는다). 그래서 제목
+  끝과 본문 앞이 붙어 티커나 키워드가 새로 생기지 않는다. 코인 언급과 키워드는 제목·본문
+  어디에 있어도 같은 글로 본다.
+- 비교 전에 제목·본문·코인 이름을 NFKC로 맞추고(전각 ＢＴＣ → BTC) 서식 문자(유니코드
+  Cf, 예: 폭 없는 공백 U+200B)를 지운다.
+- 코인 언급 = 티커 또는 한글 이름. 빈 티커·빈 한글 이름은 아무것에도 맞지 않는다.
   - 티커: ASCII 영숫자 경계로 찾고 대소문자는 무시한다. BTC는 BTCB·WBTC·BTC2
     안에서 맞지 않고 (BTC)·KRW-BTC·btc·한글에 붙은 BTC는 맞는다.
+  - [제안 추가] 마켓 이름은 언급이 아니다: 티커 바로 뒤에 "마켓"이 오면(공백 허용,
+    "KRW, BTC, USDT 마켓"처럼 쉼표·가운뎃점·빗금으로 이은 티커 목록 뒤도) 그 티커는
+    언급이 아니다. 단 마켓 코드의 뒷부분(KRW-BTC 마켓의 BTC)은 언급이다.
+  - [제안 추가] 마켓 코드의 앞부분(호가 통화, BTC-ETH의 BTC·USDT-SSX의 USDT)은
+    언급이 아니다. 뒷부분(KRW-BTC의 BTC)은 언급이다.
   - 한글 이름: 부분 문자열(D-079 문구 그대로). 괄호 같은 글자도 글자 그대로
     비교한다. 그래서 "비트코인캐시" 공지는 비트코인도 막는다(오탐은 매수만 막고
     손실은 없다, D-079).
 - 키워드 = "거래지원 종료" 또는 "유의".
-  [제안 추가] "거래지원 종료"는 띄어쓰기 차이를 무시한다("거래 지원 종료",
-  "거래지원종료"도 맞는다). 공식 문서 예시 제목이 "신규 거래 지원 안내"처럼
-  "거래 지원"을 띄어 쓴다.
+  [제안 추가] "거래지원 종료"는 띄어쓰기 차이를 무시하고("거래 지원 종료",
+  "거래지원종료"도 맞는다) 사이에 조사 을·이·은·의 하나를 허용한다("거래지원을 종료",
+  "거래 지원이 종료"). 공식 문서 예시 제목이 "신규 거래 지원 안내"처럼 "거래 지원"을
+  띄어 쓴다.
+  [제안 추가] "유의사항"·"유의 사항"(안내 문구)은 "유의" 키워드가 아니다.
 - 같은 글 안에 코인 언급과 키워드가 함께 있으면 그 코인의 market을 넣는다.
   여러 코인이 함께 나오면 모두 넣는다. event_type(CREATED·UPDATED)은 상관없다.
 
@@ -224,6 +234,100 @@ def test_delisting_keyword_ignores_spacing(keyword):
     assert blocks(f"[거래] 리플(XRP) {keyword} 안내") == {"KRW-XRP"}
 
 
+# ── 키워드 변형과 예외(제안 추가) ────────────────────────
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "거래지원을 종료합니다",
+        "거래 지원이 종료됩니다",
+        "거래지원이종료",
+        "거래 지원을  종료",
+        "거래지원의 종료",
+        "거래지원은 종료",
+        "거래\n지원 종료",
+    ],
+)
+def test_delisting_keyword_accepts_particles_and_spacing(phrase):
+    assert blocks(f"[거래] 비트코인(BTC) {phrase}", coins=(BTC,)) == {"KRW-BTC"}
+
+
+@pytest.mark.parametrize("phrase", ["거래지원 안내", "거래지원 재개", "거래지원들 종료"])
+def test_delisting_keyword_needs_the_end_word(phrase):
+    assert blocks(f"[거래] 비트코인(BTC) {phrase}", coins=(BTC,)) == frozenset()
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["KRW 마켓 지원\n※ 투자 유의사항: 변동성이 큽니다", "투자 유의 사항을 확인하세요", "유의\n사항"],
+)
+def test_caution_notes_are_not_the_caution_keyword(body):
+    assert blocks("[거래] 비트코인(BTC) 신규 거래지원 안내", coins=(BTC,), body=body) == frozenset()
+
+
+def test_caution_keyword_still_matches_next_to_a_caution_note():
+    body = "유의사항을 확인하세요. 비트코인은 유의 종목으로 지정되었습니다."
+
+    assert blocks("[거래] 안내", coins=(BTC,), body=body) == {"KRW-BTC"}
+
+
+# ── 마켓 이름은 코인 언급이 아니다(제안 추가) ─────────────
+
+USDT = notices.CoinName(market="KRW-USDT", ticker="USDT", korean_name="테더")
+
+
+@pytest.mark.parametrize(
+    ("title", "body"),
+    [
+        ("[거래] BTC 마켓 디지털 자산 거래지원 종료 안내 (SSX)", None),
+        ("[거래] BTC마켓 디지털 자산 거래지원 종료 안내", None),
+        ("[거래] USDT 마켓 디지털 자산 거래지원 종료 안내", None),
+        ("[거래] 썸씽(SSX) 거래지원 종료 안내", "대상 마켓: KRW, BTC, USDT 마켓"),
+        ("[거래] 썸씽(SSX) 거래지원 종료 안내", "대상: BTC·USDT 마켓"),
+        ("[거래] BTC-SSX, USDT-SSX 거래지원 종료 안내", None),
+        ("[거래] 썸씽(SSX) 유의 종목 지정", "마켓 코드: BTC-SSX"),
+    ],
+)
+def test_market_names_are_not_coin_mentions(title, body):
+    assert blocks(title, coins=(BTC, USDT), body=body) == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("[거래] KRW-BTC 마켓 유의 안내", {"KRW-BTC"}),
+        ("[거래] USDT-BTC 거래지원 종료 안내", {"KRW-BTC"}),
+        ("[거래] BTC-USDT 거래지원 종료 안내", {"KRW-USDT"}),
+        ("[거래] 비트코인(BTC) 마켓 유의 안내", {"KRW-BTC"}),
+        ("[거래] BTC 마켓 비트코인 유의 안내", {"KRW-BTC"}),
+        ("[거래] BTC 마켓에서 BTC 거래지원 종료", {"KRW-BTC"}),
+        ("[거래] BTC, ETH 거래지원 종료 안내", {"KRW-BTC"}),
+    ],
+)
+def test_coin_mentions_next_to_market_names_still_match(title, expected):
+    assert blocks(title, coins=(BTC, USDT)) == expected
+
+
+# ── 빈 이름 ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("ticker", "korean_name"), [("", ""), ("\u200b", "\u200b"), ("", "비트코인"), ("BTC", "")]
+)
+def test_empty_names_match_nothing_by_themselves(ticker, korean_name):
+    coin = notices.CoinName(market="KRW-X", ticker=ticker, korean_name=korean_name)
+    title = "[거래] 거래지원 종료 유의 안내 () - / 마켓"
+
+    assert blocks(title, coins=(coin,)) == frozenset()
+
+
+def test_empty_names_do_not_block_on_unrelated_notices():
+    empty = notices.CoinName(market="KRW-EMPTY", ticker="", korean_name="")
+
+    assert blocks("[거래] 비트코인(BTC) 유의 종목 지정 안내", coins=(BTC, empty)) == {"KRW-BTC"}
+
+
 # ── 본문 ──────────────────────────────────────────────────
 
 
@@ -250,7 +354,40 @@ def test_title_and_body_do_not_glue_into_a_ticker():
     assert blocks("[거래] 거래지원 종료 안내 B", body="TC 관련 공지") == frozenset()
 
 
-# ── 유니코드 정규화(NFC) ──────────────────────────────────
+def test_title_and_body_do_not_glue_into_a_keyword():
+    # 제목 끝 "거래지원"과 본문 앞 "종료"가 붙어 "거래지원종료"가 되면 안 된다.
+    assert blocks("[거래] 비트코인(BTC) 거래지원", body="종료 안내") == frozenset()
+    assert blocks("[거래] 비트코인(BTC) 거래지원", body="\n종료 안내") == frozenset()
+
+
+# ── 유니코드 정규화(NFKC)와 서식 문자 ────────────────────
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "[거래] ＢＴＣ 유의 종목 지정 안내",  # 전각 영문
+        "[거래] （ｂｔｃ） 유의 종목 지정 안내",  # 전각 괄호·소문자
+        "[거래] B\u200bTC 유의 종목 지정 안내",  # 폭 없는 공백(Cf)
+        "[거래] 비트\u200d코인 유의 종목 지정 안내",  # 폭 없는 이음자(Cf)
+        "[거래] 비트코인(BTC) 거래지원\u200b종료 안내",
+        "[거래] 비트코인(BTC) 유\ufeff의 종목 지정 안내",  # BOM(Cf)
+    ],
+)
+def test_compatibility_forms_and_format_characters_still_match(title):
+    assert blocks(title, coins=(BTC,)) == {"KRW-BTC"}
+
+
+def test_full_width_coin_name_still_matches():
+    coin = notices.CoinName(market="KRW-BTC", ticker="ＢＴＣ", korean_name="비트\u200b코인")
+
+    assert blocks("[거래] BTC 유의 종목 지정 안내", coins=(coin,)) == {"KRW-BTC"}
+    assert blocks("[거래] 비트코인 유의 종목 지정 안내", coins=(coin,)) == {"KRW-BTC"}
+
+
+def test_format_characters_do_not_break_ticker_boundaries():
+    # Cf를 지우면 W와 BTC가 붙어 WBTC가 된다. 그러면 BTC 언급이 아니다.
+    assert blocks("[거래] W\u200bBTC 유의 종목 지정 안내", coins=(BTC,)) == frozenset()
 
 
 def test_decomposed_title_still_matches():

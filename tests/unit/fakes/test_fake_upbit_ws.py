@@ -138,7 +138,7 @@ from fakes.canary import find_canaries, make_upbit_credentials
 from fakes.clock import FakeClock
 from fakes.upbit_http import FakeProtocolViolation as RestViolation
 from fakes.upbit_json import RawNumber
-from fakes.upbit_ws import FakeProtocolViolation, FakeUpbitWs
+from fakes.upbit_ws import ConcurrencyError, FakeProtocolViolation, FakeUpbitWs
 
 from autotrader.core.errors import StreamClosed, StreamConnectFailed
 from autotrader.core.models import UpbitCredentials
@@ -2008,3 +2008,505 @@ def test_client_close_with_a_code_and_twice(env):
 
     env.run(scenario)
     assert env.fake.connections[0].close_code == 4000
+
+
+# ── 사용 조건: 시계·이벤트 루프 ───────────────────────────
+
+
+def test_auto_advance_clock_is_rejected():
+    # 백그라운드 태스크(120초 감시, status UP)가 sleep할 때마다 시간을 당겨 버린다.
+    with pytest.raises(ValueError, match="run_for"):
+        FakeUpbitWs(FakeClock(auto_advance=True))
+
+
+def test_connect_from_another_event_loop_is_a_clear_error(env):
+    async def first() -> None:
+        await env.public()
+
+    async def second() -> None:
+        with pytest.raises(RuntimeError, match="이벤트 루프"):
+            await env.public()
+
+    asyncio.run(first())
+    asyncio.run(second())
+    assert len(env.fake.connections) == 1  # 다른 루프의 시도는 기록하지 않는다
+    env.fake.assert_clean()
+
+
+# ── 동시 recv ─────────────────────────────────────────────
+
+
+def test_concurrent_recv_raises_like_websockets_and_is_a_violation(env):
+    async def scenario(e: Env) -> None:
+        conn = await e.subscribed_public("KRW-BTC")
+        first = asyncio.ensure_future(conn.recv())
+        await settle()
+        with pytest.raises(ConcurrencyError) as info:
+            await conn.recv()
+        assert isinstance(info.value, RuntimeError)
+        assert not first.done()  # 먼저 기다리던 recv는 그대로다
+
+        e.fake.push_ticker("KRW-BTC", trade_price=Decimal("1"))
+        await settle()
+        assert json.loads(text_of(first.result()))["stream_type"] == "REALTIME"
+        e.fake.push_ticker("KRW-BTC", trade_price=Decimal("2"))
+        assert (await recv_json(conn))["stream_type"] == "REALTIME"  # 차례로 부르면 된다
+
+    env.run(scenario, clean=False)
+    assert rules(env.fake) == ["concurrent_recv"]
+
+
+def test_concurrency_error_is_the_websockets_class():
+    import websockets.exceptions
+
+    assert ConcurrencyError is websockets.exceptions.ConcurrencyError
+
+
+def test_recv_after_a_cancelled_recv_is_not_concurrent(env):
+    async def scenario(e: Env) -> None:
+        conn = await e.subscribed_public("KRW-BTC")
+        await assert_nothing_pending(conn)  # 기다리던 recv를 취소한다
+        await assert_nothing_pending(conn)
+
+    env.run(scenario)
+
+
+# ── 429 거절 뒤 멈춤 ──────────────────────────────────────
+
+
+def test_ws_reject_connect_with_429_requires_a_pause_of_that_kind(env):
+    env.fake.ws_reject_connect(status=429)
+
+    async def scenario(e: Env) -> None:
+        with pytest.raises(StreamConnectFailed) as info:
+            await e.public()
+        assert info.value.http_status == 429
+        await e.private()  # 다른 종류는 상관없다
+        await expect_violation("rate_limit_pause", e.public())
+        await e.clock.run_for(1)
+        await e.public()
+
+    env.run(scenario, clean=False)
+    assert rules(env.fake) == ["rate_limit_pause"]
+
+
+# ── 형식 오류 뒤 같은 요청 되풀이(D-080) ───────────────────
+
+FORMAT_ERRORS = ("WRONG_FORMAT", "NO_TICKET", "NO_TYPE", "NO_CODES", "INVALID_PARAM")
+
+
+@pytest.mark.parametrize("name", [*FORMAT_ERRORS, "SOMETHING_NEW"])
+def test_repeating_a_request_after_a_format_error_is_a_violation(env, name):
+    env.fake.ws_error(name)
+
+    async def scenario(e: Env) -> None:
+        conn = await e.public()
+        await conn.send(ticker_request("KRW-BTC", "KRW-ETH"))
+        assert (await recv_json(conn))["error"]["name"] == name
+        await expect_closed(conn)
+
+        again = await e.public()
+        # ticket이 달라도, Format 객체가 없어도 같은 Data Type 목록이면 되풀이다
+        same = request({"type": "ticker", "codes": ["KRW-BTC", "KRW-ETH"]}, fmt=None)
+        await expect_violation("repeat_after_error", again.send(same))
+        await assert_nothing_pending(again)  # 처리하지 않는다
+        await again.send(ticker_request("KRW-BTC"))  # 다른 요청은 된다
+        assert (await recv_json(again))["code"] == "KRW-BTC"
+
+    env.run(scenario, clean=False)
+    assert rules(env.fake) == ["repeat_after_error"]
+
+
+@pytest.mark.parametrize("name", ["INVALID_AUTH", "TOO_MANY_REQUEST"])
+def test_retrying_after_auth_or_rate_errors_is_allowed(env, name):
+    env.fake.ws_error(name)
+
+    async def scenario(e: Env) -> None:
+        conn = await e.private()
+        await conn.send(PRIVATE_ALL)
+        assert (await recv_json(conn))["error"]["name"] == name
+        await e.clock.run_for(1)
+        again = await e.private()
+        await again.send(PRIVATE_ALL)  # D-080: 한 번 다시 요청한다
+        e.fake.ws_my_asset()
+        assert (await recv_json(again))["type"] == "myAsset"
+
+    env.run(scenario)
+
+
+def test_repeat_after_error_is_per_stream_kind(env):
+    env.fake.ws_error("NO_TYPE", stream="private")
+
+    async def scenario(e: Env) -> None:
+        private = await e.subscribed_private()
+        assert (await recv_json(private))["error"]["name"] == "NO_TYPE"
+        public = await e.public()
+        await public.send(ticker_request("KRW-BTC"))
+        assert (await recv_json(public))["code"] == "KRW-BTC"
+
+    env.run(scenario)
+
+
+def test_ws_error_times_repeats_the_same_error(env):
+    env.fake.ws_error("NO_CODES", close_code=None, times=2)
+    env.fake.ws_error("NO_TYPE", close_code=None)
+
+    async def scenario(e: Env) -> None:
+        conn = await e.public()
+        names = []
+        for market in ("KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL"):
+            await conn.send(ticker_request(market))
+            names.append((await recv_json(conn)).get("error", {}).get("name"))
+            await e.clock.run_for(1)
+        assert names == ["NO_CODES", "NO_CODES", "NO_TYPE", None]
+
+    env.run(scenario)
+
+
+def test_ws_error_times_none_keeps_answering_with_the_error(env):
+    env.fake.ws_error("INVALID_AUTH", times=None)
+
+    async def scenario(e: Env) -> None:
+        for _ in range(5):
+            conn = await e.private()
+            await conn.send(PRIVATE_ALL)
+            assert (await recv_json(conn))["error"]["name"] == "INVALID_AUTH"
+            assert (await expect_closed(conn)).close_code == 1000
+            await e.clock.run_for(1)
+
+    env.run(scenario)
+
+
+@pytest.mark.parametrize(
+    ("times", "error"), [(0, ValueError), (-1, ValueError), (True, TypeError), (1.5, TypeError)]
+)
+def test_ws_error_times_is_checked(env, times, error):
+    with pytest.raises(error):
+        env.fake.ws_error("NO_CODES", times=times)
+
+
+# ── myOrder 기본값 ────────────────────────────────────────
+
+
+def test_ws_my_order_trade_gets_a_new_trade_uuid_and_now_each_time(env):
+    async def scenario(e: Env) -> None:
+        conn = await e.subscribed_private()
+        e.fake.ws_my_order({"state": "trade"})
+        first = await recv_raw(conn)
+        await e.clock.run_for(2)
+        e.fake.ws_my_order({"state": "trade"})
+        second = await recv_raw(conn)
+
+        uuid.UUID(first["trade_uuid"])
+        assert first["trade_uuid"] != second["trade_uuid"]
+        assert second["trade_timestamp"] == num(str(now_ms(e.clock)))
+        assert second["timestamp"] == second["trade_timestamp"]
+
+    env.run(scenario)
+
+
+def test_ws_my_order_trade_uuids_follow_the_seed(make_env):
+    def trade_uuids(seed: int) -> list[str]:
+        env = make_env(seed=seed)
+        found: list[str] = []
+
+        async def scenario(e: Env) -> None:
+            conn = await e.subscribed_private()
+            for _ in range(2):
+                e.fake.ws_my_order({"state": "trade"})
+                found.append((await recv_json(conn))["trade_uuid"])
+
+        env.run(scenario)
+        return found
+
+    assert trade_uuids(1) == trade_uuids(1)
+    assert trade_uuids(1) != trade_uuids(2)
+
+
+def test_ws_my_order_keeps_the_first_order_timestamp_per_order_uuid(env):
+    first_uuid, second_uuid = str(uuid.uuid4()), str(uuid.uuid4())
+
+    async def scenario(e: Env) -> None:
+        conn = await e.subscribed_private()
+        created = now_ms(e.clock)
+        e.fake.ws_my_order({"uuid": first_uuid, "state": "wait"})
+        await e.clock.run_for(5)
+        e.fake.ws_my_order({"uuid": first_uuid, "state": "trade"})
+        e.fake.ws_my_order({"uuid": second_uuid, "state": "wait"})
+        messages = [await recv_raw(conn) for _ in range(3)]
+
+        assert [m["order_timestamp"] for m in messages] == [
+            num(str(created)),
+            num(str(created)),
+            num(str(now_ms(e.clock))),
+        ]
+
+    env.run(scenario)
+
+
+def test_ws_my_order_prevented_amounts_are_zero_unless_prevented(env):
+    template = docs_raw("websocket-myorder")["example"]
+
+    async def scenario(e: Env) -> None:
+        conn = await e.subscribed_private()
+        e.fake.ws_my_order({"state": "wait"})
+        e.fake.ws_my_order({"state": "prevented"})
+        e.fake.ws_my_order({"state": "done", "prevented_volume": Decimal("0.1")})
+        wait, prevented, given = [await recv_raw(conn) for _ in range(3)]
+
+        assert (wait["prevented_volume"], wait["prevented_locked"]) == (num("0"), num("0"))
+        assert prevented["prevented_volume"] == template["prevented_volume"]
+        assert prevented["prevented_locked"] == template["prevented_locked"]
+        assert as_decimal(given["prevented_volume"]) == Decimal("0.1")
+        assert given["prevented_locked"] == num("0")
+
+    env.run(scenario)
+
+
+# ── 모르는 마켓(markets 옵션) ─────────────────────────────
+
+
+def test_markets_option_sends_snapshots_only_for_known_markets(make_env):
+    env = make_env(markets=["KRW-BTC", "KRW-XRP"])
+
+    async def scenario(e: Env) -> None:
+        conn = await e.public()
+        await conn.send(ticker_request("KRW-BTC", "KRW-NOPE", "KRW-XRP"))
+        codes = [(await recv_json(conn))["code"] for _ in range(2)]
+        assert codes == ["KRW-BTC", "KRW-XRP"]  # KRW-ETH는 녹화에 있어도 주지 않았다
+        await assert_nothing_pending(conn)
+
+        await conn.send(list_request())  # 구독은 기록한다
+        listed = await recv_json(conn)
+        assert listed["result"][0]["codes"] == ["KRW-BTC", "KRW-NOPE", "KRW-XRP"]
+
+        e.fake.push_ticker("KRW-NOPE", trade_price=Decimal("10"))  # 이제 알린 마켓이다
+        message = await recv_json(conn)
+        assert (message["code"], message["stream_type"]) == ("KRW-NOPE", "REALTIME")
+
+    env.run(scenario)
+
+
+def test_markets_option_learns_from_ws_ticker_state(make_env):
+    env = make_env(markets=())
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_ticker_state("KRW-ETH", "PREVIEW")
+        conn = await e.public()
+        await conn.send(ticker_request("KRW-BTC", "KRW-ETH"))
+        message = await recv_json(conn)
+        assert (message["code"], message["market_state"]) == ("KRW-ETH", "PREVIEW")
+        await assert_nothing_pending(conn)
+
+    env.run(scenario)
+
+
+def test_markets_option_is_checked():
+    clock = FakeClock()
+    with pytest.raises(ValueError):
+        FakeUpbitWs(clock, markets=["btc-krw"])
+    with pytest.raises(TypeError):
+        FakeUpbitWs(clock, markets="KRW-BTC")
+
+
+# ── 체결 시각은 지금을 넘지 않는다 ─────────────────────────
+
+
+def test_snapshot_trade_time_does_not_pass_now(env):
+    async def scenario(e: Env) -> None:
+        conn = await e.public()
+        await conn.send(ticker_request("KRW-XRP"))
+        snapshot = await recv_raw(conn)
+        assert {k: snapshot[k] for k in TRADE_TIME_FIELDS} == utc_trade_fields(e.clock)
+        e.fake.push_ticker("KRW-XRP", trade_price=Decimal("900"))
+        realtime = await recv_raw(conn)
+        assert {k: realtime[k] for k in TRADE_TIME_FIELDS} == utc_trade_fields(e.clock)
+
+    env.run(scenario)
+
+
+def test_recorded_trade_time_is_kept_when_it_is_in_the_past(make_env):
+    recorded = recorded_tickers()["KRW-BTC"]
+    clock = FakeClock(start_utc=datetime(2026, 11, 6, tzinfo=UTC))
+    env = Env(clock, FakeUpbitWs(clock))
+
+    async def scenario(e: Env) -> None:
+        conn = await e.public()
+        await conn.send(ticker_request("KRW-BTC"))
+        snapshot = await recv_raw(conn)
+        assert {k: snapshot[k] for k in TRADE_TIME_FIELDS} == {
+            k: recorded[k] for k in TRADE_TIME_FIELDS
+        }
+
+    env.run(scenario)
+
+
+def test_given_trade_time_is_sent_as_given(env):
+    async def scenario(e: Env) -> None:
+        conn = await e.subscribed_public("KRW-BTC")
+        later = now_ms(e.clock) + 5000
+        e.fake.push_ticker("KRW-BTC", trade_timestamp=later, trade_time="000005")
+        message = await recv_raw(conn)
+        assert message["trade_timestamp"] == num(str(later))
+        assert message["trade_time"] == "000005"
+
+    env.run(scenario)
+
+
+# ── 숫자 필드 타입 ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"trade_price": "108000000"},
+        {"signed_change_rate": True},
+        {"trade_timestamp": "1793881945395"},
+        {"acc_trade_volume": None},
+    ],
+    ids=["string", "bool", "string-int", "none"],
+)
+def test_push_ticker_number_fields_take_only_numbers(env, fields):
+    with pytest.raises(TypeError):
+        env.fake.push_ticker("KRW-BTC", **fields)
+
+
+@pytest.mark.parametrize(
+    "event",
+    [{"volume": "1"}, {"trades_count": True}, {"price": False}, {"order_timestamp": "1"}],
+    ids=["string", "bool-true", "bool-false", "string-int"],
+)
+def test_ws_my_order_number_fields_take_only_numbers(env, event):
+    with pytest.raises(TypeError):
+        env.fake.ws_my_order(event)
+
+
+def test_number_fields_accept_decimal_raw_number_and_int(env):
+    async def scenario(e: Env) -> None:
+        public = await e.subscribed_public("KRW-BTC")
+        private = await e.subscribed_private()
+        e.fake.push_ticker(
+            "KRW-BTC", trade_price=108000000, trade_volume=RawNumber("1e-3"), change="RISE"
+        )
+        e.fake.ws_my_order(
+            {"state": "wait", "volume": Decimal("1"), "trades_count": 0, "trade_fee": None}
+        )
+        ticker = await recv_raw(public)
+        order = await recv_raw(private)
+        assert (ticker["trade_price"], ticker["trade_volume"]) == (num("108000000"), num("1e-3"))
+        assert (order["volume"], order["trades_count"]) == (num("1"), num("0"))
+
+    env.run(scenario)
+
+
+# ── 깨진 서버 메시지(ws_raw) ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        "not json",
+        b"\xff\xfe{}",
+        '{"type":"candle.1s","code":"KRW-BTC"}',
+        '{"type":"ticker","code":"KRW-BTC"}',
+        b'{"status":"UP"',
+    ],
+    ids=["not-json", "not-utf8", "unknown-type", "missing-fields", "cut-binary"],
+)
+def test_ws_raw_sends_the_frame_as_it_is(env, frame):
+    async def scenario(e: Env) -> None:
+        conn = await e.public()  # 구독하지 않아도 받는다
+        e.fake.ws_raw(frame)
+        got = await recv_now(conn)
+        assert got == frame
+        assert type(got) is type(frame)  # str은 텍스트, bytes는 바이너리 프레임
+
+    env.run(scenario)
+    (record,) = env.fake.connections
+    ((_, delivered),) = record.delivered
+    if isinstance(frame, bytes):
+        try:
+            assert delivered == frame.decode("utf-8")
+        except UnicodeDecodeError:
+            assert delivered == frame  # UTF-8이 아니면 bytes 그대로 남긴다
+    else:
+        assert delivered == frame
+
+
+def test_ws_raw_stream_filter_silence_and_drop_after(env):
+    async def scenario(e: Env) -> None:
+        public = await e.public()
+        private = await e.private()
+        e.fake.ws_raw("x", stream="private")
+        assert await recv_now(private) == "x"
+        await assert_nothing_pending(public)
+
+        e.fake.ws_silence(1, stream="public")
+        e.fake.ws_raw("y", stream="public")
+        await assert_nothing_pending(public)
+        await e.clock.run_for(1)
+
+        e.fake.ws_drop(after=1, stream="public")
+        e.fake.ws_raw("z", stream="public")
+        assert await recv_now(public) == "z"
+        assert (await expect_closed(public)).close_code == DROP_CLOSE_CODE
+
+    env.run(scenario)
+
+
+@pytest.mark.parametrize("frame", [{"a": 1}, 1, None, bytearray(b"x")])
+def test_ws_raw_takes_only_str_or_bytes(env, frame):
+    with pytest.raises(TypeError):
+        env.fake.ws_raw(frame)
+
+
+def test_ws_raw_checks_the_stream(env):
+    with pytest.raises(ValueError):
+        env.fake.ws_raw("x", stream="both")
+
+
+# ── 비밀 유출(secret_leak) ────────────────────────────────
+
+
+@pytest.mark.parametrize("which", ["secret_key", "access_key"])
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_key_in_a_connect_header_is_a_secret_leak(env, which, stream):
+    async def scenario(e: Env) -> None:
+        headers = [("X-Debug", f"k={getattr(e.creds, which)}")]
+        connect = e.public(headers=headers) if stream == "public" else e.private(headers=headers)
+        await expect_violation("secret_leak", connect)
+
+    env.run(scenario, clean=False)
+    assert rules(env.fake) == ["secret_leak"]
+    assert env.fake.connections[0].accepted is False
+
+
+def test_key_in_the_url_is_a_secret_leak(env):
+    async def scenario(e: Env) -> None:
+        url = f"{PUBLIC_URL}?secret={e.creds.secret_key}"
+        await expect_violation("secret_leak", e.fake.connect(url, headers=[]))
+
+    env.run(scenario, clean=False)
+    assert rules(env.fake) == ["secret_leak"]
+
+
+@pytest.mark.parametrize("which", ["secret_key", "access_key"])
+@pytest.mark.parametrize("binary", [False, True])
+def test_key_in_a_sent_message_is_a_secret_leak(env, which, binary):
+    async def scenario(e: Env) -> None:
+        conn = await e.private()
+        text = request({"type": "myAsset"}, ticket=getattr(e.creds, which))
+        await expect_violation("secret_leak", conn.send(text.encode() if binary else text))
+        e.fake.ws_my_asset()
+        await assert_nothing_pending(conn)  # 처리하지 않았다
+
+    env.run(scenario, clean=False)
+    assert rules(env.fake) == ["secret_leak"]
+
+
+def test_a_jwt_only_in_authorization_is_not_a_leak(env):
+    async def scenario(e: Env) -> None:
+        conn = await e.private()
+        await conn.send(PRIVATE_ALL)
+
+    env.run(scenario)

@@ -38,6 +38,7 @@ from typing import Any, NoReturn
 
 import jwt
 from jwt.warnings import InsecureKeyLengthWarning
+from websockets.exceptions import ConcurrencyError
 
 from autotrader.core.errors import StreamClosed, StreamConnectFailed
 from autotrader.core.models import UpbitCredentials

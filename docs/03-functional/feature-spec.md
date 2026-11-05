@@ -33,6 +33,7 @@
 
 - `/v1/market/all?is_details=true`로 KRW 마켓만 저장한다.
 - `market_event.warning`(유의)과 `market_event.caution`의 각 항목(주의)을 저장한다. 시세 웹소켓의 `market_state`, `delisting_date`와 공지 웹소켓 `announcement`(category trade)도 반영한다.
+- 공지 데이터에는 종목 코드나 공지 종류 필드가 없고 제목·카테고리·본문(요청할 때만, 크면 null)만 있다. 실시간 전용이라 놓친 공지는 다시 오지 않고, 받지 못할 수도 있다(2026-11-05 확인, [업비트 API 연동 명세](../05-integration/upbit-api.md) 2장). 그래서 공지는 기록·알림과 보조 판단에만 쓰고, 매수 차단의 기준은 위의 구조화된 값이다. 공지 글자로 신규 매수를 막는 규칙은 제안 상태다(D-079 대기, 업비트 API 연동 명세 9장).
 - 갱신 시점: 실행할 때, 3시간마다, 웹소켓 재연결이나 잠자기 복귀 직후.
 
 ### FR-06 시세와 지표

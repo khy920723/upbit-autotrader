@@ -1,6 +1,6 @@
 # 2단계 하락률 비교 리포트
 
-상태: 비교 완료, 사용자 선택 대기(D-086) · 2026-11-05 · 관련: [분할 매수·매도 설계](../03-functional/split-trading.md) 5장·9.6, [결정 로그](../10-management/decision-log.md) D-084·D-086, [규칙 조건 후보 비교 리포트](rule-candidates.md)
+상태: 비교 완료. 사용자 결정 D-086(2026-11-06): 기본값 2% · 2026-11-05, 부록 A 2026-11-06 · 관련: [분할 매수·매도 설계](../03-functional/split-trading.md) 5장·9.6, [결정 로그](../10-management/decision-log.md) D-084·D-086, [규칙 조건 후보 비교 리포트](rule-candidates.md)
 
 > 이 문서는 2단계 매수의 하락 조건(D-084)이 과거 시세에서 얼마나 자주 채워졌는지, 그 뒤 손절로 이어졌는지를 센 기록이다. 수익률과 손익 금액은 계산하지 않았다. 어떤 하락률이 좋은지 판단하거나 권하지 않는다. 투자 자문이 아니며, 과거가 미래를 뜻하지 않는다.
 
@@ -33,7 +33,7 @@
 
 ## 2. 범위
 
-- **정할 것:** D-086(2단계 하락률 기본값). 기본값 없이 입력받을지(A), 예시 기본값을 미리 채울지(B)를 정한다. B라면 값도 정한다.
+- **정할 것:** D-086(2단계 하락률 기본값). 기본값 없이 입력받을지(A), 예시 기본값을 미리 채울지(B)를 정한다. B라면 값도 정한다. 2026-11-06 사용자가 B와 2%를 골랐다(7장).
 - **하락률:** 1·2·3·4%. 저장 검사가 0 < 하락률 < 손절%만 허용하므로(S7), 손절 5%에서는 5% 미만만 본다.
 - **보유 기간:** 7일, 30일. 이 기간이 지나면 사례를 끝낸다. 앱에는 보유 기간 상한이 없다. 비교를 위해 정한 관찰 기간이다.
 - **지표:** 수익률과 손익 금액은 쓰지 않는다.
@@ -221,9 +221,11 @@
 - **생존 편향이 있다.** 지금도 거래되는 대형 코인 3개만 봤다.
 - **추천하지 않는다.** 어느 칸이 좋아 보여도 이 2년, 이 3개 코인에 맞춘 값일 수 있다. 하락률을 정하는 판단 근거는 페이퍼 운영 기록이다([페이퍼 운영 평가 기준](../08-quality/paper-evaluation.md)).
 
-## 7. 사용자가 정할 항목
+## 7. 사용자 결정
 
-[결정 로그](../10-management/decision-log.md) D-086(대기)에 연결된다. 아래 표는 선택지와 관련 사실만 적었고, 권하는 값은 없다. 설계 문서의 추천은 A(기본값 없음)다([분할 매수·매도 설계](../03-functional/split-trading.md) 9.6).
+**결정(2026-11-06, D-086 유효):** 사용자가 B(예시 기본값)를 고르고, 값으로 2%(분할 설계 문서 5장 계산 예시의 값)를 골랐다. 사용자가 직접 고른 값이며, 이 리포트나 앱, 지휘 세션이 권한 값이 아니다. 저장 검사(0 < 하락률 < 손절%)는 그대로이고, 손절 %가 2% 이하이면 기본값을 비우고 직접 입력하게 한다([분할 매수·매도 설계](../03-functional/split-trading.md) 3.2·9.6).
+
+아래 표는 결정 전에 [결정 로그](../10-management/decision-log.md) D-086에 연결해 둔 기록이다. 선택지와 관련 사실만 적었고, 권하는 값은 없었다. 설계 문서의 추천은 A(기본값 없음)였다.
 
 | 선택지 | 내용 | 관련 사실(이 리포트) |
 |---|---|---|
@@ -256,3 +258,58 @@ uv run research/split/test_split_lab.py
   - `drop_rate.json`: 칸마다의 사례 수와 범주별 수
 - 업비트 과거 캔들이 바뀌지 않는 한, 같은 `--end`로 받으면 같은 수치가 나온다. 요청 수와 요청 간격 통계는 실행마다 다를 수 있다.
 - 스크립트 설명은 [research/split/README.md](../../research/split/README.md)에 있다.
+
+## 부록 A. 외부 자료 조사(2026-11-06, 지휘 세션)
+
+> 지휘 세션이 2026-11-06에 웹 검색으로 모은 내용을 옮겼다. 검색 결과 요약을 기준으로 적었고, 원문 전체는 확인하지 않았다. 이 문서를 고친 기획/문서 세션도 원문을 따로 확인하지 않았다. 2차 출처의 요약도 섞여 있다.
+>
+> 외부 자료의 결론에는 수익률 비교가 들어 있지만, 이 리포트의 시뮬레이션은 수익률을 계산하지 않았다. 외부 결과를 이 앱(시그널 + 규칙 + 평균 단가 −5% 손절, 매수 최대 2단계)에 그대로 옮길 수 없다. 아래 내용은 추천이 아니다.
+
+### A.1 학술 자료
+
+- 물타기(손실 중 추가 매수)만 따로 다룬 연구는 찾지 못했다.
+- Morgan Stanley Counterpoint Global의 "Drawdowns and Recoveries"는 물타기가 수익률에 도움이 되지 않았다고 보고한다.
+- 개인 투자자 행동에 관한 연구가 있다.
+  - 처분 효과(이익이 난 종목은 빨리 팔고 손실이 난 종목은 오래 들고 있는 경향): Barber·Odean, "The Behavior of Individual Investors"(Handbook of the Economics of Finance의 한 장)
+  - 개인 투자자 성과: Barber·Odean, "Trading Is Hazardous to Your Wealth"와 대만 자료를 쓴 "Just How Much Do Individual Investors Lose by Trading?"
+
+### A.2 나눠 사기와 한 번에 사기
+
+- Vanguard(2012) 연구: 주식·채권 기준으로 한 번에 산 쪽이 약 3분의 2의 기간에서 앞섰고, 나눠 사기는 하락 위험을 줄였다(2차 출처 요약).
+- 코인을 다룬 학술 연구는 찾지 못했다.
+- 이 앱의 2단계는 정해진 일정으로 나눠 사는 방식과 다르다. 시그널 평가 때 매수 조건을 다시 만족하고 가격이 평균 단가보다 하락률 이상 낮을 때만 산다(D-084).
+
+### A.3 자동매매 봇 가이드(3Commas 류)
+
+- 첫 추가 매수 간격은 1~3%(흔히 1.5~2%), 추가 매수는 3~10회다.
+- 이런 봇은 손절이 넓거나 없는 경우가 많다. 평균 단가 −5% 손절에 매수 최대 2단계인 이 앱과는 구조가 다르다.
+
+### A.4 국내 커뮤니티
+
+- 정해진 답이 없다.
+- 예시로는 5%·10% 간격, 3분할 비율(20/40/40, 30/30/40, 50/30/20), 레버리지 거래의 1% 간격이 있다.
+- 대부분 개인 의견이거나 오래된 글이다.
+
+### A.5 이 앱의 제약에 대입하면
+
+- 저장 검사(0 < 하락률 < 손절%) 때문에, 손절 5%에서는 하락률이 5%보다 작아야 한다. 커뮤니티의 5~10% 간격은 쓸 수 없고, 봇 가이드의 1~3%는 범위 안에 든다.
+- 매수가 최대 2단계라(D-083), 커뮤니티의 3분할 비율이나 봇의 추가 매수 3~10회는 그대로 쓸 수 없다.
+- 범위 안에 든다는 뜻이며, 어떤 값을 권하는 것이 아니다. D-086의 2%는 사용자가 고른 값이다.
+
+### A.6 출처
+
+| 자료 | 주소 |
+|---|---|
+| Morgan Stanley Counterpoint Global, "Drawdowns and Recoveries" | https://www.morganstanley.com/im/publication/insights/articles/article_drawdownsandrecoveries_ltr.pdf |
+| Barber·Odean, "The Behavior of Individual Investors" | https://faculty.haas.berkeley.edu/odean/papers%20current%20versions/behavior%20of%20individual%20investors.pdf |
+| Barber·Odean, "Trading Is Hazardous to Your Wealth" | https://faculty.haas.berkeley.edu/odean/papers%20current%20versions/individual_investor_performance_final.pdf |
+| "Just How Much Do Individual Investors Lose by Trading?"(ResearchGate) | https://www.researchgate.net/publication/23935366_Just_How_Much_Do_Individual_Investors_Lose_by_Trading |
+| Greenline, 나눠 사기와 한 번에 사기 비교 글 | https://usegreenline.com/articles/dollar-cost-averaging-vs-lump-sum |
+| Forbes(Robert Berger, 2021-02-12), 같은 주제의 글 | https://www.forbes.com/sites/robertberger/2021/02/12/dollar-cost-averaging-vs-lump-sum-investing-how-to-decide/ |
+| 3Commas DCA 봇 설정 가이드(ai-trading-ranked.com) | https://ai-trading-ranked.com/posts/3commas-dca-bot-setup-guide |
+| Smart safety orders 설명(blockresearch.ai) | https://blockresearch.ai/blog/smart-safety-orders-explained |
+| 브런치 글 | https://brunch.co.kr/@00b68069c88e4c0/117 |
+| 클리앙 가상화폐 게시판 글 | https://www.clien.net/service/board/cm_vcoin/11944918 |
+| 코인판 글 | https://coinpan.com/futures/215721575 |
+| 디시인사이드 비트코인 갤러리 글 | https://gall.dcinside.com/board/view/?id=bitcoins_new1&no=7601596 |
+| 아하 질문 글 | https://www.a-ha.io/questions/42c2a37f4a569b68acc961f14158aa50 |

@@ -233,6 +233,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | req_volume | TEXT | | 보낸 `volume` |
 | approved_krw | INTEGER | | 위험 관리가 승인한 매수 금액 |
 | purpose | TEXT | 필수 | ENTRY, STOP_LOSS, TAKE_PROFIT, RULE_EXIT, LLM_NEGATIVE, LIQUIDATE, DESELECT_SELL, MODE_EXIT_SELL, IMPORTED(재조정으로 들여온 주문) |
+| step_no | INTEGER | | ENTRY는 매수 단계 번호(1·2), TAKE_PROFIT은 익절 단계 번호(두 단계를 합쳐 팔면 2). 그 밖은 NULL |
 | source | TEXT | 필수, 기본 `app` | app, reconcile(거래소 목록에서 들여옴, D-070) |
 | mode | TEXT | 필수 | paper, live-validate, live |
 | state | TEXT | 필수 | CREATED, SUBMITTED, OPEN, PARTIAL, FILLED, CANCELLED, REJECTED, UNKNOWN |
@@ -295,7 +296,10 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | cost_krw | TEXT | 필수 | 매수 수수료를 포함한 남은 원가(Decimal). 실현 손익 계산용 |
 | cost_estimated | INTEGER | 필수, 기본 0 | 수동 매매 등으로 원가를 거래소 평균가로 다시 계산했으면 1 |
 | status | TEXT | 필수 | FLAT, ENTERING, HOLDING, EXITING, COOLDOWN, BLOCKED |
-| entries | INTEGER | 필수, 기본 0 | 이번 포지션의 매수 회차 수(ADR-0008) |
+| entries | INTEGER | 필수, 기본 0 | 이번 포지션에서 체결된 매수 단계 수(0~2, ADR-0008) |
+| plan_json | TEXT | | 단계 계획(매수 비율, 2단계 하락률, 익절 단계). 1단계 체결 때 그 시점 설정으로 저장하고 FLAT이 되면 NULL([분할 매수·매도 설계](../03-functional/split-trading.md) 4장) |
+| tp_steps_done | INTEGER | 필수, 기본 0 | 판 익절 단계 수(0~2). 1 이상이면 2단계 매수를 하지 않는다 |
+| tp_base_volume | TEXT | | 기준 수량: 첫 익절 단계를 팔기 직전 수량. 익절 매도 수량 계산에 쓴다 |
 | exit_only | INTEGER | 필수, 기본 0 | live → paper 전환 뒤 남긴 실보유분(손절·청산만 관리) |
 | dust_volume | TEXT | 필수, 기본 `'0'` | 팔 수 없는 잔량(매도 `min_total` 미만). 손절·매수 판단에서 보유로 치지 않고, 다음 매수 체결 때 `volume`에 합친다([매매 로직 명세](../03-functional/trading-logic.md) 10장). 잔고 대조는 거래소 수량을 `volume + dust_volume`과 비교한다(D-070) |
 | cooldown_until | TEXT | | 재진입 제한 해제 시각. status가 COOLDOWN인데 NULL이면 수동 해제 대기 |
@@ -312,7 +316,8 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | id | INTEGER | PK | |
 | market, mode | TEXT | 필수 | |
 | opened_at, closed_at | TEXT | 필수 | |
-| entries | INTEGER | 필수 | 매수 회차 수 |
+| entries | INTEGER | 필수 | 체결된 매수 단계 수 |
+| tp_steps | INTEGER | 필수, 기본 0 | 판 익절 단계 수 |
 | buy_funds_krw, sell_funds_krw, fees_krw | INTEGER | 필수 | |
 | realized_pnl_krw | INTEGER | 필수 | |
 | exit_reason | TEXT | 필수 | 마지막 매도의 purpose |

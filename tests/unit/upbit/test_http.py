@@ -90,7 +90,7 @@ CLOSED_PARAMS = [
 ]
 
 JWT_SHAPE = re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
-BEARER_VALUE = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{8,}")
+BEARER_VALUE = re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{20,}")
 
 
 # --- 응답 공장과 기록 처리기 ----------------------------------------------------------------
@@ -878,7 +878,7 @@ def test_418_stops_every_request_without_network_until_the_wait_is_over(body, re
 
     async def scenario():
         async with connect(
-            reply(418, content=body, headers=headers, remaining=None), reply(201)
+            reply(418, content=body, headers=headers, remaining=None), reply()
         ) as h:
             with pytest.raises(UpbitBlocked) as caught:
                 await h.http.get("/v1/ticker", [("markets", "KRW-BTC")])

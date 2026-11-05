@@ -12,14 +12,15 @@
   위반마다 규칙 이름 `.rule`이 있다: path, origin, duplicate_header, post_body, delete_body, auth,
   jwt_alg, nonce, query_hash, smp_type, identifier, identifier_not_saved, order_params, auto_retry,
   rate_limit_half, rate_limit, batch_cancel.
-- 요청 한도 창: FakeClock monotonic의 고정 창 `[floor(t / s) * s, +s)`(1초 창이면 1000.0, 1001.0 ...).
+- 요청 한도 창: FakeClock monotonic의 고정 창 `[floor(t / s) * s, +s)`(1초 창이면 1000.0, 1001.0).
   절반을 넘으면 위반(예외). 실제 한도를 넘으면 위반을 남기고 429로 응답한다(예외 없음).
   위반한 요청도 창에 센다. `Remaining-Req`의 `sec`는 그 창에서 실제 한도까지 남은 수다.
 - 통신 주입(timeout_before_send, timeout_after_accept, connection_reset, server_error)과 reject의
   대상은 다음 POST /v1/orders 1건이다. auth_error·out_of_scope·unknown_error는 다음 인증 요청 1건.
 - 예약(fill)이 없는 주문은 받는 즉시 가짜 호가로 체결을 끝낸다(곧바로 조회하면 끝 상태).
-- `requests` 항목: `.method`, `.path`(원래 경로), `.query`(보낸 그대로의 인코딩된 문자열), `.headers`
-  ((이름, 값) 쌍 목록, 같은 이름 여러 개를 그대로), `.body`(bytes), `.monotonic`(FakeClock 시각).
+- `requests` 항목: `.method`, `.path`(원래 경로), `.query`(보낸 그대로의 인코딩된 문자열),
+  `.headers`((이름, 값) 쌍 목록, 같은 이름 여러 개를 그대로), `.body`(bytes),
+  `.monotonic`(FakeClock 시각).
   `requests_per_window(group, seconds)`는 {창 시작 monotonic: 요청 수}.
 - 시각: `Date` 헤더와 `created_at`은 거래소 시각(가짜를 만든 때부터 monotonic 경과만큼 흐르고
   server_time_offset을 더한 값)이다. PC 시계(FakeClock.set_pc_offset)를 따르지 않는다.
@@ -212,7 +213,7 @@ def without(body: dict[str, str], *keys: str) -> dict[str, str]:
 
 def assert_order_object(obj: dict[str, Any]) -> None:
     """fakes-spec 2.2절 주문 객체. 거래 API 숫자는 문자열이다."""
-    assert ORDER_FIELDS <= obj.keys(), ORDER_FIELDS - obj.keys()
+    assert obj.keys() >= ORDER_FIELDS, ORDER_FIELDS - obj.keys()
     for field in STRING_NUMBER_FIELDS:
         assert isinstance(obj[field], str), field
         Decimal(obj[field])

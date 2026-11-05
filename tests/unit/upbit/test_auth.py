@@ -24,6 +24,8 @@ from fakes.canary import find_canaries, make_upbit_credentials
 from hypothesis import given
 from hypothesis import strategies as st
 
+# isort: split
+# adapters.upbit는 아직 없어서 ruff가 서드파티로 분류한다. 구현 전후로 정렬이 바뀌지 않게 따로 둔다.
 from autotrader.adapters.upbit.auth import (
     Credentials,
     body_hash_input,

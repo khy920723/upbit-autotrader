@@ -17,7 +17,6 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from autotrader.adapters.upbit.errors import to_error
 from autotrader.core.errors import (
     UpbitAuthError,
     UpbitBlocked,
@@ -30,6 +29,10 @@ from autotrader.core.errors import (
     UpbitRequestError,
     UpbitServerError,
 )
+
+# isort: split
+# adapters.upbit는 아직 없어서 ruff가 서드파티로 분류한다. 구현 전후로 정렬이 바뀌지 않게 따로 둔다.
+from autotrader.adapters.upbit.errors import to_error
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "upbit"
 MANIFEST = {
@@ -236,9 +239,9 @@ ODD_BODIES = [
     b"[]",
     b"null",
     b'{"error": "boom"}',
-    b'{"error": {"message": "name이 없다"}}',
+    '{"error": {"message": "name이 없다"}}'.encode(),
     b'{"error": {"name": null, "message": "x"}}',
-    b'{"message": "error 키가 없다"}',
+    '{"message": "error 키가 없다"}'.encode(),
     b"\xff\xfe\x00\x01",
 ]
 STATUS_FALLBACK = [
@@ -268,7 +271,7 @@ def test_bodies_without_error_name_are_classified_by_status(body, status, expect
     body=st.one_of(
         st.binary(max_size=200),
         st.builds(
-            lambda name, message: json.dumps({"error": {"name": name, "message": message}}).encode(),
+            error_body,
             st.one_of(st.text(max_size=30), st.integers(), st.none(), st.booleans()),
             st.one_of(st.text(max_size=30), st.none(), st.integers()),
         ),
@@ -303,9 +306,7 @@ RATE_LIMIT_BODIES = [
 
 @pytest.mark.parametrize("body", RATE_LIMIT_BODIES, ids=["json", "empty", "text"])
 def test_429_is_rate_limited_with_group_and_remaining_sec(body):
-    error = to_error(
-        429, body, headers("group=order; min=1800; sec=0"), group="order"
-    )
+    error = to_error(429, body, headers("group=order; min=1800; sec=0"), group="order")
 
     assert category(error) is UpbitRateLimited
     assert error.http_status == 429
@@ -367,9 +368,9 @@ def test_remaining_sec_is_none_without_a_readable_sec(remaining):
 
 
 def test_remaining_sec_reads_sec_and_ignores_min():
-    error = to_error(
-        400, error_body("invalid_parameter"), headers("group=default; min=0; sec=7"), group="default"
-    )
+    remaining = headers("group=default; min=0; sec=7")
+
+    error = to_error(400, error_body("invalid_parameter"), remaining, group="default")
 
     assert error.remaining_sec == 7
 

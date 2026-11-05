@@ -32,9 +32,6 @@ from fakes.canary import find_canaries, make_upbit_credentials
 from fakes.clock import FakeClock
 
 import autotrader
-from autotrader.adapters.upbit.auth import Credentials, encode_query, hash_input
-from autotrader.adapters.upbit.http import UpbitHttp, UpbitResponse
-from autotrader.adapters.upbit.ratelimit import RateLimiter
 from autotrader.core.errors import (
     AutotraderError,
     NetworkError,
@@ -47,6 +44,12 @@ from autotrader.core.errors import (
     UpbitRateLimited,
     UpbitServerError,
 )
+
+# isort: split
+# adapters.upbit는 아직 없어서 ruff가 서드파티로 분류한다. 구현 전후로 정렬이 바뀌지 않게 따로 둔다.
+from autotrader.adapters.upbit.auth import Credentials, encode_query, hash_input
+from autotrader.adapters.upbit.http import UpbitHttp, UpbitResponse
+from autotrader.adapters.upbit.ratelimit import RateLimiter
 
 START = 1000.0  # FakeClock의 monotonic 시작값
 TOLERANCE = 0.05
@@ -312,7 +315,8 @@ BAD_PATH_CALLS = {
 def test_paths_with_trailing_or_double_slashes_are_rejected_before_sending(method, path):
     async def scenario():
         async with connect() as h:
-            with pytest.raises(ValueError):
+            # 오류 문구는 구현이 정한다. 타입(ValueError)과 "보내지 않음"만 본다.
+            with pytest.raises(ValueError):  # noqa: PT011
                 await BAD_PATH_CALLS[method](h.http, path)
             return h.wire.requests
 
@@ -407,9 +411,10 @@ def test_uuids_array_is_sent_with_unencoded_brackets_and_signed():
     request, creds = run(scenario)
 
     assert request.url.query == b"uuids[]=a&uuids[]=b"
-    assert verify_jwt(bearer_token(request), creds)["query_hash"] == hashlib.sha512(
-        b"uuids[]=a&uuids[]=b"
-    ).hexdigest()
+    assert (
+        verify_jwt(bearer_token(request), creds)["query_hash"]
+        == hashlib.sha512(b"uuids[]=a&uuids[]=b").hexdigest()
+    )
 
 
 def test_values_are_encoded_only_on_the_wire_and_hashed_raw():
@@ -428,9 +433,10 @@ def test_values_are_encoded_only_on_the_wire_and_hashed_raw():
     assert "+" not in sent
     # 서버처럼 받은 쿼리를 디코딩해 다시 해시하면 같아야 한다(TS-16).
     assert payload["query_hash"] == hashlib.sha512(unquote(sent).encode("utf-8")).hexdigest()
-    assert payload["query_hash"] == hashlib.sha512(
-        hash_input(CLOSED_PARAMS).encode("utf-8")
-    ).hexdigest()
+    assert (
+        payload["query_hash"]
+        == hashlib.sha512(hash_input(CLOSED_PARAMS).encode("utf-8")).hexdigest()
+    )
 
 
 def test_comma_separated_market_list_decodes_back_on_the_server():
@@ -459,9 +465,10 @@ def test_delete_sends_params_in_the_query_and_signs_them():
 
     assert request.method == "DELETE"
     assert request.url.raw_path == b"/v1/order?identifier=uat-test-1"
-    assert verify_jwt(bearer_token(request), creds)["query_hash"] == hashlib.sha512(
-        b"identifier=uat-test-1"
-    ).hexdigest()
+    assert (
+        verify_jwt(bearer_token(request), creds)["query_hash"]
+        == hashlib.sha512(b"identifier=uat-test-1").hexdigest()
+    )
 
 
 def test_private_get_without_params_has_no_query_hash():
@@ -877,9 +884,7 @@ def test_418_stops_every_request_without_network_until_the_wait_is_over(body, re
     headers = {} if retry_after is None else {"Retry-After": retry_after}
 
     async def scenario():
-        async with connect(
-            reply(418, content=body, headers=headers, remaining=None), reply()
-        ) as h:
+        async with connect(reply(418, content=body, headers=headers, remaining=None), reply()) as h:
             with pytest.raises(UpbitBlocked) as caught:
                 await h.http.get("/v1/ticker", [("markets", "KRW-BTC")])
             await advance(h.clock, wait - 1.0)
@@ -961,7 +966,10 @@ _STANDARD_RECORD_KEYS = set(vars(logging.LogRecord("x", logging.INFO, "", 0, "",
 
 
 def without_source_lines(text: str) -> str:
-    """traceback의 소스 코드 줄(들여쓴 줄)을 뺀다. 코드에 적힌 'Bearer' 같은 글자는 비밀이 아니다."""
+    """traceback의 소스 코드 줄(들여쓴 줄)을 뺀다.
+
+    코드에 적힌 'Bearer' 같은 글자는 비밀이 아니다. 실행 중 값(메시지, 인자)만 검사한다.
+    """
     kept = []
     in_frame = False
     for line in text.splitlines():

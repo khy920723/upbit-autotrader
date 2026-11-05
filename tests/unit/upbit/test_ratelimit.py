@@ -23,8 +23,11 @@ from fakes.clock import FakeClock
 from hypothesis import HealthCheck, event, given, settings
 from hypothesis import strategies as st
 
-from autotrader.adapters.upbit.ratelimit import GROUP_LIMITS, RateLimiter, group_for
 from autotrader.core.errors import UpbitBlocked
+
+# isort: split
+# adapters.upbit는 아직 없어서 ruff가 서드파티로 분류한다. 구현 전후로 정렬이 바뀌지 않게 따로 둔다.
+from autotrader.adapters.upbit.ratelimit import GROUP_LIMITS, RateLimiter, group_for
 
 START = 1000.0  # FakeClock의 monotonic 시작값
 TOLERANCE = 0.05  # "다음 초 경계까지"를 조금 넘겨 깨우는 구현을 허용하는 폭(초)
@@ -456,4 +459,3 @@ def test_success_after_block_resets_the_wait():
         return limiter.blocked_until() - now
 
     assert asyncio.run(scenario()) == pytest.approx(300.0)
-

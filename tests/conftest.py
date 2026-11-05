@@ -3,6 +3,8 @@
 - Qt는 화면 없이(offscreen) 돌린다. CI는 QT_QPA_PLATFORM=offscreen을 넘기지만,
   빠뜨려도 테스트가 돌게 기본값을 둔다.
 - 런타임 폴더(%LOCALAPPDATA%\\upbit-autotrader\\ 등)는 테스트마다 임시 폴더로 바꾼다.
+- 실제 네트워크는 모든 테스트에서 막는다(`_block_real_network`, fakes-spec 2.3절, QA R17-02).
+  루프백·AF_UNIX만 허용하고 프록시 설정을 비운다. 끄는 마커·옵션은 없다.
 - 업비트 와이어 가짜(FakeUpbitServer)는 `make_fake_upbit`·`fake_upbit`로 만들면 정리 단계에서
   엄격 검사 위반이 0건인지 확인한다(fakes-spec 1.2절 3항).
 """
@@ -16,6 +18,7 @@ from typing import Any
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from fakes import network_guard
 
 from autotrader.app.logging_setup import remove_app_log_handlers
 from autotrader.config.paths import AppPaths, resolve_app_paths
@@ -38,6 +41,14 @@ def isolated_app_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AppPat
     monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
     monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
     return resolve_app_paths()
+
+
+@pytest.fixture(autouse=True)
+def _block_real_network() -> Iterator[None]:
+    """테스트 동안 외부 연결·이름 해석을 RealNetworkBlocked로 막는다(fakes/network_guard.py)."""
+    with pytest.MonkeyPatch.context() as patch:
+        network_guard.install(patch)
+        yield
 
 
 @pytest.fixture(autouse=True)

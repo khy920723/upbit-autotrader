@@ -632,8 +632,9 @@ def test_connection_numbers_count_opened_connections_per_stream_object(env):
             numbers.append(item.connection_no)
             await iterator.aclose()
         assert numbers == [None, 1, 2, 3]
-        # 새 스트림 객체는 1부터 센다.
-        _, first = await e.open_ticker(e.public(), within=2)
+        # 새 스트림 객체는 1부터 센다(한도는 객체마다 세므로 1초 쉬고 연다).
+        await e.clock.run_for(1)
+        _, first = await e.open_ticker(e.public())
         assert first == opened("public", 1)
 
     env.run(scenario)

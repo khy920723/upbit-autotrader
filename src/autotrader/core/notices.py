@@ -40,9 +40,7 @@ CAUTION_KEYWORD = "유의"
 CAUTION_EXCEPTIONS = ("사항",)
 """'유의' 뒤에(공백 허용) 오면 키워드로 보지 않는 말. "유의사항"·"유의 사항"은 안내 문구다."""
 
-CAUTION_PATTERN = re.compile(
-    rf"{CAUTION_KEYWORD}(?!\s*(?:{'|'.join(CAUTION_EXCEPTIONS)}))"
-)
+CAUTION_PATTERN = re.compile(rf"{CAUTION_KEYWORD}(?!\s*(?:{'|'.join(CAUTION_EXCEPTIONS)}))")
 
 TICKER_BOUNDARY = "A-Za-z0-9"
 """티커 앞뒤에 오면 안 되는 글자(ASCII 영숫자). BTC가 WBTC·BTCB·BTC2 안에서 맞지 않게 한다.
@@ -101,7 +99,10 @@ def _is_market_name(part: str, start: int, end: int) -> bool:
 
 
 def _mentions_ticker(part: str, ticker: str) -> bool:
-    """ASCII 영숫자 경계로, 대소문자 없이 찾는다. 마켓 이름으로 쓰인 곳은 빼다. 빈 티커는 맞지 않는다."""
+    """ASCII 영숫자 경계로, 대소문자 없이 찾는다. 빈 티커는 맞지 않는다.
+
+    마켓 이름으로 쓰인 곳(_is_market_name)은 언급으로 세지 않는다.
+    """
     if not ticker:
         return False
     pattern = rf"(?<![{TICKER_BOUNDARY}]){re.escape(ticker)}(?![{TICKER_BOUNDARY}])"

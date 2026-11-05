@@ -280,6 +280,8 @@ FORBIDDEN_CLOCK_USES = frozenset(
 )
 LOOP_GETTERS = frozenset({"get_running_loop", "get_event_loop", "new_event_loop"})
 LOOP_SCHEDULERS = frozenset({"call_later", "call_at"})
+# 시간 상한 인자(timeout=)를 받으면 이벤트 루프 시간으로 재는 asyncio 함수. 인자 없이는 허용한다.
+ASYNCIO_TIMEOUT_ARGUMENT_CALLS = frozenset({"wait", "as_completed"})
 
 
 def _call_name(node: ast.AST) -> str:
@@ -318,6 +320,43 @@ def _loop_holders(tree: ast.AST) -> set[str]:
     return holders
 
 
+def _asyncio_names(tree: ast.AST, names: frozenset[str]) -> set[str]:
+    """`from asyncio import wait`처럼 asyncio에서 바로 가져온 이름(별칭 포함) 중 names에 든 것."""
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "asyncio":
+            found |= {alias.asname or alias.name for alias in node.names if alias.name in names}
+    return found
+
+
+def _timeout_argument_calls(tree: ast.AST) -> list[str]:
+    """`asyncio.wait(..., timeout=5)`·`as_completed(..., timeout=t)`(None이 아닌 timeout)."""
+    imported = _asyncio_names(tree, ASYNCIO_TIMEOUT_ARGUMENT_CALLS)
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "asyncio"
+            and func.attr in ASYNCIO_TIMEOUT_ARGUMENT_CALLS
+        ):
+            name = f"asyncio.{func.attr}"
+        elif isinstance(func, ast.Name) and func.id in imported:
+            name = func.id
+        else:
+            continue
+        for keyword in node.keywords:
+            value = keyword.value
+            if keyword.arg == "timeout" and not (
+                isinstance(value, ast.Constant) and value.value is None
+            ):
+                found.append(f"{name}(timeout=)")
+    return found
+
+
 def direct_clock_uses(path: Path) -> list[str]:
     """시계를 직접 읽거나 기다리는 코드. 별칭 import(`import time as t`)까지는 쫓지 않는다.
 
@@ -325,7 +364,7 @@ def direct_clock_uses(path: Path) -> list[str]:
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     holders = _loop_holders(tree)
-    found: list[str] = []
+    found: list[str] = _timeout_argument_calls(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module in {"time", "asyncio"}:
             found.extend(
@@ -421,6 +460,55 @@ def test_direct_clock_uses_ignores_clock_calls_and_plain_datetimes(tmp_path):
         "    loop_count = 3\n"
         "    loop_count.time\n"
         "    return clock.monotonic(), clock.utc_now(), datetime(2026, 11, 5, tzinfo=UTC)\n",
+        encoding="utf-8",
+    )
+
+    assert direct_clock_uses(sample) == []
+
+
+def test_direct_clock_uses_finds_timeout_arguments_of_wait_and_as_completed(tmp_path):
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "import asyncio\n"
+        "from asyncio import wait, as_completed as done_in_order\n"
+        "async def f(tasks, limit):\n"
+        "    await asyncio.wait(tasks, timeout=5)\n"
+        "    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=limit)\n"
+        "    for t in asyncio.as_completed(tasks, timeout=1.5):\n"
+        "        await t\n"
+        "    await wait(tasks, timeout=limit)\n"
+        "    for t in done_in_order(tasks, timeout=2):\n"
+        "        await t\n",
+        encoding="utf-8",
+    )
+
+    assert sorted(direct_clock_uses(sample)) == sorted(
+        [
+            "asyncio.wait(timeout=)",
+            "asyncio.wait(timeout=)",
+            "asyncio.as_completed(timeout=)",
+            "wait(timeout=)",
+            "done_in_order(timeout=)",
+        ]
+    )
+
+
+def test_direct_clock_uses_allows_wait_and_as_completed_without_timeout(tmp_path):
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "import asyncio\n"
+        "from asyncio import wait\n"
+        "async def f(tasks, other, clock):\n"
+        "    await asyncio.wait(tasks)\n"
+        "    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)\n"
+        "    await asyncio.wait(tasks, timeout=None)\n"
+        "    await wait(tasks)\n"
+        "    for t in asyncio.as_completed(tasks):\n"
+        "        await t\n"
+        "    await other.wait(tasks, timeout=5)\n"
+        "    await clock.as_completed(tasks, timeout=5)\n"
+        "    event = asyncio.Event()\n"
+        "    await event.wait()\n",
         encoding="utf-8",
     )
 

@@ -260,7 +260,11 @@ def test_delisting_keyword_needs_the_end_word(phrase):
 
 @pytest.mark.parametrize(
     "body",
-    ["KRW 마켓 지원\n※ 투자 유의사항: 변동성이 큽니다", "투자 유의 사항을 확인하세요", "유의\n사항"],
+    [
+        "KRW 마켓 지원\n※ 투자 유의사항: 변동성이 큽니다",
+        "투자 유의 사항을 확인하세요",
+        "유의\n사항",
+    ],
 )
 def test_caution_notes_are_not_the_caution_keyword(body):
     assert blocks("[거래] 비트코인(BTC) 신규 거래지원 안내", coins=(BTC,), body=body) == frozenset()

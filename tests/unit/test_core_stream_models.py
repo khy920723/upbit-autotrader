@@ -6,8 +6,10 @@
   None 허용). 기존 `_check_decimals` 방식.
 - 시각(datetime)은 시간대가 있어야 한다. naive이거나 utcoffset()이 None이면
   ValueError다.
-- 타임스탬프(ms)는 int다. float 필드는 StreamStatus.retry_in(초,
+- 타임스탬프(ms)는 int다. 만들 때 int가 아니면(float·Decimal·bool·str) TypeError다
+  (`int | None` 필드는 None 허용). float 필드는 StreamStatus.retry_in(초,
   Clock.sleep에 넘기는 대기 시간)뿐이다.
+- MyAssetEvent.assets의 원소는 AssetBalance여야 한다(아니면 TypeError).
 - 비밀(키, 토큰, JWT, Authorization)을 담는 필드가 없다(INV-07).
 
 정한 필드. 근거는 공식 문서 docs.upbit.com/kr/reference/의 websocket-ticker,
@@ -370,6 +372,63 @@ def test_millisecond_timestamps_are_int(cls, name):
     assert "int" in annotation, f"{cls.__name__}.{name}: {annotation}"
     assert "float" not in annotation
     assert "Decimal" not in annotation
+
+
+NOT_INTS = [Decimal("1710751590000"), 1710751590000.0, True, "1710751590000"]
+
+
+@pytest.mark.parametrize(("cls", "name"), TIMESTAMP_FIELDS, ids=lambda v: getattr(v, "__name__", v))
+@pytest.mark.parametrize("bad", NOT_INTS, ids=lambda v: type(v).__name__)
+def test_millisecond_timestamps_reject_other_types(cls, name, bad):
+    # 웹소켓 숫자는 JSON 숫자라 어댑터가 Decimal·float로 읽은 값을 그대로 넣는 실수를 막는다.
+    values = valid_values(cls)
+    values[name] = bad
+
+    with pytest.raises(TypeError):
+        cls(**values)
+
+
+def test_optional_millisecond_timestamp_accepts_none():
+    values = valid_values(models.MyOrderEvent) | {"trade_timestamp_ms": None}
+
+    assert models.MyOrderEvent(**values).trade_timestamp_ms is None
+
+
+@pytest.mark.parametrize(
+    ("cls", "name"),
+    [(cls, name) for cls, name in TIMESTAMP_FIELDS if name != "trade_timestamp_ms"],
+    ids=lambda v: getattr(v, "__name__", v),
+)
+def test_required_millisecond_timestamps_reject_none(cls, name):
+    values = valid_values(cls)
+    values[name] = None
+
+    with pytest.raises(TypeError):
+        cls(**values)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"currency": "KRW", "balance": Decimal(1), "locked": Decimal(0)},
+        ("KRW", Decimal(1), Decimal(0)),
+        None,
+    ],
+    ids=["dict", "tuple", "None"],
+)
+def test_my_asset_event_rejects_assets_that_are_not_asset_balances(bad):
+    good = valid_values(models.MyAssetEvent)["assets"][0]
+    values = valid_values(models.MyAssetEvent) | {"assets": (good, bad)}
+
+    with pytest.raises(TypeError):
+        models.MyAssetEvent(**values)
+
+
+def test_my_asset_event_accepts_a_list_of_asset_balances():
+    values = valid_values(models.MyAssetEvent)
+    values["assets"] = list(values["assets"])
+
+    assert models.MyAssetEvent(**values).assets == valid_values(models.MyAssetEvent)["assets"]
 
 
 # ── 시각은 시간대가 있어야 한다 ───────────────────────────

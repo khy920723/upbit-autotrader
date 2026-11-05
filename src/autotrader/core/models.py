@@ -295,6 +295,36 @@ StreamName = Literal["public", "private"]
 StreamStatusKind = Literal["CONNECTING", "OPEN", "RECONNECTING", "DEGRADED", "BROKEN", "AUTH_CHECK"]
 
 
+@cache
+def _millisecond_fields(cls: type) -> tuple[tuple[str, bool], ...]:
+    """cls의 `*_ms` int 필드 (이름, None 허용 여부)."""
+    found: list[tuple[str, bool]] = []
+    for f in dataclasses.fields(cls):
+        if not f.name.endswith("_ms"):
+            continue
+        if f.type is int:
+            found.append((f.name, False))
+        elif isinstance(f.type, types.UnionType) and int in f.type.__args__:
+            found.append((f.name, type(None) in f.type.__args__))
+    return tuple(found)
+
+
+def _check_milliseconds(obj: object) -> None:
+    """타임스탬프(ms) 필드가 int가 아니면(bool·float·Decimal·str) TypeError."""
+    for name, optional in _millisecond_fields(type(obj)):
+        value = getattr(obj, name)
+        if value is None and optional:
+            continue
+        if type(value) is not int:
+            raise TypeError(f"{type(obj).__name__}.{name}는 int여야 한다: {type(value).__name__}")
+
+
+def _check_stream_event(obj: object) -> None:
+    """웹소켓 이벤트 공통 검사: Decimal 필드와 타임스탬프(ms) 필드."""
+    _check_decimals(obj)
+    _check_milliseconds(obj)
+
+
 def _check_aware(obj: object, *names: str) -> None:
     """시각 필드가 시간대 없는(naive, utcoffset()이 None) datetime이면 ValueError."""
     for name in names:
@@ -332,7 +362,7 @@ class TickerEvent:
     timestamp_ms: int
     stream_type: Literal["SNAPSHOT", "REALTIME"]
 
-    __post_init__ = _check_decimals
+    __post_init__ = _check_stream_event
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,7 +395,7 @@ class MyOrderEvent:
     trade_timestamp_ms: int | None
     timestamp_ms: int
 
-    __post_init__ = _check_decimals
+    __post_init__ = _check_stream_event
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,7 +411,7 @@ class AssetBalance:
 class MyAssetEvent:
     """비공개 웹소켓 myAsset. asset_uuid로 중복 이벤트를 거른다.
 
-    assets는 만들 때 튜플로 바꾼다(해시·비교가 되게).
+    assets는 만들 때 튜플로 바꾼다(해시·비교가 되게). 원소가 AssetBalance가 아니면 TypeError.
     """
 
     asset_uuid: str
@@ -391,6 +421,12 @@ class MyAssetEvent:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "assets", tuple(self.assets))
+        for asset in self.assets:
+            if not isinstance(asset, AssetBalance):
+                raise TypeError(
+                    f"MyAssetEvent.assets의 원소는 AssetBalance여야 한다: {type(asset).__name__}"
+                )
+        _check_milliseconds(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,6 +449,7 @@ class AnnouncementEvent:
 
     def __post_init__(self) -> None:
         _check_aware(self, "listed_at", "first_listed_at")
+        _check_milliseconds(self)
 
 
 @dataclass(frozen=True, slots=True)

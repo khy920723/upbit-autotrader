@@ -2,6 +2,15 @@
 
 세션이 끝날 때마다 맨 위에 추가한다. 형식: 날짜 — 단계 / 한 일 / 결정 / 남은 일 / 다음 단계.
 
+## 2026-11-05 — 2단계: 뼈대 + 빌드 검증 (클라우드 세션)
+
+- 한 일: uv 프로젝트(`pyproject.toml`, `uv.lock`, `.python-version` 3.13, 런타임 `PySide6==6.12.0`·`keyring==25.7.0`), `src/autotrader/` 7개 하위 패키지와 `__main__.py`, 빈 메인 창, 런타임 경로(`%LOCALAPPDATA%\upbit-autotrader\` 아래 data·logs·backup)·KST 로그(10MB×10 회전)·SQLite(`data\autotrader.db`, 데이터 모델의 `schema_migrations` 표만 STRICT로, `PRAGMA user_version` 0, WAL) 초기화, `--self-test`(import, Qt offscreen, keyring, SQLite 3.37.0 이상·WAL, TLS, 설정 경로 → `self-test-report.txt`, 0/1 종료), `packaging/autotrader.spec`(onedir·windowed·UPX 끔, `packaging/launcher.py` 진입), [의존성 라이선스 목록](../07-security-legal/dependency-licenses.md)과 `uv.lock` 대조 스크립트, 번들 고지(exe 옆 `NOTICE.txt`, `_internal/licenses/`). 테스트 220개(구조 규칙, spec 계약, 고정 버전, 라이선스 표 포함). Linux에서 같은 spec으로 빌드해 frozen self-test 확인. [PR #1](https://github.com/khy920723/upbit-autotrader/pull/1)에서 ci·build-exe 통과(Windows self-test 6/6, WinVaultKeyring)
+- 발견·조치: PySide6 메타 패키지가 Addons까지 설치하면 PyInstaller가 GPL-3.0 전용 Qt Virtual Keyboard 플러그인을 번들에 넣는다 → 사용자 훅으로 빼고, GPL 전용 Qt 바이너리가 남으면 빌드를 멈춘다. PyInstaller가 setuptools·packaging·typing_extensions(개발 전용)까지 넣던 것을 빼고, 런타임 의존성 밖 패키지가 들어가면 빌드를 멈춘다. `ruff format`이 Markdown 코드 블록도 고쳐서 ruff 대상에서 docs를 뺐다. 독립 검토(4개 관점) 지적을 반영했다. 1단계 PR 병합 뒤 DB 초기화를 데이터 모델(`schema_migrations`, `user_version`, STRICT)에 맞췄다
+- 결정: [결정 로그](decision-log.md) D-062(GPL 전용 Qt 모듈 금지·빌드 차단), D-063(번들 고지와 개발 전용 패키지 제외), D-064(PySide6 메타 패키지 유지 또는 Essentials만, 대기), D-065(self-test 구현 규칙). 그 밖의 구현 선택: 빌드 백엔드 uv_build, 개발용 비Windows 경로(XDG, macOS Application Support)
+- 남은 일(사용자): Windows 10 PC에서 빈 앱 실행과 self-test 확인([설치 가이드](../09-operations/install-guide.md) "자가 점검"). 병합 전에는 Actions → build-exe → Run workflow에서 브랜치 `claude/stage-2-skeleton`을 골라야 zip이 생긴다. [CI 변경 제안](ci-proposals.md) 1번 반영, D-064(PySide6-Essentials 전환) 결정
+- 남은 일(다음 단계): 마이그레이션 파일(`storage/migrations/0001_initial.sql`)과 적용 절차, `settings.json`(D-041·D-042 결정 뒤)
+- 다음 단계: 3단계 업비트 연동(ADR-0006, D-038 결정 뒤)
+
 ## 2026-11-05 — 1단계: 설계 (클라우드 세션)
 
 - 한 일:

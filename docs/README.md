@@ -44,6 +44,7 @@
 | 07 보안·법무 | [보안 정책·위협 모델](07-security-legal/security-policy.md) | 확정 |
 | | [리스크 관리 대장](07-security-legal/risk-register.md) | 초안 |
 | | [법·약관·라이선스 검토](07-security-legal/legal-compliance.md) | 초안(일부 미확인) |
+| | [의존성 라이선스 목록](07-security-legal/dependency-licenses.md) | 초안 |
 | 08 품질 | [테스트 전략](08-quality/test-strategy.md) | 초안 |
 | | [테스트 시나리오](08-quality/test-scenarios.md) | 초안 |
 | | [페이퍼 운영 평가 기준](08-quality/paper-evaluation.md) | 확정 |

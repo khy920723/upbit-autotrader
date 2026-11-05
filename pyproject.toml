@@ -1,0 +1,73 @@
+[project]
+name = "upbit-autotrader"
+version = "0.0.1"
+description = "업비트 KRW 마켓 개인용 자동매매 Windows 데스크톱 앱"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.13,<3.14"
+classifiers = [
+    "Private :: Do Not Upload",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+]
+# 런타임 의존성은 정확한 버전으로 고정한다(CLAUDE.md "고정 기술 기준").
+# PySide6는 6.12.x만 쓴다. Qt 6.12가 Windows 10을 지원하는 마지막 버전이다.
+# 의존성을 바꾸면 docs/07-security-legal/dependency-licenses.md도 갱신한다(테스트가 확인한다).
+dependencies = [
+    "PySide6==6.12.0",
+    "keyring==25.7.0",
+]
+
+[project.gui-scripts]
+autotrader = "autotrader.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2",
+    "pytest-qt>=4.5",
+    "pytest-cov>=7.1",
+    "ruff>=0.17",
+    "pyinstaller>=6.22,<6.23",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv]
+# 빌드(Windows)와 CI·클라우드 세션(Linux)에서 쓸 휠이 반드시 있어야 잠금이 성공한다.
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv.build-backend]
+module-name = "autotrader"
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
+xfail_strict = true
+qt_api = "pyside6"
+
+[tool.coverage.run]
+source = ["autotrader"]
+branch = true
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+extend-include = ["packaging/*.spec"]
+# ruff format이 Markdown 안의 코드 블록까지 고치지 않게 문서는 뺀다.
+extend-exclude = ["docs", "*.md"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "C4", "PT", "RUF"]
+# 한국어 문구의 가운뎃점(·) 같은 문자를 일부러 쓰므로 혼동 문자 검사는 끈다.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# PyInstaller가 spec 실행 시 Analysis, PYZ, EXE, COLLECT, SPECPATH를 주입한다.
+"packaging/*.spec" = ["F821"]

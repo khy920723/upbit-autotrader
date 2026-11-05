@@ -25,7 +25,12 @@ from pathlib import Path
 
 import autotrader
 from autotrader.config.paths import AppPathError, display_path, resolve_app_paths
-from autotrader.storage.database import SCHEMA_VERSION, initialize_database
+from autotrader.storage.database import (
+    SCHEMA_VERSION,
+    SQLiteVersionError,
+    check_sqlite_version,
+    initialize_database,
+)
 
 REPORT_FILE_NAME = "self-test-report.txt"
 WINDOWS_KEYRING_BACKEND = "keyring.backends.Windows.WinVaultKeyring"
@@ -138,9 +143,16 @@ def check_keyring(
     return f"{name} (Windows가 아니어서 종류는 판정하지 않음)"
 
 
-def check_sqlite() -> str:
-    """임시 DB로 초기화(WAL, 스키마 버전 표)를 해 본다. 실제 앱 DB는 건드리지 않는다."""
+def check_sqlite(*, sqlite_version: str | None = None) -> str:
+    """SQLite 버전(STRICT 테이블용 3.37.0 이상)을 보고, 임시 DB로 초기화(WAL, schema_migrations)를
+    해 본다. 실제 앱 DB는 건드리지 않는다."""
     import sqlite3
+
+    version_text = sqlite3.sqlite_version if sqlite_version is None else sqlite_version
+    try:
+        check_sqlite_version(version_text)
+    except SQLiteVersionError as exc:
+        raise CheckFailed(str(exc)) from exc
 
     with tempfile.TemporaryDirectory(
         prefix="autotrader-self-test-", ignore_cleanup_errors=True
@@ -148,12 +160,12 @@ def check_sqlite() -> str:
         db_path = Path(tmp) / "self-test.db"
         version = initialize_database(db_path)
         if version != SCHEMA_VERSION:
-            raise CheckFailed(f"스키마 버전이 {version}입니다(기대 {SCHEMA_VERSION})")
+            raise CheckFailed(f"스키마 번호가 {version}입니다(기대 {SCHEMA_VERSION})")
         with contextlib.closing(sqlite3.connect(db_path)) as conn:
             (mode,) = conn.execute("PRAGMA journal_mode").fetchone()
         if str(mode).lower() != "wal":
             raise CheckFailed(f"WAL 모드가 아닙니다: {mode}")
-    return f"SQLite {sqlite3.sqlite_version}, WAL, 스키마 버전 {version} (임시 DB)"
+    return f"SQLite {version_text}(STRICT 지원), WAL, 스키마 번호 {version} (임시 DB)"
 
 
 def check_tls(

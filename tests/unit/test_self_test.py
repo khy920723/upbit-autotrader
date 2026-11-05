@@ -307,8 +307,14 @@ def test_sqlite_check_uses_a_temporary_database(isolated_app_home):
     detail = check_sqlite()
 
     assert "WAL" in detail
-    assert "스키마 버전 1" in detail
+    assert "STRICT 지원" in detail
+    assert "스키마 번호 0" in detail
     assert not isolated_app_home.database_file.exists()
+
+
+def test_sqlite_check_fails_without_strict_table_support():
+    with pytest.raises(CheckFailed, match=r"3\.37\.0"):
+        check_sqlite(sqlite_version="3.36.0")
 
 
 # --- TLS ---------------------------------------------------------------------------

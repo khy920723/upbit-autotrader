@@ -1,6 +1,6 @@
 # 업비트 API 연동 명세
 
-상태: 확정(2026-11 기준, 2026-11-05 공식 문서로 재확인) · 출처: https://docs.upbit.com/kr (각 쪽은 끝에 `.md`를 붙이면 본문과 OpenAPI 정의를 받을 수 있다) · 관련: [매매 로직 명세](../03-functional/trading-logic.md), [운영 런북](../09-operations/runbook.md), [ADR-0006 업비트 클라이언트](../06-architecture/adr/0006-upbit-client.md)
+상태: 확정(2026-11 기준 사실, 2026-11-05 공식 문서로 재확인. 체크리스트 A 확인 방법(D-048), 클라이언트 선택(D-038), 매수·매도 값 구분(D-067), 일괄 취소 미사용(D-069)은 대기) · 출처: https://docs.upbit.com/kr (각 쪽은 끝에 `.md`를 붙이면 본문과 OpenAPI 정의를 받을 수 있다) · 관련: [매매 로직 명세](../03-functional/trading-logic.md), [운영 런북](../09-operations/runbook.md), [ADR-0006 업비트 클라이언트](../06-architecture/adr/0006-upbit-client.md)
 
 ## 1. 키 정책
 
@@ -34,11 +34,11 @@
 | 종목 목록·경고 | GET /v1/market/all?is_details=true | 없음 | market(초당 10, IP) | `market_event.warning`, `market_event.caution`(5개 항목) 사용. `market_warning`은 폐기 |
 | 분 캔들 | GET /v1/candles/minutes/{unit} | 없음 | candles(초당 10, IP. 한도표 표기는 candle) | unit 1, 3, 5, 10, 15, 30, 60, 240. count 최대 200. 체결이 없던 구간은 캔들이 없다 |
 | 일 캔들 | GET /v1/candles/days | 없음 | candles | 경계는 UTC 00:00(KST 09:00) |
-| 현재가 | GET /v1/ticker | 없음 | ticker(초당 10, IP) | 웹소켓 보조, DEGRADED 손절 |
-| 호가 | GET /v1/orderbook | 없음 | orderbook(초당 10, IP) | 페이퍼 체결 계산 |
+| 현재가 | GET /v1/ticker | 없음 | ticker(초당 10, IP) | 웹소켓 보조, DEGRADED 손절. 숫자는 JSON 숫자(double)로 온다 |
+| 호가 | GET /v1/orderbook | 없음 | orderbook(초당 10, IP) | 페이퍼 체결 계산. 숫자는 JSON 숫자로 온다 |
 | 호가 단위 | GET /v1/orderbook/instruments | 없음 | orderbook | `tick_size`(2025-07-31 추가) |
 | 잔고(포켓 잔고) | GET /v1/accounts | 자산조회 | default(초당 30, 포켓) | 그 포켓의 잔고. 시작 점검, 대조, JOB-14 |
-| 주문 가능 정보 | GET /v1/orders/chance | 주문조회 | default | `bid_fee`, `ask_fee`, `market.bid.min_total`, `market.max_total`, `market.state`, `bid_types`·`ask_types` |
+| 주문 가능 정보 | GET /v1/orders/chance | 주문조회 | default | `bid_fee`, `ask_fee`, `market.bid.min_total`(매수), `market.ask.min_total`(매도), `market.max_total`, `market.state`, `bid_types`·`ask_types`. 매수 판단은 bid 값, 매도 판단은 ask 값을 쓴다(D-067 대기). `bid_types`에 `best_fok`가 없으면 그 코인 매수 보류 |
 | 주문 생성 | POST /v1/orders | 주문하기 | order(초당 12, 포켓) | JSON만, `smp_type` 항상 명시, 자동 재시도 금지 |
 | 주문 검증 | POST /v1/orders/test | 주문하기 | order-test(초당 8, 포켓) | live-validate. 응답 UUID·identifier로 조회·취소 불가 |
 | 주문 조회 | GET /v1/order | 주문조회 | default | uuid 또는 identifier. 없으면 404 `order_not_found` |
@@ -46,7 +46,7 @@
 | 미체결 목록 | GET /v1/orders/open | 주문조회 | default | `states[]` wait·watch, limit 최대 100, page |
 | 종료 주문 | GET /v1/orders/closed | 주문조회 | default | 조회 구간 최대 7일, limit 최대 1,000 |
 | 주문 취소 | DELETE /v1/order | 주문하기 | default | uuid 또는 identifier. 쿼리 파라미터만 |
-| 일괄 취소 | DELETE /v1/orders/open | 주문하기 | order-cancel-all(2초에 1회) | 최대 300건(기본 20), `pairs`로 코인 지정 |
+| (쓰지 않음) 일괄 취소 | DELETE /v1/orders/open | 주문하기 | order-cancel-all(2초에 1회) | 최대 300건(기본 20), `pairs`로 코인 지정. identifier로 거를 수 없어 사용자가 직접 낸 주문까지 취소하므로 쓰지 않는다. 정지 때는 앱 주문만 `DELETE /v1/order?identifier=`로 하나씩 취소한다(D-069 대기) |
 | 키 만료일 | GET /v1/api_keys | 인증만 | default | 1장 |
 
 ### 웹소켓
@@ -60,7 +60,7 @@
 - 120초 동안 주고받은 데이터가 없으면 서버가 연결을 끊는다. PING 프레임을 보내거나 "PING" 문자열을 보낸다(그러면 서버가 10초마다 `{"status":"UP"}`를 보낸다). 업비트 예제는 30초 간격 PING을 쓴다.
 - 비공개 웹소켓은 연결을 많이 유지하면 새 연결이 거절될 수 있다. 연결 하나에서 필요한 타입을 함께 구독한다.
 - myOrder는 주문·체결이 있을 때만 데이터가 온다. 상태값은 `wait`, `watch`, `trade`, `done`, `cancel`, `prevented`다([매매 로직 명세](../03-functional/trading-logic.md) 10장).
-- 웹소켓 숫자는 JSON 숫자(Double)로 온다. `Decimal`로 파싱한다.
+- 웹소켓 숫자는 JSON 숫자(Double)로 오고 지수 표기(`9.101e-05`)도 온다. 시세 REST(ticker, orderbook, candles)도 JSON 숫자다. 거래 REST만 문자열이다. 모두 `Decimal`로 파싱한다([데이터 모델](../04-data/data-model.md) 2장, D-071).
 - 재연결 후에는 REST로 잔고·미체결·종목을 다시 대조한다(그동안 놓친 이벤트가 있을 수 있음). 공지(announcement)는 실시간 전용이라 놓친 공지는 다시 오지 않는다.
 
 ## 3. 인증
@@ -95,7 +95,7 @@
 | under_min_total_bid, under_min_total_ask | 400 | 최소 주문 금액 미만 | 거절, 사이징 오류로 기록 |
 | over_krw_funds_bid | 400 | 최대 주문 금액 초과 | 거절, 사이징 오류로 기록 |
 | invalid_parameter, validation_error, invalid_time_in_force, invalid_post_only, create_bid_error, create_ask_error | 400 | 파라미터·조합 오류 | 거절, 버그로 기록 |
-| duplicated_identifier | 400 | 이미 쓴 identifier | 거절, 버그로 기록(같은 identifier로 다시 보내지 않는 규칙 위반) |
+| duplicated_identifier | 400 | 이미 쓴 identifier | 앱은 같은 identifier를 다시 보내지 않으므로, 같은 요청이 중간에서 한 번 더 전달돼 주문이 이미 있을 수 있다. REJECTED로 닫지 않고 UNKNOWN으로 두어 identifier 조회로 확인한다. 이번 주문이 아니면 REJECTED(DUPLICATED_IDENTIFIER) + 이벤트 IDENTIFIER_CONFLICT([매매 로직 명세](../03-functional/trading-logic.md) 8장, D-070) |
 | notfoundmarket | 400 | 없는 마켓 | 거절, 종목 목록 갱신 |
 | market_offline | 403 | 점검 등으로 주문 불가 | 해당 코인 매수 보류 |
 | order_not_found | 404 | 주문 없음 | 조회 결과 "없음"(매매 로직 명세 9장) |

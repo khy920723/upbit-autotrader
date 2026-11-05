@@ -12,13 +12,14 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import string
 import uuid
 from urllib.parse import quote, quote_plus
 
 import pytest
-from fakes.canary import find_canaries, make_upbit_credentials
+from fakes.canary import find_canaries, find_secret_shapes, make_upbit_credentials
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -216,3 +217,128 @@ def test_never_finds_a_fresh_canary_in_unrelated_text(text):
     creds = make_upbit_credentials()
 
     assert find_canaries(text, [creds.access_key, creds.secret_key]) == []
+
+
+# ── make_upbit_credentials: 표식 검사 ────────────────────
+
+
+@pytest.mark.parametrize("marker", ["x" * 40, "x" * 41, "x" * 100])
+def test_marker_of_key_length_or_longer_is_rejected(marker):
+    # 키 전체가 표식이면 access와 secret이 같아져 끝없이 다시 만들었다.
+    with pytest.raises(ValueError):  # noqa: PT011 (문구는 정하지 않는다)
+        make_upbit_credentials(marker=marker)
+
+
+@pytest.mark.parametrize("marker", ["has space", "dash-ed", "한글표식", "under_score", ""])
+def test_non_alphanumeric_marker_is_rejected(marker):
+    # 업비트 키 모양(영숫자)을 깨는 표식은 받지 않는다.
+    with pytest.raises(ValueError):  # noqa: PT011
+        make_upbit_credentials(marker=marker)
+
+
+def test_marker_of_39_chars_still_makes_different_keys():
+    marker = "M" + secrets.token_hex(19)  # 39자
+
+    creds = make_upbit_credentials(marker=marker)
+
+    assert marker in creds.access_key
+    assert creds.access_key != creds.secret_key
+
+
+# ── find_canaries: 더 찾을 모양 ──────────────────────────
+
+
+def test_finds_value_encoded_with_quote_default_safe_slash():
+    # quote(v)의 기본 safe="/"는 '/'를 그대로 둔다. safe=""만 보면 놓친다.
+    value = special_secret()
+    encoded = quote(value)
+    assert "/" in encoded
+    assert encoded != quote(value, safe="")
+
+    assert find_canaries(f"url=https://example.invalid/{encoded}", [value]) == [value]
+
+
+def test_finds_lowercase_percent_encoding():
+    # 일부 라이브러리는 %2F 대신 %2f를 쓴다. 퍼센트 뒤 16진수만 소문자로 바꾼다.
+    value = special_secret()
+    upper = quote(value, safe="")
+    hex_lowered = re.sub(r"%[0-9A-F]{2}", lambda m: m.group(0).lower(), upper)
+    assert hex_lowered != upper
+
+    assert find_canaries(f"q={hex_lowered}", [value]) == [value]
+
+
+def test_finds_json_escaped_slash():
+    value = special_secret()
+    escaped = json.dumps(value).replace("/", "\\/")[1:-1]
+    assert "\\/" in escaped
+
+    assert find_canaries(f'{{"hook":"{escaped}"}}', [value]) == [value]
+
+
+@pytest.mark.parametrize(("start", "length"), [(0, 8), (10, 8), (32, 8), (5, 20)])
+def test_finds_a_raw_fragment_of_eight_or_more_chars(start, length):
+    # 잘린 로그나 앞뒤가 가려진 값도 8자 이상 남으면 유출이다.
+    value = make_upbit_credentials().secret_key
+    fragment = value[start : start + length]
+
+    assert find_canaries(f"...{fragment}...", [value]) == [value]
+
+
+def test_does_not_flag_a_seven_char_fragment():
+    value = make_upbit_credentials().secret_key
+
+    assert find_canaries(f"...{value[3:10]}...", [value]) == []
+
+
+@pytest.mark.parametrize("value", ["", "short", "1234567"])
+def test_values_shorter_than_eight_chars_are_rejected(value):
+    # 짧은 값은 우연히 겹쳐 검사가 의미 없다.
+    with pytest.raises(ValueError):  # noqa: PT011
+        find_canaries("아무 글", [value])
+
+
+# ── find_secret_shapes: 값과 무관한 모양 ─────────────────
+
+
+def test_find_secret_shapes_finds_a_jwt():
+    creds = make_upbit_credentials()
+    token = make_jwt({"access_key": creds.access_key, "nonce": str(uuid.uuid4())}, creds.secret_key)
+
+    shapes = find_secret_shapes(f"token={token} end")
+
+    assert token in shapes
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "headers={'Authorization': '...'}",
+        "authorization: x",  # 헤더 이름은 대소문자를 가리지 않는다(httpx는 소문자로 보여 준다)
+        "Bearer abc.def",
+        "posting to https://discord.com/api/webhooks/123/abc",
+    ],
+)
+def test_find_secret_shapes_finds_header_and_webhook_shapes(text):
+    assert find_secret_shapes(text) != []
+
+
+def test_find_secret_shapes_returns_empty_for_clean_text():
+    # 오류 이름(no_authorization_ip 등)은 비밀 모양이 아니다.
+    text = (
+        "2026-11-05T09:00:00.000+09:00 | WARNING | autotrader.core | AUTH | "
+        "error_name=no_authorization_ip eyJ만"
+    )
+
+    assert find_secret_shapes(text) == []
+
+
+def test_find_secret_shapes_ignores_a_single_dot_eyj_string():
+    assert find_secret_shapes("eyJhbGciOi.only_one_dot") == []
+
+
+@settings(deadline=None)
+@given(text=st.text(alphabet=st.characters(blacklist_characters="aAeE"), max_size=300))
+def test_find_secret_shapes_is_empty_for_text_without_a_and_e(text):
+    # 'a'·'e'가 없으면 eyJ·Bearer·Authorization·discord.com/api/webhooks 모두 나올 수 없다.
+    assert find_secret_shapes(text) == []

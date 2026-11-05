@@ -127,7 +127,9 @@ class FakeOrder:
                 reserved_fee = price * self.fee_rate
                 remaining_funds = price - funds
             else:
-                assert price is not None and volume is not None and remaining_volume is not None
+                assert price is not None
+                assert volume is not None
+                assert remaining_volume is not None
                 reserved_fee = price * volume * self.fee_rate
                 remaining_funds = price * remaining_volume
             remaining_fee = remaining_funds * self.fee_rate if is_open else ZERO
@@ -146,9 +148,7 @@ class FakeOrder:
             "market": self.market,
             "created_at": kst_text(self.created_at),
             "volume": self.volume_text,
-            "remaining_volume": None
-            if remaining_volume is None
-            else fmt_decimal(remaining_volume),
+            "remaining_volume": None if remaining_volume is None else fmt_decimal(remaining_volume),
             "reserved_fee": fmt_decimal(reserved_fee),
             "remaining_fee": fmt_decimal(remaining_fee),
             "paid_fee": fmt_decimal(paid_fee),
@@ -246,7 +246,8 @@ def match_book(order: FakeOrder, asks: Sequence[Level], bids: Sequence[Level]) -
         return fills, "done" if complete else "cancel"
 
     # 지정가
-    assert price is not None and volume is not None
+    assert price is not None
+    assert volume is not None
     eligible: list[Level] = []
     for level in levels:
         crosses = level.price <= price if order.side == "bid" else level.price >= price

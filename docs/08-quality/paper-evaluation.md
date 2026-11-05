@@ -1,6 +1,6 @@
 # 페이퍼 운영 평가 기준
 
-상태: 확정 · 관련: [위험 관리 정책서](../03-functional/risk-policy.md) 6장, [ADR-0003](../06-architecture/adr/0003-paper-first-risk-precedence.md)
+상태: 확정(체크리스트 A 확인 방법은 D-048 대기) · 관련: [위험 관리 정책서](../03-functional/risk-policy.md) 6장, [ADR-0003](../06-architecture/adr/0003-paper-first-risk-precedence.md)
 
 ## 1. 목적
 
@@ -45,7 +45,7 @@
 - [ ] 텔레그램 알림과 일일 요약을 매일 받음
 - [ ] 가동률 90% 이상(초안)
 
-체크리스트 A(앱이 SCR-08에서 확인):
+체크리스트 A(SCR-08. 키 검증과 허용 IP는 앱이 확인하고, 서브포켓 키 여부와 권한 3개는 API로 확인할 수 없어 사용자가 확인 표시한다. D-048 대기):
 
 - [ ] 업비트 키 검증 통과
 - [ ] 입력한 키가 봇 전용 서브 포켓에서 발급한 키임

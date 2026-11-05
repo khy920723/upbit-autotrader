@@ -13,6 +13,7 @@
 - **확정:** 사용자와 정한 내용
 - **초안:** 제안한 내용. 1단계 설계나 페이퍼 운영 결과에 따라 바뀔 수 있음
 - **1단계 보완:** 1단계 설계 세션이 채워야 하는 부분이 있음
+- **제안:** 1단계 설계 세션이 후보·장단점·추천을 정리했고 사용자 결정을 기다리는 ADR·항목([결정 로그](10-management/decision-log.md)의 "대기")
 
 ## 문서 목록
 
@@ -26,26 +27,27 @@
 | | [화면 정의서](02-ux/screen-spec.md) | 초안 |
 | | [메시지·문구 정의서](02-ux/messages.md) | 초안 |
 | 03 기능 | [기능 명세서](03-functional/feature-spec.md) | 초안 |
-| | [매매 로직 명세](03-functional/trading-logic.md) | 1단계 보완 |
-| | [위험 관리 정책서](03-functional/risk-policy.md) | 확정(수치는 초안) |
+| | [매매 로직 명세](03-functional/trading-logic.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
+| | [위험 관리 정책서](03-functional/risk-policy.md) | 확정(수치는 초안, 1단계 제안 반영 결정 대기 있음) |
 | | [상태 전이 정의서](03-functional/state-machines.md) | 초안 |
 | | [알림 정의서](03-functional/notifications.md) | 초안 |
-| | [설정 항목 정의서](03-functional/settings.md) | 초안 |
-| 04 데이터 | [데이터 모델](04-data/data-model.md) | 1단계 보완 |
+| | [설정 항목 정의서](03-functional/settings.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
+| 04 데이터 | [데이터 모델](04-data/data-model.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [로그·감사 기록 정의서](04-data/logging-audit.md) | 초안 |
-| 05 연동 | [업비트 API 연동 명세](05-integration/upbit-api.md) | 확정(2026-11 기준) |
-| | [LLM 시그널 명세](05-integration/llm-signal.md) | 초안 |
+| 05 연동 | [업비트 API 연동 명세](05-integration/upbit-api.md) | 확정(2026-11 기준 사실, 2026-11-05 재확인, 결정 대기 있음) |
+| | [LLM 시그널 명세](05-integration/llm-signal.md) | 초안(1단계 확인 반영, 결정 대기 있음) |
 | | [뉴스 수집 명세](05-integration/news-collection.md) | 초안 |
 | | [텔레그램 연동 명세](05-integration/telegram.md) | 확정 |
-| 06 아키텍처 | [시스템 구성도](06-architecture/system-architecture.md) | 1단계 보완 |
-| | [기술 스택·버전 정책](06-architecture/tech-stack.md) | 확정 |
-| | [결정 기록(ADR)](06-architecture/adr/README.md) | 확정 5건, 대기 4건 |
+| 06 아키텍처 | [시스템 구성도](06-architecture/system-architecture.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
+| | [기술 스택·버전 정책](06-architecture/tech-stack.md) | 확정(1단계 제안 반영, 결정 대기 있음) |
+| | [결정 기록(ADR)](06-architecture/adr/README.md) | 확정 5건, 제안 3건, 대기 1건 |
 | 07 보안·법무 | [보안 정책·위협 모델](07-security-legal/security-policy.md) | 확정 |
 | | [리스크 관리 대장](07-security-legal/risk-register.md) | 초안 |
 | | [법·약관·라이선스 검토](07-security-legal/legal-compliance.md) | 초안(일부 미확인) |
+| | [의존성 라이선스 목록](07-security-legal/dependency-licenses.md) | 초안 |
 | 08 품질 | [테스트 전략](08-quality/test-strategy.md) | 초안 |
 | | [테스트 시나리오](08-quality/test-scenarios.md) | 초안 |
-| | [페이퍼 운영 평가 기준](08-quality/paper-evaluation.md) | 확정 |
+| | [페이퍼 운영 평가 기준](08-quality/paper-evaluation.md) | 확정(결정 대기 있음) |
 | 09 운영 | [빌드·배포 절차](09-operations/build-release.md) | 확정 |
 | | [설치·초기 설정 가이드](09-operations/install-guide.md) | 초안 |
 | | [운영 런북](09-operations/runbook.md) | 초안 |

@@ -9,8 +9,8 @@
 - 키: 실행 중에 만든 카나리아(fakes.canary.make_upbit_credentials). 시세 API는 키 없이 만든다
   (credentials=None이면 인증 요청은 보내기 전에 실패하므로 시세 API가 키를 쓰지 않는지도 본다).
 - `env.run(scenario)`는 asyncio.run으로 돌리고, 끝나면 가짜의 엄격 검사 위반이 0건이어야 한다.
-- `env.wrap`에 전송 계층을 감싸는 함수를 넣으면 가짜 응답을 테스트 안에서 고칠 수 있다
-  (가짜에 없는 응답 모양을 만들 때. 가짜 파일은 고치지 않는다).
+- `env.rewrite_response(path, edit)`는 가짜 응답을 테스트 안에서 고친다(가짜에 없는 응답 모양을
+  만들 때. 가짜 파일은 고치지 않는다). 더 일반적으로는 `env.wrap`에 전송 계층 감싸개를 넣는다.
 """
 
 import asyncio
@@ -25,6 +25,7 @@ import pytest
 from fakes.canary import make_upbit_credentials
 from fakes.clock import FakeClock
 from fakes.upbit_http import FakeUpbitServer, RecordedRequest
+from fakes.upbit_json import dumps, loads_raw
 
 from autotrader.core.models import UpbitCredentials
 
@@ -87,6 +88,29 @@ class ApiEnv:
         if clean:
             assert [v.rule for v in self.server.violations] == [], self.server.violations
         return result
+
+    def rewrite_response(self, path: str, edit: Callable[[Any], None]) -> None:
+        """그 경로의 200 응답 본문을 edit(data)로 고쳐 돌려주게 한다. 숫자 토큰은 원문 그대로."""
+
+        def wrap(inner: httpx.AsyncBaseTransport) -> httpx.AsyncBaseTransport:
+            async def handler(request: httpx.Request) -> httpx.Response:
+                response = await inner.handle_async_request(request)
+                if request.url.path != path or response.status_code != 200:
+                    return response
+                await response.aread()
+                data = loads_raw(response.text)
+                edit(data)
+                headers = [
+                    (k, v)
+                    for k, v in response.headers.multi_items()
+                    if k.lower() != "content-length"
+                ]
+                content = dumps(data).encode("utf-8")
+                return httpx.Response(response.status_code, headers=headers, content=content)
+
+            return httpx.MockTransport(handler)
+
+        self.wrap = wrap
 
     def sent(self, method: str | None = None, path: str | None = None) -> list[RecordedRequest]:
         """가짜가 받은 요청(전송 계층 기준). method·path로 거른다."""

@@ -60,6 +60,7 @@
 | | [진행 기록](10-management/progress.md) | 진행 중 |
 | | [결정 로그](10-management/decision-log.md) | 진행 중 |
 | | [CI 변경 제안](10-management/ci-proposals.md) | 진행 중 |
+| 리서치 | [규칙 조건 후보 비교 리포트](research/rule-candidates.md) | 비교 완료, 사용자 선택 대기(D-072) |
 
 ## ID 규칙
 

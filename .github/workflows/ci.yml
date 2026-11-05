@@ -56,4 +56,4 @@ jobs:
         if: steps.project.outputs.exists == 'true'
         env:
           QT_QPA_PLATFORM: offscreen
-        run: uv run pytest -q
+        run: uv run pytest -q --cov --cov-report=term-missing

@@ -10,8 +10,8 @@
   그 파일 하나만 읽는다. 운영체제 저장소(`load_default_certs`, `set_default_verify_paths`)와
   환경 변수 `SSL_CERT_FILE`·`SSL_CERT_DIR`·`SSLKEYLOGFILE`는 보지 않는다(keylog_filename은 None).
   PROTOCOL_TLS_CLIENT, 최소 TLSv1_2, check_hostname True, CERT_REQUIRED. 부를 때마다 새 문맥.
-  예외: cafile이 없거나 빈 문자열이면 FileNotFoundError, 빈 파일·PEM이 아닌 파일(DER 포함)·깨진 PEM이면
-  ssl.SSLError. 둘 다 OSError의 하위 타입이라 부르는 쪽은 OSError 하나로 잡을 수 있다.
+  예외: cafile이 없거나 빈 문자열이면 FileNotFoundError, 빈 파일·PEM이 아닌 파일(DER 포함)·
+  깨진 PEM이면 ssl.SSLError. 둘 다 OSError의 하위 타입이라 부르는 쪽은 OSError 하나로 잡을 수 있다.
 - `ca_bundle_path() -> str`: `certifi.where()`.
 - `ca_bundle_version() -> str`: certifi 배포 버전(예: "2026.10.23").
 
@@ -151,7 +151,9 @@ def test_context_policy(one_cert_bundle, given):
 
 
 @pytest.mark.parametrize("given", [False, True], ids=["default_bundle", "given_cafile"])
-def test_sslkeylogfile_environment_variable_is_ignored(monkeypatch, tmp_path, one_cert_bundle, given):
+def test_sslkeylogfile_environment_variable_is_ignored(
+    monkeypatch, tmp_path, one_cert_bundle, given
+):
     # ssl.create_default_context는 SSLKEYLOGFILE이 있으면 세션 키를 그 파일에 쓰도록 문맥을 맞춘다.
     # 앱 문맥은 그 설정을 지운다(파일은 문맥을 만들 때 빈 채로 생길 수 있지만 키는 쓰지 않는다).
     keylog = tmp_path / "keys.log"

@@ -350,6 +350,7 @@ def test_sqlite_check_fails_without_strict_table_support():
 #   보고 문구(성공·실패)에 묶음 파일의 전체 경로를 넣지 않는다(사용자 이름이 들어갈 수 있다).
 #   연결하지 않는다. 운영체제 저장소와 SSL_CERT_FILE·SSL_CERT_DIR는 보지 않는다.
 
+
 def fake_context(
     ca_count: int,
     minimum_version=ssl.TLSVersion.TLSv1_2,

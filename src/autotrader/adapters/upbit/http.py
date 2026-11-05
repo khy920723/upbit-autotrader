@@ -144,7 +144,7 @@ def _no_cookies() -> CookieJar:
 
 
 def _check_tls_context(context: object) -> None:
-    """주어진 TLS 문맥이 앱 정책(호스트 이름 확인, 인증서 필수, 최소 TLS 1.2)보다 약하면 거부한다."""
+    """주어진 TLS 문맥이 앱 정책(호스트 이름 확인, 인증서 필수, 최소 TLS 1.2)보다 약하면 거부."""
     if not isinstance(context, ssl.SSLContext):
         raise TypeError(f"tls_context는 ssl.SSLContext여야 한다: {type(context).__name__}")
     if context.check_hostname is not True:

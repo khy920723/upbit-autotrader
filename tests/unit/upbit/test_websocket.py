@@ -68,10 +68,15 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
 13. 비밀(키, JWT, Authorization 값)은 로그·예외 문구·repr·어댑터 프레임의 지역 변수
    (traceback capture_locals)에 남지 않는다.
 14. WebsocketsConnector: websockets.asyncio.client.connect에 additional_headers=받은 헤더,
-   user_agent_header=앱 값, origin 없음, proxy=None(프록시 환경 변수를 쓰지 않음, D-091),
-   ping_interval=None(PING은 어댑터가 Clock으로), wss 주소면 ssl=TLS 문맥(ws 주소면 ssl 없음),
-   open_timeout을 넘긴다. 핸드셰이크 HTTP 오류(401 포함)·OSError·타임아웃·잘못된 핸드셰이크는
-   StreamConnectFailed(HTTP 응답이 있으면 그 상태 코드)다.
+   user_agent_header=앱 값, origin 없음, proxy=None(명시. 기본값 True는 HTTPS_PROXY 등을 따른다,
+   D-091), ping_interval=None(PING은 어댑터가 Clock으로), wss 주소면 ssl=TLS 문맥(명시. 기본값은
+   운영체제 저장소다. ws 주소면 ssl 없음), open_timeout을 넘긴다. 핸드셰이크 HTTP 오류(401
+   포함)·OSError·타임아웃·잘못된 핸드셰이크는 StreamConnectFailed(HTTP 응답이 있으면 그 상태
+   코드)다.
+15. TLS 문맥(D-093, B4 리뷰): tls_context를 주지 않으면 커넥터마다 create_tls_context()로 새로
+   만든다(REST와 문맥 객체를 함께 쓰지 않는다). 주면 그대로 쓰되 만들 때 검사한다(UpbitHttp와
+   같다): ssl.SSLContext가 아니면 TypeError, check_hostname True·CERT_REQUIRED·최소 TLS 1.2
+   이상이 아니면 ValueError(문구에 "tls_context").
 """
 
 import asyncio
@@ -84,6 +89,7 @@ import ssl
 import traceback
 import typing
 import uuid
+import warnings
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -144,9 +150,8 @@ EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "upbit"
 DOCS_EXAMPLES = FIXTURES / "docs_examples"
 RECORDING = json.loads((FIXTURES / "ws_public_recording.json").read_text(encoding="utf-8"))
-SNAPSHOT_FRAMES = next(
-    s for s in RECORDING["sessions"] if s["name"] == "ticker_snapshot_btc_eth"
-)["frames"]
+SNAPSHOT_SESSION = next(s for s in RECORDING["sessions"] if s["name"] == "ticker_snapshot_btc_eth")
+SNAPSHOT_FRAMES = SNAPSHOT_SESSION["frames"]
 BTC_FRAME = next(f["text"] for f in SNAPSHOT_FRAMES if '"code":"KRW-BTC"' in f["text"])
 STATUS_UP = '{"status":"UP"}'
 
@@ -218,7 +223,10 @@ async def next_item(clock: FakeClock, iterator: Any, *, within: float = 0.0) -> 
 async def drain(
     clock: FakeClock, iterator: Any, *, within: float = 0.0
 ) -> tuple[list[Any], BaseException | None]:
-    """끝날 때까지 받는다: (받은 항목, 끝낸 오류 또는 None). 가짜의 위반(AssertionError)은 올린다."""
+    """끝날 때까지 받는다: (받은 항목, 끝낸 오류 또는 None).
+
+    가짜의 위반(AssertionError)은 그대로 올린다.
+    """
     items: list[Any] = []
     while True:
         try:
@@ -431,7 +439,9 @@ def btc_frame(**changes: Any) -> str:
 
 
 def recorded_snapshot(code: str) -> dict[str, Any]:
-    return next(m for m in map(decimal_json, (f["text"] for f in SNAPSHOT_FRAMES)) if m["code"] == code)
+    return next(
+        m for m in map(decimal_json, (f["text"] for f in SNAPSHOT_FRAMES)) if m["code"] == code
+    )
 
 
 def expected_ticker(code: str, *, timestamp_ms: int, **changes: Any) -> TickerEvent:
@@ -1117,7 +1127,7 @@ def test_private_connects_with_a_fresh_hs512_jwt_every_time(env):
 
     async def scenario(e: Env) -> None:
         for _ in range(3):
-            iterator, first = await e.open_events(stream, within=2)
+            iterator, _ = await e.open_events(stream, within=2)
             await iterator.aclose()
 
     env.run(scenario)
@@ -1568,9 +1578,16 @@ def refused() -> OSError:
     return ConnectionRefusedError(111, "Connect call failed (test)")
 
 
+def strict_context() -> ssl.SSLContext:
+    """호스트 이름 확인·인증서 필수·최소 TLS 1.2인 문맥(CA는 읽지 않는다. 연결하지 않으므로)."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def test_connector_passes_the_decided_options(monkeypatch):
     spy = spy_on_websockets_connect(monkeypatch, refused())
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context = strict_context()
     connector = make_connector(tls_context=context)
 
     with pytest.raises(StreamConnectFailed) as info:
@@ -1593,7 +1610,7 @@ def test_connector_passes_the_decided_options(monkeypatch):
 def test_connector_user_agent_and_open_timeout_options(monkeypatch):
     spy = spy_on_websockets_connect(monkeypatch, refused())
     connector = make_connector(
-        user_agent="upbit-autotrader/test", open_timeout=2.5, tls_context=ssl.create_default_context()
+        user_agent="upbit-autotrader/test", open_timeout=2.5, tls_context=strict_context()
     )
 
     with pytest.raises(StreamConnectFailed):
@@ -1655,6 +1672,54 @@ def test_connector_default_tls_context_follows_the_single_ca_source(monkeypatch,
 
     ((_, kwargs),) = spy.calls
     assert kwargs["ssl"].cert_store_stats()["x509_ca"] == 1
+
+
+def test_each_connector_makes_its_own_default_context(monkeypatch):
+    # REST(httpx)와 문맥 객체를 함께 쓰지 않는다: httpcore가 문맥의 ALPN을 바꾼다(B4 리뷰).
+    # 문맥은 tls.create_tls_context()로 커넥터마다 새로 만든다(만드는 곳이 tls.py뿐인지는
+    # test_architecture가 본다).
+    spy = spy_on_websockets_connect(monkeypatch, refused())
+
+    for _ in range(2):
+        with pytest.raises(StreamConnectFailed):
+            asyncio.run(make_connector().connect(PUBLIC_URL, headers=[]))
+
+    first, second = (kwargs["ssl"] for _, kwargs in spy.calls)
+    assert isinstance(first, ssl.SSLContext)
+    assert isinstance(second, ssl.SSLContext)
+    assert first is not second
+
+
+def _weaken(context: ssl.SSLContext, how: str) -> ssl.SSLContext:
+    if how == "no_hostname_check":
+        context.check_hostname = False
+    elif how == "cert_none":
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    elif how == "cert_optional":
+        context.verify_mode = ssl.CERT_OPTIONAL
+    elif how == "minimum_supported":
+        context.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
+    elif how == "tls1_1":
+        with warnings.catch_warnings():  # TLSv1_1은 폐기 예정 경고를 낸다(일부러 약하게 만든다).
+            warnings.simplefilter("ignore", DeprecationWarning)
+            context.minimum_version = ssl.TLSVersion.TLSv1_1
+    return context
+
+
+@pytest.mark.parametrize(
+    "how", ["no_hostname_check", "cert_none", "cert_optional", "minimum_supported", "tls1_1"]
+)
+def test_weak_tls_context_is_rejected(how):
+    # UpbitHttp와 같은 규칙(D-093): 만들 때 거부한다.
+    with pytest.raises(ValueError, match="tls_context"):
+        make_connector(tls_context=_weaken(strict_context(), how))
+
+
+@pytest.mark.parametrize("value", [True, "cacert.pem"], ids=["bool", "path"])
+def test_tls_context_must_be_an_ssl_context(value):
+    with pytest.raises(TypeError, match="tls_context"):
+        make_connector(tls_context=value)
 
 
 def _handshake_failures() -> list[Any]:

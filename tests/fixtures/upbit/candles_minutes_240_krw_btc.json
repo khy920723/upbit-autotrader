@@ -1,0 +1,67 @@
+[
+  {
+    "market": "KRW-BTC",
+    "candle_date_time_utc": "2026-11-05T00:00:00",
+    "candle_date_time_kst": "2026-11-05T09:00:00",
+    "opening_price": 108328000.00000000,
+    "high_price": 108903000.00000000,
+    "low_price": 107888000.00000000,
+    "trade_price": 108658000.00000000,
+    "timestamp": 1793844122804,
+    "candle_acc_trade_price": 15634124216.56574000,
+    "candle_acc_trade_volume": 144.12375624,
+    "unit": 240
+  },
+  {
+    "market": "KRW-BTC",
+    "candle_date_time_utc": "2026-11-04T20:00:00",
+    "candle_date_time_kst": "2026-11-05T05:00:00",
+    "opening_price": 107557000.00000000,
+    "high_price": 109000000.00000000,
+    "low_price": 107495000.00000000,
+    "trade_price": 108327000.00000000,
+    "timestamp": 1793836795983,
+    "candle_acc_trade_price": 17115935047.10896000,
+    "candle_acc_trade_volume": 158.06274186,
+    "unit": 240
+  },
+  {
+    "market": "KRW-BTC",
+    "candle_date_time_utc": "2026-11-04T16:00:00",
+    "candle_date_time_kst": "2026-11-05T01:00:00",
+    "opening_price": 107692000.00000000,
+    "high_price": 108350000.00000000,
+    "low_price": 107451000.00000000,
+    "trade_price": 107557000.00000000,
+    "timestamp": 1793822394992,
+    "candle_acc_trade_price": 10599374486.97252000,
+    "candle_acc_trade_volume": 98.11287748,
+    "unit": 240
+  },
+  {
+    "market": "KRW-BTC",
+    "candle_date_time_utc": "2026-11-04T12:00:00",
+    "candle_date_time_kst": "2026-11-04T21:00:00",
+    "opening_price": 105374000.00000000,
+    "high_price": 108835000.00000000,
+    "low_price": 104704000.00000000,
+    "trade_price": 107692000.00000000,
+    "timestamp": 1793807997935,
+    "candle_acc_trade_price": 38665045050.80482000,
+    "candle_acc_trade_volume": 361.53189201,
+    "unit": 240
+  },
+  {
+    "market": "KRW-BTC",
+    "candle_date_time_utc": "2026-11-04T08:00:00",
+    "candle_date_time_kst": "2026-11-04T17:00:00",
+    "opening_price": 104958000.00000000,
+    "high_price": 105672000.00000000,
+    "low_price": 104921000.00000000,
+    "trade_price": 105374000.00000000,
+    "timestamp": 1793793594610,
+    "candle_acc_trade_price": 13820192539.81307000,
+    "candle_acc_trade_volume": 131.13097346,
+    "unit": 240
+  }
+]

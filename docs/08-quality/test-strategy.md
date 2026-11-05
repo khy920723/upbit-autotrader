@@ -1,6 +1,6 @@
 # 테스트 전략
 
-상태: 초안 · 관련: [테스트 시나리오](test-scenarios.md), [페이퍼 운영 평가 기준](paper-evaluation.md), [빌드·배포 절차](../09-operations/build-release.md)
+상태: 초안(2026-11-05 QA 검증 기반 추가) · 관련: [테스트 시나리오](test-scenarios.md), [요구사항 추적표](traceability.md), [불변식 명세](invariants.md), [가짜 구현 명세](fakes-spec.md), [Windows 10 수동 점검표](manual-checklist-windows10.md), [PR 검토 기준](review-checklist.md), [페이퍼 운영 평가 기준](paper-evaluation.md), [빌드·배포 절차](../09-operations/build-release.md)
 
 ## 1. 원칙
 
@@ -14,10 +14,11 @@
 |---|---|---|---|
 | 단위 | JWT 서명·query_hash(알려진 값), 호가 단위 반올림, 위험 한도, 규칙 조건, LLM 출력 검증, 상태 전이, 비밀 가리기 | pytest | 클라우드 세션, ci.yml |
 | 통합 | 가짜 거래소 + 주문 관리(타임아웃·재조정), 가짜 LLM, 가짜 뉴스, 가짜 시계 + 스케줄러, SQLite | pytest | 클라우드 세션, ci.yml |
+| 속성 기반 | [불변식](invariants.md)(INV-01~INV-19): 임의 입력·임의 사건 순서에서 위험 한도, 주문 안전, 비밀 보호가 깨지지 않음 | hypothesis(dev 그룹 추가 필요) | 클라우드 세션, ci.yml |
 | 화면 | 마법사 흐름, 대시보드 상태 표시, 버튼 동작 | pytest-qt(offscreen) | 클라우드 세션, ci.yml |
 | 패키징 | exe 실행, `--self-test` | build-exe.yml | Windows 러너 |
 | 규칙 백테스트 | 규칙·위험 관리 부분만(LLM 제외) | 백테스트 도구 | 클라우드 세션(api.upbit.com 시세) |
-| 수동 | 설치, 자동 실행, 자동 로그인, 잠자기 복귀, 허용 IP 오류 | 체크리스트 | Windows 10 PC |
+| 수동 | 설치, 자동 실행, 자동 로그인, 잠자기 복귀, 허용 IP 오류 | [수동 점검표](manual-checklist-windows10.md) | Windows 10 PC |
 | 운영 검증 | 페이퍼 인정일 28일, 실전 점검 3일 | 앱 기록 | Windows 10 PC |
 
 ## 3. 가짜 구현
@@ -30,9 +31,11 @@
 | FakeClock | monotonic 시간, 거래소 서버 시각 | 시간 건너뛰기, 시계 오차, 09:00 경계 |
 | FakeNotifier | 텔레그램 전송 | 429, 실패 |
 
+- 응답 형식, 오류 이름, 주입 기능, 엄격 모드 검사의 상세는 [가짜 구현 명세](fakes-spec.md)에 있다.
+
 ## 4. 녹화 응답
 
-- 공개 API 응답(종목, 캔들, 시세)은 클라우드 세션에서 실제로 받아 `tests/fixtures/`에 저장할 수 있다.
+- 공개 API 응답(종목, 캔들, 시세)은 클라우드 세션에서 실제로 받아 `tests/fixtures/`에 저장할 수 있다. 업비트 공개 시세 녹화는 [`tests/fixtures/upbit/`](../../tests/fixtures/upbit/README.md)에 있다(2026-11-05).
 - 비공개 API 응답은 업비트 문서 예시를 바탕으로 만든다(키가 없으므로).
 - 녹화 파일에는 비밀이나 개인 정보를 넣지 않는다.
 
@@ -41,6 +44,8 @@
 - `core` 패키지 줄 커버리지 80% 이상(초안). 위험 관리·주문 관리는 분기 커버리지 100%를 목표로 한다.
 - 커버리지는 pytest-cov로 잰다. CI에 넣는 변경은 [CI 변경 제안](../10-management/ci-proposals.md)에 있고 2단계에서 반영한다.
 - PR은 ci.yml이 통과해야 병합한다. 코드나 패키징이 바뀐 PR은 build-exe.yml도 통과해야 한다.
+- 불변식(INV-01~INV-19)은 [불변식 명세](invariants.md)에 정한 방법(단위, 속성 기반, 통합, 구조 검사)으로 증명한다.
+- 요구사항과 테스트의 연결은 [추적표](traceability.md)로 관리하고, PR은 [PR 검토 기준](review-checklist.md)으로 검토한다.
 
 ## 6. 테스트하지 않는 것
 

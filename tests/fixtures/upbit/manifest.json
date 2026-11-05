@@ -1,0 +1,89 @@
+[
+  {
+    "file": "market_all_details.json",
+    "method": "GET",
+    "path": "/v1/market/all?is_details=true",
+    "status": 200,
+    "headers": {
+      "Date": "Thu, 05 Nov 2026 02:02:01 GMT",
+      "Content-Type": "application/json;charset=UTF-8",
+      "Remaining-Req": "group=market; min=600; sec=9"
+    },
+    "requested_at_utc": "2026-11-05T02:02:00+00:00",
+    "subset_of": 875,
+    "note": "원본 응답에서 8개 항목만 골라 원래 순서대로 저장. 항목 안의 값은 바꾸지 않음"
+  },
+  {
+    "file": "candles_minutes_240_krw_btc.json",
+    "method": "GET",
+    "path": "/v1/candles/minutes/240?market=KRW-BTC&count=5",
+    "status": 200,
+    "headers": {
+      "Date": "Thu, 05 Nov 2026 02:02:03 GMT",
+      "Content-Type": "application/json;charset=UTF-8",
+      "Remaining-Req": "group=candles; min=600; sec=9"
+    },
+    "requested_at_utc": "2026-11-05T02:02:03+00:00"
+  },
+  {
+    "file": "candles_days_krw_btc.json",
+    "method": "GET",
+    "path": "/v1/candles/days?market=KRW-BTC&count=5",
+    "status": 200,
+    "headers": {
+      "Date": "Thu, 05 Nov 2026 02:02:05 GMT",
+      "Content-Type": "application/json;charset=UTF-8",
+      "Remaining-Req": "group=candles; min=600; sec=9"
+    },
+    "requested_at_utc": "2026-11-05T02:02:04+00:00"
+  },
+  {
+    "file": "ticker_krw_btc_eth_xrp.json",
+    "method": "GET",
+    "path": "/v1/ticker?markets=KRW-BTC,KRW-ETH,KRW-XRP",
+    "status": 200,
+    "headers": {
+      "Date": "Thu, 05 Nov 2026 02:02:06 GMT",
+      "Content-Type": "application/json;charset=UTF-8",
+      "Remaining-Req": "group=ticker; min=600; sec=9"
+    },
+    "requested_at_utc": "2026-11-05T02:02:06+00:00"
+  },
+  {
+    "file": "orderbook_krw_btc.json",
+    "method": "GET",
+    "path": "/v1/orderbook?markets=KRW-BTC",
+    "status": 200,
+    "headers": {
+      "Date": "Thu, 05 Nov 2026 02:02:08 GMT",
+      "Content-Type": "application/json;charset=UTF-8",
+      "Remaining-Req": "group=orderbook; min=600; sec=9"
+    },
+    "requested_at_utc": "2026-11-05T02:02:08+00:00"
+  },
+  {
+    "file": "ticker_error_unknown_market.json",
+    "method": "GET",
+    "path": "/v1/ticker?markets=KRW-NOTEXIST",
+    "status": 404,
+    "headers": {
+      "Date": "Thu, 05 Nov 2026 02:02:10 GMT",
+      "Content-Type": "application/json; charset=utf-8",
+      "Remaining-Req": "group=ticker; min=600; sec=9"
+    },
+    "requested_at_utc": "2026-11-05T02:02:09+00:00"
+  },
+  {
+    "file": "ticker_error_mixed_markets.json",
+    "method": "GET",
+    "path": "/v1/ticker?markets=KRW-BTC,KRW-NOTEXIST",
+    "status": 404,
+    "headers": {
+      "Date": "Thu, 05 Nov 2026 02:36:43 GMT",
+      "Content-Type": "application/json; charset=utf-8",
+      "Remaining-Req": "group=ticker; min=600; sec=9"
+    },
+    "requested_at_utc": "2026-11-05T02:36:42+00:00",
+    "note": "있는 마켓(KRW-BTC)과 없는 마켓을 함께 요청. 있는 마켓 값도 오지 않고 전체가 404"
+  }
+]

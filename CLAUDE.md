@@ -27,7 +27,7 @@
 - Python 3.13 (`requires-python = ">=3.13,<3.14"`), 패키지 관리는 uv, `uv.lock`을 항상 커밋한다.
 - PySide6는 `>=6.12,<6.13`. Qt 6.12가 Windows 10을 지원하는 마지막 버전이라 6.13 이상으로 올리지 않는다.
 - 런타임 의존성은 정확한 버전으로 고정한다(특히 google-genai와 업비트 클라이언트).
-- 개발 의존성(dev 그룹): pytest, pytest-qt, pytest-cov, ruff, pyinstaller.
+- 개발 의존성(dev 그룹): pytest, pytest-qt, pytest-cov, ruff, pyinstaller, hypothesis.
 - 업비트 클라이언트: 공식 `upbit-sdk` 또는 httpx 기반 자체 클라이언트. 1단계에서 정해 ADR(docs/06-architecture/adr/)로 기록한다. `pyupbit`는 쓰지 않는다(2024-06 이후 유지보수 중단).
 - 키 저장: `keyring`(Windows 자격 증명 관리자).
 
@@ -72,6 +72,7 @@
 
 - 세션을 시작하면 이 파일, docs/01-planning/requirements.md, docs/10-management/roadmap.md의 해당 단계, docs/10-management/progress.md, 그 단계와 관련된 docs 문서를 읽고 계획부터 제시한다.
 - 테스트를 먼저 쓴다. 외부 API는 가짜 구현이나 녹화 응답으로 테스트한다.
+- 프론트/백엔드 세션은 하위 에이전트를 테스터 → 워커 → 리뷰어 순서로 쓰고, 워커의 모델·노력은 docs/10-management/roadmap.md "진행 방법"의 표를 따른다(D-077).
 - 결정이 새로 생기거나 바뀌면 docs/10-management/decision-log.md에 먼저 기록하고 관련 문서를 고친다. 문서의 상태 표시("1단계 보완" 등)도 갱신한다.
 - 세션을 마칠 때 docs/10-management/progress.md 맨 위에 기록(한 일, 결정, 남은 일, 다음 단계)을 추가하고 PR을 만든다.
 - 화면 문구와 문서는 한국어, 코드 식별자는 영어로 쓴다.

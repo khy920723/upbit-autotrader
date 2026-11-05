@@ -32,7 +32,7 @@
 | | [상태 전이 정의서](03-functional/state-machines.md) | 초안 |
 | | [알림 정의서](03-functional/notifications.md) | 초안 |
 | | [설정 항목 정의서](03-functional/settings.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
-| | [분할 매수·매도 설계](03-functional/split-trading.md) | 확정(D-082~D-085, 하락률 기본값 D-086 대기) |
+| | [분할 매수·매도 설계](03-functional/split-trading.md) | 확정(D-082~D-086) |
 | 04 데이터 | [데이터 모델](04-data/data-model.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [로그·감사 기록 정의서](04-data/logging-audit.md) | 초안 |
 | 05 연동 | [업비트 API 연동 명세](05-integration/upbit-api.md) | 확정(2026-11 기준 사실, 2026-11-05 재확인, 결정 대기 있음) |
@@ -62,7 +62,7 @@
 | | [결정 로그](10-management/decision-log.md) | 진행 중 |
 | | [CI 변경 제안](10-management/ci-proposals.md) | 진행 중 |
 | 리서치 | [규칙 조건 후보 비교 리포트](research/rule-candidates.md) | 비교 완료, 사용자 선택 대기(D-072) |
-| | [2단계 하락률 비교 리포트](research/split-drop-rate.md) | 비교 완료, 사용자 선택 대기(D-086) |
+| | [2단계 하락률 비교 리포트](research/split-drop-rate.md) | 비교 완료, D-086 결정(기본값 2%), 외부 자료 부록 |
 
 ## ID 규칙
 

@@ -17,7 +17,7 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
   (이름, 값) 쌍의 시퀀스다. 연결 객체(WsConnection): `await send(text)`, `await recv()`(기본은
   bytes, ws_binary(False)면 str), `await ping()`(PING 프레임, 응답을 기다리지 않음),
   `await close(code=1000)`, `close_code`(열려 있으면 None).
-  - 연결 거절은 `StreamConnectFailed`(core 오류, `.status`: 실제 한도 초과면 429,
+  - 연결 거절은 `StreamConnectFailed`(core 오류, `.http_status`: 실제 한도 초과면 429,
     ws_reject_connect는 준 값, 기본 None).
   - 끊긴 뒤 recv·send·ping은 `StreamClosed`(core 오류, `.close_code`). 끊기기 전에 서버가 보낸
     메시지는 recv로 먼저 다 받고 그다음 recv가 StreamClosed다. close는 두 번 불러도 된다.
@@ -768,7 +768,7 @@ def test_real_connect_limit_rejects_with_429_then_requires_a_pause(env):
             await expect_violation("rate_limit_half", e.public())
         with pytest.raises(StreamConnectFailed) as info:
             await e.public()  # 6번째: 실제 한도 초과는 예외 없이 위반만 남기고 거절
-        assert info.value.status == 429
+        assert info.value.http_status == 429
         await e.clock.run_for(0.5)
         await expect_violation("rate_limit_pause", e.public())
         await e.clock.run_for(0.5)
@@ -1930,7 +1930,7 @@ def test_ws_reject_connect_rejects_the_next_attempts(env):
         for _ in range(2):
             with pytest.raises(StreamConnectFailed) as info:
                 await e.private()
-            assert info.value.status is None
+            assert info.value.http_status is None
             await e.public()  # 공개는 상관없다
             e.fake.ws_drop(stream="public")
             await e.clock.run_for(1)
@@ -1947,7 +1947,7 @@ def test_ws_reject_connect_status_and_any_stream(env):
     async def scenario(e: Env) -> None:
         with pytest.raises(StreamConnectFailed) as info:
             await e.public()
-        assert info.value.status == 503
+        assert info.value.http_status == 503
         await e.public()
 
     env.run(scenario)

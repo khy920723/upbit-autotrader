@@ -10,6 +10,7 @@
 숫자(지수 표기 포함)라서 숫자 토큰을 원문 그대로 저장했다(문서 블록과 토큰 단위로 같다).
 """
 
+import hashlib
 import json
 import re
 from decimal import Decimal
@@ -514,4 +515,63 @@ def test_ws_list_subscriptions_examples():
     assert private["result"] == [
         {"type": "myAsset"},
         {"type": "myOrder", "codes": ["KRW-BTC", "KRW-ETH"]},
+    ]
+
+
+# 공식 문서(.md, 2026-11-05) 수신 예시 블록의 숫자 토큰을 나온 순서대로 "\n"으로 이은 문자열의
+# SHA-256. 문서 블록 → 픽스처를 옮길 때 float를 거치면(예: 1386929.37231066771348207123 →
+# 1386929.3723106678) 값이 바뀐다. 픽스처의 example·other_examples 토큰이 원문과 같아야 한다.
+WS_NUMBER_TOKENS = {
+    "websocket-ticker": (
+        40,
+        "26c1dc88e7e611cc6543b7d52ad1bf8e1cfaf1fe424d93e62263a96a08249ce2",
+    ),
+    "websocket-myorder": (
+        17,
+        "78df92ce159f047d56df71271b860cd30a0e06be4b993d7f41bfd5a2addc3656",
+    ),
+    "websocket-myasset": (
+        4,
+        "4541be8581062e4b4061f1617884c41410474d4412fba557997be368ed308ea1",
+    ),
+    "websocket-announcement": (
+        2,
+        "7b7aa8045bca078c6a4713b2e1bff9b61da9a1b16386e17a99755da43d0c0567",
+    ),
+    "websocket-list-subscriptions": (
+        1,
+        "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9",
+    ),
+}
+
+
+def number_tokens(value: Any) -> list[str]:
+    """raw_numbers로 읽은 값에서 숫자 토큰 원문을 나온 순서대로."""
+    if is_double(value):
+        return [value[1]]
+    if isinstance(value, dict):
+        return [t for item in value.values() for t in number_tokens(item)]
+    if isinstance(value, list):
+        return [t for item in value for t in number_tokens(item)]
+    return []
+
+
+@pytest.mark.parametrize("name", WS_NUMBER_TOKENS)
+def test_ws_example_number_tokens_are_the_documents_originals(name):
+    doc = ws_raw(name)
+    tokens = number_tokens(doc["example"]) + number_tokens(doc.get("other_examples", {}))
+    count, digest = WS_NUMBER_TOKENS[name]
+
+    assert len(tokens) == count
+    assert hashlib.sha256("\n".join(tokens).encode("utf-8")).hexdigest() == digest
+
+
+def test_ws_myasset_tokens_in_full():
+    tokens = number_tokens(ws_raw("websocket-myasset")["example"])
+
+    assert tokens == [
+        "1386929.37231066771348207123",
+        "10329.670127489597585685",
+        "1710146517259",
+        "1710146517267",
     ]

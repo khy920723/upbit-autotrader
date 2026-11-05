@@ -99,12 +99,19 @@ def binaries_outside(binaries, roots):
     """roots(Python 설치, 가상 환경, 저장소) 밖에서 모은 바이너리의 번들 경로.
 
     PATH에 있던 다른 프로그램의 DLL(예: 러너의 OpenSSL)이 섞이는 것을 막는다.
+    Microsoft Universal CRT(ucrtbase.dll, api-ms-win-*.dll)는 PyInstaller가 Windows에서
+    일부러 모으는 시스템 런타임이라 허용한다.
     """
     prefixes = tuple(root.replace("\\", "/").lower().rstrip("/") + "/" for root in roots)
+
+    def is_ucrt(dest):
+        name = dest.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        return name == "ucrtbase.dll" or (name.startswith("api-ms-win-") and name.endswith(".dll"))
+
     return sorted(
         dest
         for dest, source, _kind in binaries
-        if not str(source).replace("\\", "/").lower().startswith(prefixes)
+        if not is_ucrt(dest) and not str(source).replace("\\", "/").lower().startswith(prefixes)
     )
 
 

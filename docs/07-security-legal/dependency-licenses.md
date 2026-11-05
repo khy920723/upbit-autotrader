@@ -87,9 +87,9 @@
 | CPython 3.13 런타임(python313.dll, 표준 라이브러리) | PSF-2.0 | PSF 라이선스와 저작권 고지 유지 | `licenses/python/LICENSE.txt`(빌드한 Python에 있을 때) |
 | CPython에 포함된 외부 소프트웨어(OpenSSL 3, libffi, expat, libmpdec, mimalloc, bzip2, zlib, xz, SQLite, Mersenne Twister, SipHash, dtoa, Unicode 데이터 등) | Apache-2.0, MIT, BSD, zlib, 퍼블릭 도메인 등 | 이진 배포 때 고지를 요구하는 것이 있다 | `licenses/python/cpython-3.13.18-license.rst` |
 | HACL*(CPython의 해시 구현) | MIT | 고지 포함 | `licenses/python/hacl-star-MIT.txt`(CPython 문서에 빠져 있어 따로 넣음) |
-| Microsoft Visual C++ 런타임(vcruntime140*.dll, msvcp140*.dll) | Microsoft 재배포 조건 | Python Windows 빌드와 PySide6·shiboken6 휠에 딸린 파일을 고치지 않고 쓴다 | Python `LICENSE.txt`의 "Additional Conditions for this Windows binary build" |
+| Microsoft Visual C++ 런타임(vcruntime140*.dll, msvcp140*.dll)과 Universal CRT(ucrtbase.dll, api-ms-win-*.dll 42개) | Microsoft 재배포 조건 | Python Windows 빌드·PySide6·shiboken6 휠·빌드 PC의 Windows에 딸린 파일을 고치지 않고 쓴다. UCRT는 PyInstaller가 빌드 PC의 Windows에서 모은다(2026-11-05 빌드에서 확인) | Python `LICENSE.txt`의 "Additional Conditions for this Windows binary build" |
 
-- 넣지 않는 것: `opengl32sw.dll`(Mesa llvmpipe 소프트웨어 OpenGL, MIT·BSL-1.0, 약 20MB)은 위젯 앱에 필요 없어 spec이 뺀다. QtNetwork는 `PySide6/__init__.py`가 실행되지 않는 분기에서 import해 끌려오고, 넣으면 PyInstaller가 OpenSSL DLL을 PATH(러너에 설치된 다른 OpenSSL)에서 가져올 수 있어 `excludes`로 뺐다. Windows 빌드는 Python 설치·가상 환경·저장소 밖에서 가져온 바이너리가 있으면 멈춘다.
+- 넣지 않는 것: `opengl32sw.dll`(Mesa llvmpipe 소프트웨어 OpenGL, MIT·BSL-1.0, 약 20MB)은 위젯 앱에 필요 없어 spec이 뺀다. QtNetwork는 `PySide6/__init__.py`가 실행되지 않는 분기에서 import해 끌려오고, 넣으면 PyInstaller가 OpenSSL DLL을 PATH(러너에 설치된 다른 OpenSSL)에서 가져올 수 있어 `excludes`로 뺐다. Windows 빌드는 Python 설치·가상 환경·저장소 밖에서 가져온 바이너리가 있으면 멈춘다(Universal CRT만 예외).
 - python.org Windows 빌드의 `LICENSE.txt`에는 CPython, MS 런타임 조건, bzip2, libffi, OpenSSL, Tcl/Tk 라이선스가 들어 있다(Tcl/Tk는 앱이 쓰지 않아 번들에 없다). 나머지 외부 소프트웨어의 고지는 CPython 문서(`Doc/license.rst`)에 있어 그 사본을 넣는다.
 - 고지 파일 출처: LGPL·GPL 원문은 qtbase v6.12.0의 `LICENSES/`, CPython 문서는 v3.13.18 태그의 `Doc/license.rst`, HACL* 고지는 같은 태그의 `Modules/_hacl/*.c` 머리말이다.
 

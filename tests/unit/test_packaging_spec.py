@@ -443,6 +443,13 @@ def test_windows_build_rejects_binaries_from_outside_python_and_packages(spec_te
         ("python313.dll", "C:/Python313/python313.dll", "BINARY"),
         ("PySide6/Qt6Core.dll", "D:/a/repo/.venv/Lib/site-packages/PySide6/Qt6Core.dll", "BINARY"),
         ("libssl-3-x64.dll", "C:/Program Files/OpenSSL/bin/libssl-3-x64.dll", "BINARY"),
+        # Microsoft Universal CRT: PyInstaller가 시스템에서 일부러 모은다(2026-11-05 Windows 빌드).
+        ("ucrtbase.dll", "C:/Windows/System32/ucrtbase.dll", "BINARY"),
+        (
+            "api-ms-win-crt-runtime-l1-1-0.dll",
+            "C:/Windows/System32/downlevel/api-ms-win-crt-runtime-l1-1-0.dll",
+            "BINARY",
+        ),
     ]
 
     assert outside(binaries, roots) == ["libssl-3-x64.dll"]

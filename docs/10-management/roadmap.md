@@ -140,3 +140,5 @@ exit 0
 | Gemini thinking | gemini-3.8-flash는 thinking_level low·medium·high만(minimal 오류), 3.6-flash·3.5-flash-lite는 minimal 가능. max_output_tokens는 사고 토큰 포함 | aistudio.google.com/docs/thinking |
 | Gemini 모델 넘김 | 2.5-pro → 3.8-flash, 2.5-flash → 3.5-flash-lite(2026-12-01부터), 3.7-flash → 3.8-flash, 3.5-flash → 3.6-flash(2026-10-08부터), 3.1-flash-lite는 2027-05-07 이후 종료 가능 | aistudio.google.com/docs/deprecations, /docs/changelog |
 | Gemini 데이터 | Interactions 기본 store=true(무료 1일 보존), 정책 위반 감시 기록 55일, 무료 등급 입출력은 사람이 검토 가능, 약관에 "전문·업무 목적, 소비자용 아님" 문장 | aistudio.google.com/docs/interactions-overview, /docs/usage-policies, /docs/terms |
+| 업비트 개발자 SDK 라이센스 | 두나무가 공개하는 소프트웨어·소스코드와 "이에 포함된 문서 일체"에 적용, 오픈소스 아님, 개인 목적만, 수정·재배포는 전체 소스 공개 조건, 사업 목적 금지. 공식 Python SDK 저장소 표기는 Apache-2.0(관계 불분명) | docs.upbit.com/kr/page/upbit_developer_sdk_license(2026-01-07 갱신) |
+| upbit-sdk 동작 | 기본 max_retries=2로 POST 포함 자동 재시도(418 제외), HS256 서명, 배열 대괄호를 %5B%5D로 인코딩, 기본 헤더 X-Upbit-Client-*(X-Stainless 플랫폼 헤더는 안 보냄), 웹소켓 재연결 1초 고정·5회·정상 종료 시 재연결 안 함, Remaining-Req 해석 없음 | upbit-sdk 1.1.0 휠 소스 |

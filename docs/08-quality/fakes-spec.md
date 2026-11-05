@@ -47,7 +47,7 @@
 | 대기 목록 | GET /v1/orders/open?market=&states[]=&page=&limit= | 200, 배열 | `default` | `wait`, `watch` |
 | 종료 목록 | GET /v1/orders/closed?market=&states[]=&start_time=&end_time=&limit= | 200, 배열 | `default` | 조회 구간은 최대 7일. 넘겼을 때의 응답은 문서에 없으므로 가짜는 400 `invalid_parameter`를 기본으로 하고 바꿀 수 있게 한다 |
 | 개별 취소 | DELETE /v1/order?uuid= 또는 identifier= | 200, 주문 객체 | `default` | 본문이 있으면 400 `QUERY_PARAMETER_NOT_SUPPORTED` |
-| 일괄 취소 | DELETE /v1/orders/open?pairs=... | 200, `{success: {count, orders: [{uuid, market}]}, failed: {count, orders}}` | `order-cancel-all` | 2초에 1회 |
+| 일괄 취소 | DELETE /v1/orders/open?pairs=... | 200, `{success: {count, orders: [{uuid, market}]}, failed: {count, orders}}` | `order-cancel-all` | 2초에 1회. 앱은 사용자 주문까지 취소되는 이 API를 쓰지 않는다(D-069 대기). 가짜는 호출을 위반으로 기록하는 선택 검사를 둔다 |
 | 키 목록 | GET /v1/api_keys | 200, `[{access_key, expire_at}]` | `default` | `expire_at`은 KST(`+09:00`) |
 | 공개 웹소켓 | wss://api.upbit.com/websocket/v1 | ticker 등 | - | 2.5절 |
 | 비공개 웹소켓 | wss://api.upbit.com/websocket/v1/private | myOrder, myAsset, announcement | - | JWT 필요 |
@@ -119,7 +119,7 @@
 | | `remaining(group, sec)` | `Remaining-Req`의 `sec` 값을 정한다(0 포함). group 값을 표와 다르게(예: 문서 표기 `candle`) 보내는 옵션. 앱은 경로별 표로 버킷을 고르고 다른 group 값은 경고만 남겨야 한다 | TS-143 |
 | 인증·권한 | `auth_error(name)` | 401 `no_authorization_ip`, `expired_access_key`, `jwt_verification`, `invalid_query_payload`, `nonce_used`, `no_authorization_token` | TS-06, TS-07, TS-08 |
 | | `out_of_scope(status)` | `out_of_scope`를 401 또는 403으로 | TS-44 |
-| 주문 거절 | `reject(name)` | 400 `insufficient_funds_bid`, `insufficient_funds_ask`, `under_min_total_bid`, `under_min_total_ask`, `over_krw_funds_bid`, `invalid_parameter`, `validation_error`, `invalid_time_in_force`, `invalid_post_only`, `create_bid_error`, `create_ask_error`, `duplicated_identifier`, `notfoundmarket`, `bad_request`, 403 `market_offline` | TS-11, TS-17, TS-38 |
+| 주문 거절 | `reject(name)` | 400 `insufficient_funds_bid`, `insufficient_funds_ask`, `under_min_total_bid`, `under_min_total_ask`, `over_krw_funds_bid`, `invalid_parameter`, `validation_error`, `invalid_time_in_force`, `invalid_post_only`, `create_bid_error`, `create_ask_error`, `duplicated_identifier`, `notfoundmarket`, `bad_request`, 403 `market_offline`. `duplicated_identifier`는 앱이 REJECTED가 아니라 UNKNOWN으로 두고 조회로 확정해야 한다(D-070) | TS-11, TS-17, TS-38, TS-89 |
 | | `unknown_error(name, status)` | 문서에 없는 이름. 앱이 HTTP 상태로 분류하고 원문 이름을 기록하는지 본다 | TS-118 |
 | 주문 진행 | `fill(identifier, plan)` | 전량, 일부(비율), 여러 번 나눠 체결(`trades`), 미체결 후 `cancel`, 부분 체결 후 `cancel`, `prevented` | TS-63, TS-64, TS-69 |
 | | `not_found_for(identifier, times)` | 조회에 N번 404를 준 뒤 나타난다(늦게 나타난 주문) | TS-02, TS-67 |

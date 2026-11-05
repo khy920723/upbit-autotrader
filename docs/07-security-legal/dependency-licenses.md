@@ -81,14 +81,15 @@
 
 | 구성 요소 | 라이선스 | 지킬 것 | 번들 안 고지 |
 |---|---|---|---|
-| Qt 6.12.0 라이브러리(QtCore·QtGui·QtWidgets DLL, 플랫폼·스타일·이미지 플러그인) | LGPL-3.0-only(오픈소스 선택지) | 5.1 | `licenses/LGPL-3.0.txt`, `licenses/GPL-3.0.txt` |
+| Qt 6.12.0 라이브러리(QtCore·QtGui·QtWidgets·QtSvg DLL, platforms·styles·imageformats·iconengines·generic 플러그인)와 PySide6·shiboken6 | LGPL-3.0-only(오픈소스 선택지) | 5.1 | `licenses/LGPL-3.0.txt`, `licenses/GPL-3.0.txt` |
 | PyInstaller 부트로더(exe 본체) | GPL-2.0-or-later WITH Bootloader-exception | 예외 조항으로 묶은 프로그램을 제한 없이 배포할 수 있다 | `licenses/pyinstaller/COPYING.txt` |
 | PyInstaller 런타임 훅·런타임 모듈 | Apache-2.0 | 라이선스 사본 제공 | 같은 파일(Apache-2.0 본문 포함) |
 | CPython 3.13 런타임(python313.dll, 표준 라이브러리) | PSF-2.0 | PSF 라이선스와 저작권 고지 유지 | `licenses/python/LICENSE.txt`(빌드한 Python에 있을 때) |
 | CPython에 포함된 외부 소프트웨어(OpenSSL 3, libffi, expat, libmpdec, mimalloc, bzip2, zlib, xz, SQLite, Mersenne Twister, SipHash, dtoa, Unicode 데이터 등) | Apache-2.0, MIT, BSD, zlib, 퍼블릭 도메인 등 | 이진 배포 때 고지를 요구하는 것이 있다 | `licenses/python/cpython-3.13.18-license.rst` |
 | HACL*(CPython의 해시 구현) | MIT | 고지 포함 | `licenses/python/hacl-star-MIT.txt`(CPython 문서에 빠져 있어 따로 넣음) |
-| Microsoft Visual C++ 런타임(vcruntime140.dll) | Microsoft 재배포 조건 | Python Windows 빌드에 딸린 파일을 고치지 않고 쓴다 | Python `LICENSE.txt`의 "Additional Conditions for this Windows binary build" |
+| Microsoft Visual C++ 런타임(vcruntime140*.dll, msvcp140*.dll)과 Universal CRT(ucrtbase.dll, api-ms-win-*.dll 42개) | Microsoft 재배포 조건 | Python Windows 빌드·PySide6·shiboken6 휠·빌드 PC의 Windows에 딸린 파일을 고치지 않고 쓴다. UCRT는 PyInstaller가 빌드 PC의 Windows에서 모은다(2026-11-05 빌드에서 확인) | Python `LICENSE.txt`의 "Additional Conditions for this Windows binary build" |
 
+- 넣지 않는 것: `opengl32sw.dll`(Mesa llvmpipe 소프트웨어 OpenGL, MIT·BSL-1.0, 약 20MB)은 위젯 앱에 필요 없어 spec이 뺀다. QtNetwork는 `PySide6/__init__.py`가 실행되지 않는 분기에서 import해 끌려오고, 넣으면 PyInstaller가 OpenSSL DLL을 PATH(러너에 설치된 다른 OpenSSL)에서 가져올 수 있어 `excludes`로 뺐다. Windows 빌드는 Python 설치·가상 환경·저장소 밖에서 가져온 바이너리가 있으면 멈춘다(Universal CRT만 예외).
 - python.org Windows 빌드의 `LICENSE.txt`에는 CPython, MS 런타임 조건, bzip2, libffi, OpenSSL, Tcl/Tk 라이선스가 들어 있다(Tcl/Tk는 앱이 쓰지 않아 번들에 없다). 나머지 외부 소프트웨어의 고지는 CPython 문서(`Doc/license.rst`)에 있어 그 사본을 넣는다.
 - 고지 파일 출처: LGPL·GPL 원문은 qtbase v6.12.0의 `LICENSES/`, CPython 문서는 v3.13.18 태그의 `Doc/license.rst`, HACL* 고지는 같은 태그의 `Modules/_hacl/*.c` 머리말이다.
 
@@ -96,7 +97,7 @@
 
 | 의무 | 이 앱의 방법 |
 |---|---|
-| 사용자가 라이브러리를 바꿀 수 있어야 함 | onedir 빌드라 Qt DLL이 `_internal/PySide6/`에 따로 있다. onefile로 바꾸거나 정적 링크하지 않는다 |
+| 사용자가 라이브러리를 바꿀 수 있어야 함(4d1) | onedir 빌드라 Qt DLL이 `_internal/PySide6/`에 따로 있다. PySide6·shiboken6의 Python 부분도 exe에 묶지 않고 `.py`로 둔다(spec `module_collection_mode`). onefile로 바꾸거나 정적 링크하지 않는다. 앱 소스 위치도 `NOTICE.txt`에 적는다 |
 | 사본마다 눈에 띄는 고지(4a): 라이브러리를 쓰고 LGPL이 적용된다는 사실 | exe 옆 `NOTICE.txt` |
 | GPL과 LGPL 사본 동봉(4b) | `licenses/LGPL-3.0.txt`, `licenses/GPL-3.0.txt` |
 | 실행 중 저작권을 보여 주면 라이브러리 고지와 라이선스 사본 위치도 함께(4c) | 정보 화면(SCR-11, 6단계) |
@@ -122,10 +123,12 @@ Qt 6.12에서 오픈소스로는 GPL-3.0(또는 상용)으로만 제공되는 �
 
 - Qt Licensing 페이지 목록: Canvas Painter, CoAP, Graphs, GRPC, HTTP Server, Lottie Animation, MQTT, Network Authorization, Qml Compiler, Quick 3D, Quick 3D Physics, Quick Timeline, Virtual Keyboard, Wayland Compositor.
 - 목록에는 없지만 모듈 페이지가 GPL-3.0 전용이라고 하는 것: Charts, Data Visualization.
+- Qt Designer(`Qt6Designer.dll`, `Qt6DesignerComponents.dll`, `designer.exe`)는 GPL-3.0 + Qt GPL 예외다. 예외는 도구가 만든 출력에만 해당해서 링크하면 GPL이다. Essentials 휠에 들어 있다.
+- Qt 3D의 QML 플러그인(`quick3dcoreplugin` 등)과 `Qt6Quick3DSpatialAudio`는 이름에 quick3d가 있지만 LGPL이라 빌드 검사에서 걸리지 않게 했다.
 
 | 막는 곳 | 방법 |
 |---|---|
-| 코드 | `tests/unit/test_architecture.py`가 PySide6.QtCanvasPainter, QtCharts, QtDataVisualization, QtGraphs, QtGraphsWidgets, QtHttpServer, QtNetworkAuth, QtQuick3D import를 막는다. 쓰지 않을 WebEngine, Pdf, Designer도 막는다 |
+| 코드 | `tests/unit/test_architecture.py`가 PySide6.QtCanvasPainter, QtCharts, QtDataVisualization, QtDesigner, QtGraphs, QtGraphsWidgets, QtHttpServer, QtNetworkAuth, QtQuick3D import를 막는다. 쓰지 않을 WebEngine, Pdf, Network도 막는다 |
 | 빌드 수집 | Essentials 휠의 `platforminputcontexts/qtvirtualkeyboardplugin`(Virtual Keyboard)은 import하지 않아도 PyInstaller의 QtGui 훅이 모은다. 의존 라이브러리(Qt6VirtualKeyboard)가 Addons에 있어 메타 패키지를 쓰면 해결되기 때문이다. `packaging/hooks/hook-PySide6.QtGui.py`가 이 플러그인과 PDF 이미지 플러그인(qpdf)을 빼고 모은다 |
 | 빌드 검사 | `packaging/autotrader.spec`은 GPL 전용 Qt 바이너리 이름이 번들 목록에 남아 있으면 빌드를 멈춘다 |
 
@@ -148,6 +151,7 @@ Qt 6.12에서 오픈소스로는 GPL-3.0(또는 상용)으로만 제공되는 �
 | `licenses/pyinstaller/`, `licenses/pyinstaller-hooks-contrib/` | PyInstaller |
 | `licenses/python/` | CPython과 포함된 외부 소프트웨어 |
 | `<패키지>-<버전>.dist-info/` | 런타임 패키지 메타데이터와 라이선스 파일(keyring, jaraco.*, more-itertools, pywin32-ctypes 등) |
+| `PySide6/`, `shiboken6/` | Qt·PySide6 DLL과 Python 파일(`.py`). 사용자가 바꿀 수 있다 |
 
 ## 7. 남은 일
 

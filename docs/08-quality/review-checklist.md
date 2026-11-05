@@ -83,11 +83,11 @@ QA가 PR을 검토할 때 쓰는 기준이다. PR 종류(문서, 인프라, 기�
 | RC-D07 | 한도, 수수료, `min_total`·`max_total`을 하드코딩하지 않는다(설정과 `/v1/orders/chance`). 키 없는 paper가 쓰는 공식 문서 값은 "추정값"으로 표시한다(D-059 대기) | 위험 관리 정책서 2장, 매매 로직 명세 7장 |
 | RC-D08 | 상태별 허용 동작 표를 지키고, 보내기 직전에 상태를 다시 확인한다 | 상태 전이 정의서 2장, INV-02 |
 | RC-D09 | 결과 불명·끝나지 않은 주문이 있는 코인에 새 주문을 만들지 않고, 같은 코인에 매수·매도를 함께 걸지 않는다 | INV-04, INV-05 |
-| RC-D10 | 손절은 60초마다 점검하고, 일일 주문 수 상한·일일 손실 한도가 손절을 막지 않는다. 최소 주문 간격은 거래소가 접수한 주문만 세고, 손절·청산의 429 재시도는 간격을 기다리지 않는다(D-061) | 위험 관리 정책서 2장, INV-09 |
+| RC-D10 | 손절은 60초마다 점검하고, 일일 주문 수 상한·일일 손실 한도가 손절을 막지 않는다. 최소 주문 간격은 거래소가 접수한 주문만 세고, 손절·청산의 429 재시도는 간격을 기다리지 않는다(D-061 대기) | 위험 관리 정책서 2장, INV-09 |
 | RC-D11 | 모든 거부와 차단을 이유 코드와 함께 기록한다 | 위험 관리 정책서 1장 |
 | RC-D12 | 한도를 느슨하게 바꾸면 확인(MSG-C006)을 받고 엄격하게 바꾸면 바로 적용한다. live에서 바뀌면 이벤트와 알림을 남긴다 | 위험 관리 정책서 8장 |
 | RC-D13 | live-validate와 live는 실전 전환 게이트를 지나야만 켜지고, 설정 파일로 건너뛸 수 없다 | 위험 관리 정책서 6장, INV-19 |
-| RC-D14 | 시세조종으로 오해받을 주문이 없다: 자기 주문끼리 체결 없음, 최소 주문 간격과 일일 주문 수 상한, 걸었다 취소하는 반복 없음 | CLAUDE.md 절대 규칙, INV-12 |
+| RC-D14 | 시세조종으로 오해받을 주문이 없다: 자기 주문끼리 체결 없음(코인별 주문 직렬화), 최소 주문 간격과 일일 주문 수 상한, 걸었다 취소하는 반복 없음. 정지 때 일괄 취소 API를 쓰지 않고 `uat-` 주문만 identifier로 취소한다(D-069 대기) | CLAUDE.md 절대 규칙, INV-12 |
 
 ### 4.3 업비트 API 규칙
 
@@ -97,7 +97,7 @@ QA가 PR을 검토할 때 쓰는 기준이다. PR 종류(문서, 인프라, 기�
 | RC-D16 | `Origin` 헤더가 없다. 같은 헤더를 두 번 보내지 않는다(라이브러리 기본 헤더 포함). POST는 JSON 본문과 `Content-Type` 하나, DELETE는 쿼리 파라미터만 | CLAUDE.md, 헤더 중복 공지(2026-07-31) |
 | RC-D17 | JWT는 HS512, 요청마다 새 nonce(UUID), `query_hash`는 URL 인코딩 전 실제 쿼리 문자열의 SHA512(배열은 키 반복, POST는 JSON 본문을 `key=value&...`로), Secret Key는 Base64 디코딩 없이 쓴다 | CLAUDE.md, 인증 문서 |
 | RC-D18 | 모든 주문에 `smp_type`을 명시한다(`cancel_maker`). `post_only`를 쓰지 않는다 | CLAUDE.md, SMP 공지(2026-11-09), INV-06 |
-| RC-D19 | identifier를 DB에 먼저 커밋한 뒤 보낸다. 64자 이하이고 공백·`+`가 없으며 다시 쓰지 않는다. 주문 POST에 HTTP 클라이언트·SDK 자동 재시도가 없다. 타임아웃이면 같은 identifier로 조회해 확인한다 | CLAUDE.md, INV-03 |
+| RC-D19 | identifier를 DB에 먼저 커밋한 뒤 보낸다. 64자 이하이고 공백·`+`가 없으며 다시 쓰지 않는다. 주문 POST에 HTTP 클라이언트·SDK 자동 재시도가 없다. 타임아웃이나 `duplicated_identifier`면 같은 identifier로 조회해 확인한다(D-070) | CLAUDE.md, INV-03 |
 | RC-D20 | 오류는 `error.name`으로 분기하고 `error.message`로 분기하지 않는다. `out_of_scope`는 401·403 모두 처리한다. 시세 API의 숫자 `name`을 처리한다. 모르는 이름은 HTTP 상태로 분류하고 원문을 기록한다 | CLAUDE.md, REST API 안내 |
 | RC-D21 | `Remaining-Req`는 `sec`만 쓴다. 요청 한도 버킷은 업비트 API 연동 명세 4장의 경로별 표로 고르고, 응답의 group 값이 표와 다르면 경고만 남긴다(캔들 그룹은 `candles`). 그룹별 한도의 절반 이하다. 429: GET은 다음 초에 같은 요청, 주문 POST는 REJECTED 뒤 새 identifier로 위험 검사부터. 418: SUSPENDED + 알림 | CLAUDE.md, INV-13 |
 | RC-D22 | 종목 경고는 `market_event.warning`과 `caution`의 모든 항목으로 판정한다. 폐기된 `market_warning`, 웹소켓의 `is_trading_suspended`·`market_warning`을 쓰지 않는다 | CLAUDE.md, 가짜 구현 명세 2.8절 |

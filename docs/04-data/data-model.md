@@ -1,6 +1,6 @@
 # 데이터 모델
 
-상태: 초안(1단계 제안, 사용자 결정 대기: D-041 DB 접근 방식, D-044 실행 모드 저장 위치, D-049 live-validate 일수) · 관련: [로그·감사 기록 정의서](logging-audit.md), [상태 전이 정의서](../03-functional/state-machines.md), [매매 로직 명세](../03-functional/trading-logic.md), [시스템 구성도](../06-architecture/system-architecture.md)
+상태: 초안(1단계 제안, 사용자 결정 대기: D-041 DB 접근 방식, D-044 실행 모드 저장 위치, D-049 live-validate 일수, D-067 잔량 원가, D-069 정지 상태 저장) · 관련: [로그·감사 기록 정의서](logging-audit.md), [상태 전이 정의서](../03-functional/state-machines.md), [매매 로직 명세](../03-functional/trading-logic.md), [시스템 구성도](../06-architecture/system-architecture.md)
 
 저장소는 SQLite 파일 하나다: `%LOCALAPPDATA%\upbit-autotrader\data\autotrader.db`(같은 폴더에 `-wal`, `-shm` 파일이 생긴다). 아래 테이블·열·인덱스는 1단계 제안이며 2단계 구현 전에 사용자 확인을 받는다.
 
@@ -15,6 +15,7 @@
 ### 연결 규칙
 
 - **쓰기 연결은 1개**이고 core 스레드(asyncio 루프 스레드, [시스템 구성도](../06-architecture/system-architecture.md) 3장)만 쓴다. 모든 쓰기는 이 연결의 트랜잭션으로 한다.
+- **체결 1건 반영은 한 트랜잭션이다(D-070):** fills 삽입, orders의 `executed_*`·`paid_fee`·상태, positions의 수량·평균 단가·원가·잔량·상태, fills의 `realized_pnl`, FLAT이 되면 round_trips, daily_stats 증분을 함께 커밋한다. 같은 체결이 다시 오면(`UNIQUE(identifier, trade_uuid)`) 아무것도 바꾸지 않는다. 시작 점검은 fills로 포지션을 다시 계산해 positions와 비교하고, 다르면 이벤트 POSITION_RECALCULATED를 남기고 다시 계산한 값을 쓴다.
 - 화면 조회는 앱 계층이 여는 **읽기 전용 연결**(`file:...?mode=ro` URI, `PRAGMA query_only=ON`)을 쓴다. WAL 모드라 읽기가 쓰기를 막지 않는다.
 - 백업(JOB-11)과 CSV 내보내기는 작업 스레드가 별도 연결로 한다. core 루프를 막지 않기 위해서다.
 - 다른 프로세스가 DB를 쓰지 못하게 단일 인스턴스 잠금을 먼저 잡는다([시스템 구성도](../06-architecture/system-architecture.md) 8장).
@@ -43,7 +44,7 @@
 | JSON | TEXT, UTF-8 JSON. 비밀은 넣지 않는다 | |
 
 - 위험 한도 비교(일일 손실 등)는 반올림 전 Decimal 값으로 한다. INTEGER 합계는 화면·알림·CSV용이다.
-- 업비트 REST는 가격·수량을 문자열로 주고, 웹소켓은 JSON 숫자로 준다. 웹소켓 메시지는 `json.loads(..., parse_float=Decimal)`로 읽어 부동소수 오차 없이 저장한다.
+- 업비트 거래(Exchange) REST는 가격·수량을 문자열로 주고, 시세(Quotation) REST(ticker, orderbook, candles)와 웹소켓은 JSON 숫자로 준다(지수 표기 `9.101e-05`가 올 수 있다). 그래서 모든 업비트 응답을 `json.loads(..., parse_float=Decimal, parse_int=Decimal)`로 읽고 문자열 숫자도 Decimal로 바꾼다(`parse_float`만 주면 정수는 `int`로 남는다). 저장할 때는 `format(value, "f")`로 지수 표기 없이 쓴다(`str(Decimal("1.4325E+8"))`은 지수 표기다, D-071).
 - 업비트가 주는 KST 시각(`+09:00`)은 UTC로 바꿔 저장하고 원문이 필요하면 `payload_json`에 남긴다.
 
 ## 3. 관계도
@@ -94,7 +95,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | `install_id` | UUID | 진단 묶음 구분용 |
 | `mode` | paper, signal-only, live-validate, live | 현재 실행 모드. 설정 파일이 아니라 DB에 둔다(D-044 대기, [설정 항목 정의서](../03-functional/settings.md) 1장) |
 | `mode_changed_at` | 시각 | |
-| `trading_state` | RUNNING, PAUSED, BUY_BLOCKED, STOPPED | 재시작 때 복원할 직전 상태 |
+| `trading_state` | RUNNING, PAUSED, BUY_BLOCKED, STOPPED | 재시작 때 복원할 직전 상태. [정지]·[정지 후 전량 매도]는 취소·매도보다 먼저 STOPPED를 저장한다(LIQUIDATING은 저장하지 않음, D-069 대기) |
 | `buy_blocked_date_kst` | `YYYY-MM-DD` | 일일 손실 한도·주문 수 상한에 닿은 날 |
 | `paper_started_at` | 시각 | |
 | `live_validate_started_at` | 시각 | |
@@ -102,6 +103,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | `upbit_key_expire_at` | 시각(UTC) | `GET /v1/api_keys`로 읽은 만료 일시를 UTC로 바꿔 저장([업비트 API 연동 명세](../05-integration/upbit-api.md) 1장). 원문은 이벤트 context에 남긴다 |
 | `upbit_key_expire_checked_at` | 시각 | |
 | `settings_applied_json` | JSON | 마지막으로 적용한 설정(비밀 없음). 설정 파일을 앱 밖에서 고쳤는지 비교한다 |
+| `last_order_reconcile_at` | 시각 | 마지막으로 끝낸 주문 대조 시각. `/v1/orders/closed` 조회 구간의 시작점([매매 로직 명세](../03-functional/trading-logic.md) 11장, D-070) |
 
 ### markets: 종목 목록과 경고
 
@@ -226,11 +228,12 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | side | TEXT | 필수 | bid, ask |
 | ord_type | TEXT | 필수 | limit, price, market, best |
 | time_in_force | TEXT | | ioc, fok(post_only는 쓰지 않음) |
-| smp_type | TEXT | 필수 | 보낸 값. 앱은 항상 cancel_maker(매매 로직 명세 6장) |
+| smp_type | TEXT | source=app이면 필수 | 보낸 값. 앱은 항상 cancel_maker(매매 로직 명세 6장). 들여온 주문은 거래소 응답 값(없으면 NULL) |
 | req_price | TEXT | | 보낸 `price`(지정가 단가 또는 매수 총액) |
 | req_volume | TEXT | | 보낸 `volume` |
 | approved_krw | INTEGER | | 위험 관리가 승인한 매수 금액 |
-| purpose | TEXT | 필수 | ENTRY, STOP_LOSS, TAKE_PROFIT, RULE_EXIT, LLM_NEGATIVE, LIQUIDATE, DESELECT_SELL, MODE_EXIT_SELL |
+| purpose | TEXT | 필수 | ENTRY, STOP_LOSS, TAKE_PROFIT, RULE_EXIT, LLM_NEGATIVE, LIQUIDATE, DESELECT_SELL, MODE_EXIT_SELL, IMPORTED(재조정으로 들여온 주문) |
+| source | TEXT | 필수, 기본 `app` | app, reconcile(거래소 목록에서 들여옴, D-070) |
 | mode | TEXT | 필수 | paper, live-validate, live |
 | state | TEXT | 필수 | CREATED, SUBMITTED, OPEN, PARTIAL, FILLED, CANCELLED, REJECTED, UNKNOWN |
 | exchange_state | TEXT | | 마지막으로 본 업비트 `state` 원문 |
@@ -241,7 +244,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | decision_id | INTEGER | FK decisions | 재조정으로 들여온 주문은 NULL |
 | retry_of | TEXT | FK orders(identifier) | 다시 낸 주문이면 이전 주문 |
 | error_name | TEXT | | 업비트 `error.name` |
-| reject_reason | TEXT | | 앱 이유 코드([매매 로직 명세](../03-functional/trading-logic.md) 13장 표: EXCHANGE_ERROR, RATE_LIMIT_429, RATE_LIMIT_418, NOT_FOUND_AFTER_UNKNOWN, VALIDATE_TIMEOUT, VALIDATE_ERROR, PAPER_RESTART) |
+| reject_reason | TEXT | | 앱 이유 코드([매매 로직 명세](../03-functional/trading-logic.md) 13장 표: EXCHANGE_ERROR, RATE_LIMIT_429, RATE_LIMIT_418, NOT_FOUND_AFTER_UNKNOWN, VALIDATE_TIMEOUT, VALIDATE_ERROR, PAPER_RESTART, DUPLICATED_IDENTIFIER) |
 | expected_reject | INTEGER | 필수, 기본 0 | live-validate 매도 검증의 `insufficient_funds_ask`처럼 예상된 거절 |
 | created_at | TEXT | 필수 | CREATED 저장 시각 |
 | submitted_at | TEXT | | 전송 직전 시각 |
@@ -274,8 +277,8 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | price | TEXT | 필수 | |
 | volume | TEXT | 필수 | |
 | funds | TEXT | 필수 | 체결 금액 |
-| fee | TEXT | 필수 | |
-| is_maker | INTEGER | | |
+| fee | TEXT | 필수 | myOrder `trade_fee`. REST로 복구한 체결은 REST 체결 항목에 수수료가 없으므로 주문 `paid_fee`를 체결 금액 비율로 나눈 값(마지막 체결에 나머지, D-070) |
+| is_maker | INTEGER | | REST로 복구한 체결은 NULL |
 | realized_pnl | TEXT | | 매도 체결의 실현 손익(Decimal). 매수는 NULL |
 | source | TEXT | 필수 | api, websocket, paper |
 
@@ -294,7 +297,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | status | TEXT | 필수 | FLAT, ENTERING, HOLDING, EXITING, COOLDOWN, BLOCKED |
 | entries | INTEGER | 필수, 기본 0 | 이번 포지션의 매수 회차 수(ADR-0008) |
 | exit_only | INTEGER | 필수, 기본 0 | live → paper 전환 뒤 남긴 실보유분(손절·청산만 관리) |
-| dust_volume | TEXT | 필수, 기본 `'0'` | 팔 수 없는 잔량(매도 `min_total` 미만). 손절·매수 판단에서 보유로 치지 않고, 다음 매수 체결 때 `volume`에 합친다([매매 로직 명세](../03-functional/trading-logic.md) 10장) |
+| dust_volume | TEXT | 필수, 기본 `'0'` | 팔 수 없는 잔량(매도 `min_total` 미만). 손절·매수 판단에서 보유로 치지 않고, 다음 매수 체결 때 `volume`에 합친다([매매 로직 명세](../03-functional/trading-logic.md) 10장). 잔고 대조는 거래소 수량을 `volume + dust_volume`과 비교한다(D-070) |
 | cooldown_until | TEXT | | 재진입 제한 해제 시각. status가 COOLDOWN인데 NULL이면 수동 해제 대기 |
 | blocked_reason | TEXT | | |
 | opened_at | TEXT | | |
@@ -314,6 +317,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | realized_pnl_krw | INTEGER | 필수 | |
 | exit_reason | TEXT | 필수 | 마지막 매도의 purpose |
 | dust_volume | TEXT | 필수, 기본 `'0'` | 최소 주문 금액 미만이라 팔지 못한 잔량 |
+| dust_cost_written_off | TEXT | 필수, 기본 `'0'` | 손실로 처리한 잔량 원가(Decimal). 매도 없이 잔량으로 옮긴 경우 그날 일일 손실 한도 판단에 더한다(제안, D-067 대기) |
 
 ### daily_stats: 일별 집계(09:00 KST 기준)
 
@@ -322,7 +326,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | date_kst | TEXT | PK(1) | |
 | mode | TEXT | PK(2) | |
 | realized_pnl_krw | INTEGER | 필수, 기본 0 | 그날 매도 체결의 실현 손익 합(순, 보고용) |
-| realized_loss_krw | INTEGER | 필수, 기본 0 | 그날 손실이 난 매도 체결의 손실 합(양수). 일일 손실 한도와 같은 기준(보고용. 한도 판단은 fills의 Decimal 값으로 한다) |
+| realized_loss_krw | INTEGER | 필수, 기본 0 | 그날 손실이 난 매도 체결의 손실 합(양수). 일일 손실 한도와 같은 기준(보고용. 한도 판단은 fills의 Decimal 값과, D-067을 채택하면 그날 round_trips의 `dust_cost_written_off`로 한다) |
 | fees_krw | INTEGER | 필수, 기본 0 | |
 | orders_count | INTEGER | 필수, 기본 0 | 그날 거래소(또는 가상 거래소)로 보낸 주문 수. 거절 포함 |
 | buy_blocked | INTEGER | 필수, 기본 0 | 일일 손실 한도·주문 수 상한 도달 |
@@ -331,7 +335,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | recognized | INTEGER | | JOB-13이 확정. 1=인정일, 0=아님, NULL=아직 |
 
 - paper 행의 `recognized`가 인정일이다. live-validate 일수도 같은 규칙(하루 12시간)으로 센다(제안, D-049 대기).
-- 분은 JOB-02(60초)마다 실제 경과한 monotonic 시간으로 더한다. 앱이 꺼져 있던 시간은 더하지 않는다.
+- 분은 JOB-02(60초)마다 실제 경과한 monotonic 시간으로 더하되, 한 회차에 최대 2분까지만 더한다. 잠자기 복귀(전원 이벤트)를 받으면 기준 시각을 다시 잡는다. Windows에서 monotonic 시계가 잠자기 시간을 포함하는지와 상관없이 잠자기 시간이 인정일에 들어가지 않게 하려는 것이다. 앱이 꺼져 있던 시간은 더하지 않는다(D-071).
 
 ### events: 감사 기록
 
@@ -387,10 +391,11 @@ PK와 UNIQUE 제약(`orders.upbit_uuid`, `news_items.url`, `fills(identifier, tr
 |---|---|
 | 같음 | 그대로 진행 |
 | DB가 더 낮음 | `backup\pre-migrate-v{현재}-{시각}.db`로 백업(SQLite 백업 API) → 번호 순서대로 적용. 파일 하나를 한 트랜잭션으로 적용하고 같은 트랜잭션에서 `user_version`과 `schema_migrations`를 갱신 |
-| DB가 더 높음 | 앱보다 새 버전이 만든 DB다. 매매를 시작하지 않고 시작 점검 실패로 안내한다(새 버전을 쓰거나 백업 복원). [운영 런북](../09-operations/runbook.md) 3장의 되돌리기와 맞물린다 |
+| DB가 더 높음 | 앱보다 새 버전이 만든 DB다. 매매를 시작하지 않고 시작 점검 실패로 안내한다(새 버전을 쓰거나 백업 복원). 이전 버전 앱으로 되돌릴 때는 [운영 런북](../09-operations/runbook.md) 3장 5번에 따라 `backup\`의 이전 DB를 복원한다 |
 | 적용 중 오류 | 트랜잭션을 되돌리고 시작 점검 실패. 백업 파일 위치를 안내한다 |
 
-- 열 삭제·형식 변경은 SQLite 권장 절차(새 테이블 생성 → 복사 → 교체)로 한다.
+- 열 삭제·형식 변경은 새 테이블을 만들어 복사한 뒤 바꾸는 방식으로 한다.
+- **외래 키(D-071):** `PRAGMA foreign_keys`는 트랜잭션 안에서 바꾸면 무시된다(sqlite 3.53.1로 확인: 트랜잭션 안에서 OFF로 바꿔도 값이 1로 남고, 자식이 있는 부모 테이블을 지우면 실패). 그래서 실행기는 트랜잭션을 열기 전에 `foreign_keys=OFF`로 바꾸고, 커밋 전에 `PRAGMA foreign_key_check` 결과가 0행인지 확인하며(아니면 되돌림), 커밋 뒤 `foreign_keys=ON`으로 되돌린다. 마이그레이션 SQL 파일에는 `BEGIN`·`COMMIT`을 쓰지 않는다.
 - 테스트: 빈 DB에 전체 적용한 스키마와, 각 과거 버전 스냅샷에 차례로 적용한 스키마가 같은지 비교한다.
 
 ## 7. 보관과 크기

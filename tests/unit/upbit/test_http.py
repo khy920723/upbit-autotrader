@@ -19,6 +19,7 @@ import logging
 import re
 import ssl
 import traceback
+import warnings
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -877,7 +878,9 @@ def _weaken(context: ssl.SSLContext, how: str) -> ssl.SSLContext:
     elif how == "minimum_supported":
         context.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
     elif how == "tls1_1":
-        context.minimum_version = ssl.TLSVersion.TLSv1_1
+        with warnings.catch_warnings():  # TLSv1_1은 폐기 예정 경고를 낸다(일부러 약하게 만든다).
+            warnings.simplefilter("ignore", DeprecationWarning)
+            context.minimum_version = ssl.TLSVersion.TLSv1_1
     return context
 
 

@@ -50,9 +50,9 @@
 | 대상 | 라이선스 | 지킬 것 |
 |---|---|---|
 | 이 프로젝트 | MIT | 루트 `LICENSE` |
-| PySide6 / Qt | LGPL-3.0 | 동적 링크 유지(onedir이라 Qt DLL 교체 가능), 라이선스 고지 포함, Qt 소스를 고치지 않음 |
+| PySide6 / Qt | LGPL-3.0 | 동적 링크 유지(onedir이라 Qt DLL 교체 가능), 라이선스 고지 포함, Qt 소스를 고치지 않음. GPL-3.0 전용 Qt 모듈(Charts, Graphs, Virtual Keyboard 등)은 쓰지 않고 빌드에서 막는다 |
 | PyInstaller | GPL + 부트로더 예외 | 묶은 앱은 어떤 라이선스로든 배포 가능 |
-| 그 밖의 의존성 | 각자 | 2단계에서 라이선스 목록을 자동 생성해 MIT와 충돌이 없는지 확인하고, 앱 정보 화면과 배포 zip에 고지 포함 |
+| 그 밖의 의존성 | 각자 | [의존성 라이선스 목록](dependency-licenses.md)(2단계): `uv.lock` 기준으로 목록을 만들고 MIT와 충돌이 없는지 테스트로 검사한다. 배포 zip에는 `_internal/licenses/`에 고지를 넣는다. 앱 정보 화면 표시는 6단계 |
 
 ## 9. 면책 문구
 

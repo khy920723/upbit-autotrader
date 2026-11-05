@@ -67,6 +67,20 @@
 3. `autotrader.exe`를 실행한다. SmartScreen 경고가 뜨면 "추가 정보 → 실행".
 4. Defender가 격리하면: Windows 보안 → 바이러스 및 위협 방지 → 보호 기록에서 복원하고, Microsoft에 오탐으로 제출한다.
 
+### 자가 점검
+
+설치한 폴더에서 실행 환경을 점검한다. 창을 띄우지 않고, 네트워크와 키를 쓰지 않는다.
+
+1. 압축을 푼 폴더의 빈 곳에서 Shift + 마우스 오른쪽 클릭 → "여기에 PowerShell 창 열기".
+2. 아래 명령을 실행한다(끝날 때까지 몇 초 기다린다).
+
+```powershell
+Start-Process -FilePath .\autotrader.exe -ArgumentList '--self-test' -WorkingDirectory $PWD -Wait
+```
+
+3. 같은 폴더에 생긴 `self-test-report.txt`를 메모장으로 열어 마지막 줄이 `결과: 통과 (6/6)`인지 본다. 실패한 항목은 `[실패]`로 표시되고 원인이 적힌다.
+4. 2단계 빌드에서는 `autotrader.exe`를 두 번 클릭하면 "업비트 자동매매 0.0.1" 빈 창이 뜨고, 창을 닫으면 끝난다.
+
 ## 4. 첫 실행 마법사
 
 화면 안내를 따라 9단계를 마친다([화면 정의서](../02-ux/screen-spec.md) SCR-01). 위험 한도는 직접 정한다. 기본값은 예시다.

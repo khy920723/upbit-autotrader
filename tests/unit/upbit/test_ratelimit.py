@@ -771,7 +771,8 @@ def test_infinite_retry_after_is_over_the_cap_and_waits_24_hours():
     ids=["90000", "inf", "exactly-24h", "none"],
 )
 def test_blocked_errors_raised_without_network_carry_the_capped_mark(retry_after, capped):
-    # 차단 중(check_not_blocked)과 만기 뒤 확인 요청 대기 중(start_send) 모두 한도 장치 표시를 담는다.
+    # 차단 중(check_not_blocked)과 만기 뒤 확인 요청 대기 중(start_send) 모두 한도 장치 표시를
+    # 담는다.
     # retry_after는 남은 시간이다(확인 요청 대기 중에는 None).
     async def scenario():
         clock = FakeClock()

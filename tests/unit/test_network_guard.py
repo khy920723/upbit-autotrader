@@ -14,8 +14,9 @@ tests/unit/test_self_test.py의 test_self_test_uses_no_network_and_no_credential
   `gethostbyname_ex`, 역방향 조회 `socket.gethostbyaddr`·`getnameinfo`, `socket.create_connection`,
   Windows의 `IocpProactor.connect`·`sendto`.
 - 허용: 루프백(127.0.0.0/8, ::1, ::ffff:127.0.0.0/104, scope가 붙은 IPv6 루프백 ::1%lo, 이름
-  "localhost"), 미지정 주소(0.0.0.0, ::, ::ffff:0.0.0.0, 빈 문자열, None. 바인드용), AF_UNIX와 그 밖의
-  주소 체계, `socket.socketpair`. 역방향 조회는 루프백과 이 PC 이름(`socket.gethostname()`)만.
+  "localhost"), 미지정 주소(0.0.0.0, ::, ::ffff:0.0.0.0, 빈 문자열, None. 바인드용), AF_UNIX와
+  그 밖의 주소 체계, `socket.socketpair`. 역방향 조회는 루프백과 이 PC 이름
+  (`socket.gethostname()`)만.
   "127.0.0.1%lo"처럼 IPv4에 %를 붙인 값은 주소가 아니므로 이름으로 보고 막는다. 사설망(10/8)·
   링크 로컬(169.254.169.254, 클라우드 메타데이터)도 루프백이 아니므로 막는다.
 - 막히면 `fakes.network_guard.RealNetworkBlocked`(AssertionError 하위, OSError가 아님)를 낸다.
@@ -36,6 +37,7 @@ tests/unit/test_self_test.py의 test_self_test_uses_no_network_and_no_credential
 
 import ast
 import asyncio
+import contextlib
 import os
 import socket
 import subprocess
@@ -220,11 +222,8 @@ def test_guard_was_installed_during_collection():
 def module_scope_view() -> Iterator[list[str]]:
     # session·module 범위 픽스처는 함수 범위 autouse 픽스처보다 먼저 준비된다. 그때도 막혀야 한다.
     assert network_guard.is_installed()
-    with network_guard.expect_blocked() as recorded:
-        try:
-            socket.getaddrinfo("api.upbit.com", 443)
-        except RealNetworkBlocked:
-            pass
+    with network_guard.expect_blocked() as recorded, contextlib.suppress(RealNetworkBlocked):
+        socket.getaddrinfo("api.upbit.com", 443)
     yield recorded
     assert network_guard.is_installed()  # 정리 단계도 차단 안에서 돈다
 
@@ -234,12 +233,13 @@ def test_guard_covers_module_scope_fixtures(module_scope_view):
 
 
 @pytest.fixture
-def _block_real_network() -> Iterator[None]:
+def _block_real_network() -> None:
     # 예전 픽스처와 같은 이름으로 아무것도 하지 않는 픽스처를 둔다(덮어쓰기 재현).
-    yield
+    return None
 
 
-def test_a_fixture_named_like_the_old_guard_does_not_turn_it_off(_block_real_network):
+@pytest.mark.usefixtures("_block_real_network")
+def test_a_fixture_named_like_the_old_guard_does_not_turn_it_off():
     assert network_guard.is_installed()
     assert_blocked(lambda: socket.create_connection(("203.0.113.10", 443), timeout=SHORT))
 
@@ -272,7 +272,7 @@ def test_a_blocked_attempt_is_recorded_even_when_the_error_is_swallowed():
     def app_like() -> str:
         try:
             socket.create_connection(("203.0.113.10", 443), timeout=SHORT)
-        except Exception as exc:  # noqa: BLE001 - 앱의 "실패하면 neutral·백오프" 경로
+        except Exception as exc:  # 앱의 "실패하면 neutral·백오프" 경로
             return type(exc).__name__
         return "연결됨"
 
@@ -303,19 +303,19 @@ def test_a_blocked_attempt_swallowed_by_an_asyncio_datagram_transport_is_recorde
 
 
 def test_expect_blocked_fails_when_nothing_was_blocked():
-    with pytest.raises(AssertionError, match="막힌 시도가 없었다"):
-        with network_guard.expect_blocked():
-            socket.getaddrinfo("localhost", 80)
+    with (
+        pytest.raises(AssertionError, match="막힌 시도가 없었다"),
+        network_guard.expect_blocked(),
+    ):
+        socket.getaddrinfo("localhost", 80)
 
 
 def test_expect_blocked_clears_only_what_happened_inside():
     with network_guard.expect_blocked() as outer:
         assert_blocked(lambda: socket.getaddrinfo("api.upbit.com", 443))  # 안쪽이 비운다
         assert_blocked(lambda: socket.getaddrinfo("example.com", 443))
-        try:
+        with contextlib.suppress(RealNetworkBlocked):
             socket.getaddrinfo("203.0.113.10", 443)
-        except RealNetworkBlocked:
-            pass
 
     assert len(outer) == 1
     assert "203.0.113.10" in outer[0]
@@ -344,16 +344,7 @@ from fakes.network_guard import RealNetworkBlocked
 TARGET = ("203.0.113.10", 9)
 
 
-@pytest.fixture(scope="session")
-def swallowing_session_fixture():
-    yield
-    try:  # 세션 끝 정리 단계에서 삼킨다
-        socket.getaddrinfo("203.0.113.77", 443)
-    except Exception:
-        pass
-
-
-def test_swallowed_by_except_exception(swallowing_session_fixture):
+def test_swallowed_by_except_exception():
     try:
         socket.create_connection(TARGET, timeout=0.5)
     except Exception:
@@ -382,6 +373,25 @@ def test_expected_block_passes():
 
 def test_loopback_only_passes():
     socket.getaddrinfo("localhost", 80)
+"""
+
+CHILD_MODULE_SCOPE_TESTS = """
+import socket
+
+import pytest
+
+
+@pytest.fixture(scope="module")
+def swallowing_module_fixture():
+    yield
+    try:  # module 범위 정리(마지막 테스트의 정리 단계)에서 삼킨다
+        socket.getaddrinfo("203.0.113.77", 443)
+    except Exception:
+        pass
+
+
+def test_uses_a_swallowing_module_fixture(swallowing_module_fixture):
+    pass
 """
 
 CHILD_OVERRIDE_CONFTEST = """
@@ -426,7 +436,10 @@ def test_nothing():
 
 
 def run_child_pytest(root: Path, files: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    """루트 conftest의 hook만 쓰는 pytest를 따로 돌린다(정리 단계 실패를 보려면 바깥 세션이어야 한다)."""
+    """루트 conftest의 hook만 쓰는 pytest를 따로 돌린다.
+
+    정리 단계의 실패는 바깥 세션에서만 보인다.
+    """
     files = {
         "pytest.ini": "[pytest]\n",
         "conftest.py": CHILD_CONFTEST.format(tests=str(TESTS_DIR), conftest=str(ROOT_CONFTEST)),
@@ -466,20 +479,19 @@ def child_outcomes(root: Path) -> dict[str, tuple[str, str]]:
     outcomes: dict[str, tuple[str, str]] = {}
     for case in ET.parse(root / "report.xml").getroot().iter("testcase"):
         problems = [child for child in case if child.tag in ("error", "failure")]
-        text = " ".join(
-            f"{child.get('message', '')} {child.text or ''}" for child in problems
-        )
+        text = " ".join(f"{child.get('message', '')} {child.text or ''}" for child in problems)
         outcome = "+".join(sorted(child.tag for child in problems)) or "passed"
         outcomes[case.get("name", "")] = (outcome, text)
     return outcomes
 
 
 def test_a_swallowed_blocked_attempt_fails_the_test_even_through_overrides(tmp_path):
-    # 정리 단계 실패는 바깥 pytest만 볼 수 있어 따로 돌린다. 외부 주소는 문서용(203.0.113.0/24)뿐이다.
+    # 정리 단계 실패는 바깥 pytest만 볼 수 있어 따로 돌린다. 외부 주소는 문서용(203.0.113.0/24)만.
     result = run_child_pytest(
         tmp_path,
         {
             "test_swallow.py": CHILD_TESTS,
+            "test_module_scope.py": CHILD_MODULE_SCOPE_TESTS,
             "sub/conftest.py": CHILD_OVERRIDE_CONFTEST,
             "sub/test_override.py": CHILD_OVERRIDE_TESTS,
         },
@@ -494,8 +506,9 @@ def test_a_swallowed_blocked_attempt_fails_the_test_even_through_overrides(tmp_p
     assert outcomes["test_expected_block_passes"] == ("passed", ""), detail
     assert outcomes["test_loopback_only_passes"] == ("passed", ""), detail
     assert outcomes["test_guard_is_still_on"] == ("passed", ""), detail
-    # 세션 범위 픽스처의 정리는 마지막 테스트의 정리 단계에서 돈다. 그 시도도 실패로 남는다.
-    assert any("203.0.113.77" in text for _, text in outcomes.values()), detail
+    # 더 넓은 범위 픽스처의 정리도 마지막 테스트의 정리 단계에서 돈다. 그 시도도 실패로 남는다.
+    assert outcomes["test_uses_a_swallowing_module_fixture"][0] == "error", detail
+    assert "203.0.113.77" in outcomes["test_uses_a_swallowing_module_fixture"][1], detail
 
 
 def test_a_blocked_attempt_swallowed_during_collection_fails_the_run(tmp_path):
@@ -596,10 +609,8 @@ def test_reverse_lookup_of_an_external_address_is_blocked(host):
 def test_reverse_lookup_of_loopback_and_this_pc_is_allowed(host):
     # socket.getfqdn()이 gethostbyaddr(gethostname())을 부른다. 해석 결과(OSError)는 상관없다.
     host = socket.gethostname() if host == "this-pc" else host
-    try:
+    with contextlib.suppress(OSError):
         socket.gethostbyaddr(host)
-    except OSError:
-        pass
     numeric = socket.NI_NUMERICHOST | socket.NI_NUMERICSERV
     assert socket.getnameinfo(("127.0.0.1", 80), numeric) == ("127.0.0.1", "80")
 
@@ -819,9 +830,7 @@ def stand_in_proactor(monkeypatch: pytest.MonkeyPatch) -> StandInProactor:
 
 
 @pytest.mark.parametrize("family", [socket.AF_INET, socket.AF_INET6], ids=["v4", "v6"])
-def test_proactor_connect_and_sendto_to_an_external_address_are_blocked(
-    stand_in_proactor, family
-):
+def test_proactor_connect_and_sendto_to_an_external_address_are_blocked(stand_in_proactor, family):
     conn = SimpleNamespace(family=family)
     target = EXTERNAL_V4[0] if family == socket.AF_INET else EXTERNAL_V6[1]
 
@@ -835,7 +844,9 @@ def test_proactor_loopback_and_connected_sendto_are_allowed(stand_in_proactor):
 
     assert stand_in_proactor.connect(conn, ("127.0.0.1", 80)) == "connect ('127.0.0.1', 80)"
     assert stand_in_proactor.sendto(conn, b"x", 0, ("127.0.0.1", 80)).startswith("sendto")
-    assert stand_in_proactor.sendto(conn, b"x") == "sendto None"  # 연결된 UDP(대상은 connect가 봤다)
+    assert (
+        stand_in_proactor.sendto(conn, b"x") == "sendto None"
+    )  # 연결된 UDP(대상은 connect가 봤다)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows Proactor 전용")

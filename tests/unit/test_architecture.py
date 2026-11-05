@@ -33,7 +33,8 @@ GPL_ONLY_QT_MODULES = frozenset(
     }
 )
 # 쓰지 않기로 한 모듈: WebEngine(Chromium, 크기와 고지 부담), PDF(PDFium),
-# Network(TLS는 Python ssl로 한다).
+# Network·WebSockets(TLS는 Python ssl, 웹소켓은 websockets로 한다. Qt 소켓은 테스트의 네트워크
+# 차단(tests/fakes/network_guard.py)을 거치지 않는다). QtNetworkAuth는 위 GPL 목록에 있다.
 UNUSED_QT_MODULES = frozenset(
     {
         "QtWebEngineCore",
@@ -42,6 +43,7 @@ UNUSED_QT_MODULES = frozenset(
         "QtPdf",
         "QtPdfWidgets",
         "QtNetwork",
+        "QtWebSockets",
     }
 )
 

@@ -118,13 +118,21 @@ class Connection:
 
 
 class Script:
-    """연결마다 대본 한 줄. open_stream()은 부를 때마다 다음 줄의 이터레이터를 돌려준다."""
+    """연결마다 대본 한 줄. open_stream()은 부를 때마다 다음 줄의 이터레이터를 돌려준다.
+
+    freeze() 뒤에는 연결 기록(outcome, finished_at)을 더 바꾸지 않는다. asyncio.run이 끝날 때
+    남은 async generator를 닫으므로(shutdown_asyncgens), 감시가 스스로 닫았는지는 그 전에 본다.
+    """
 
     def __init__(self, clock: FakeClock, stream: str, *connections) -> None:
         self.clock = clock
         self.stream = stream
         self.pending = [Connection(tuple(steps)) for steps in connections]
         self.opened: list[Connection] = []
+        self.frozen = False
+
+    def freeze(self) -> None:
+        self.frozen = True
 
     def open_stream(self):
         index = len(self.opened)
@@ -150,10 +158,12 @@ class Script:
                     yield step
             await asyncio.Event().wait()  # 대본이 끝나면 연결을 연 채로 매달린다
         except (GeneratorExit, asyncio.CancelledError):
-            conn.outcome = "closed"
+            if not self.frozen:
+                conn.outcome = "closed"
             raise
         finally:
-            conn.finished_at = self.clock.monotonic()
+            if not self.frozen:
+                conn.finished_at = self.clock.monotonic()
 
 
 # ── 기록(콜백) ────────────────────────────────────────────
@@ -339,7 +349,9 @@ def gaps(script: Script) -> list[float]:
 def simulate(stream: str, *connections, seconds: float, hook=None, **options):
     """대본으로 감시를 seconds초 돌리고 (script, rec, task 결과)를 돌려준다.
 
-    끝나지 않았으면 취소하고 결과는 "running"이다. 끝났으면 "returned" 또는 예외 객체다.
+    끝나지 않았으면 결과는 "running"이고, 연결 기록을 멈춘 뒤 취소한다(그래서 열린 채 남은
+    연결의 outcome은 None). 끝났으면 "returned" 또는 예외 객체다. 어느 쪽이든 감시가 만든
+    태스크가 남으면 실패한다.
     """
 
     async def scenario():
@@ -351,11 +363,12 @@ def simulate(stream: str, *connections, seconds: float, hook=None, **options):
         if task.done():
             result = task.exception() or "returned"
             await settle()
-            assert not leftover_tasks(), leftover_tasks()
+            script.freeze()
         else:
             result = "running"
+            script.freeze()
             await stop(task)
-            assert not leftover_tasks(), leftover_tasks()
+        assert not leftover_tasks(), leftover_tasks()
         return script, rec, result
 
     return asyncio.run(scenario())
@@ -667,8 +680,7 @@ def test_steady_events_keep_the_connection():
 
     assert rec.statuses("DEGRADED") == []
     assert len(script.opened) == 1
-    # 끝에 테스트가 취소할 때만 닫힌다.
-    assert script.opened[0].finished_at == pytest.approx(T0 + 590)
+    assert script.opened[0].outcome is None
     assert len(rec.events()) == 59
 
 
@@ -698,7 +710,7 @@ def test_private_stream_is_not_closed_for_silence():
     assert result == "running"
     assert rec.statuses("DEGRADED") == []
     assert len(script.opened) == 1
-    assert script.opened[0].finished_at == pytest.approx(T0 + 1000)  # 끝의 취소로만 닫힌다
+    assert script.opened[0].outcome is None
 
 
 # ── D-080: 서버 오류 메시지 ───────────────────────────────
@@ -871,13 +883,14 @@ def test_cancel_while_open_closes_the_iterator(stream):
         task = await start(supervisor(clock, script, rec))
         await clock.run_for(5)
         await cancel_and_check(task)
+        outcome = script.opened[0].outcome
         logged = len(rec.log)
         await clock.run_for(1000)
-        return script, rec, logged
+        return script, rec, outcome, logged
 
-    script, rec, logged = asyncio.run(scenario())
+    script, rec, outcome, logged = asyncio.run(scenario())
 
-    assert script.opened[0].outcome == "closed"
+    assert outcome == "closed"
     assert len(script.opened) == 1
     assert len(rec.log) == logged
 
@@ -912,12 +925,14 @@ def test_cancel_during_the_hook_closes_the_new_iterator():
         task = await start(supervisor(clock, script, rec))
         await clock.run_for(10)  # 두 번째 연결의 훅 안
         await cancel_and_check(task)
+        # 이터레이터는 yield에서 멈춰 있으므로 감시가 aclose해야 닫힌다.
+        outcome = script.opened[1].outcome
         await clock.run_for(200)
-        return script, rec
+        return script, rec, outcome
 
-    script, rec = asyncio.run(scenario())
+    script, rec, outcome = asyncio.run(scenario())
 
-    assert script.opened[1].outcome == "closed"
+    assert outcome == "closed"
     assert "event:2" not in rec.trace()
     assert len(script.opened) == 2
 
@@ -930,8 +945,8 @@ def test_cancel_during_degraded_reconnect_leaves_nothing_behind():
         task = await start(supervisor(clock, script, rec))
         await clock.run_for(151)
         await cancel_and_check(task)
-        return script
+        return [c.outcome for c in script.opened]
 
-    script = asyncio.run(scenario())
+    outcomes = asyncio.run(scenario())
 
-    assert all(c.outcome is not None for c in script.opened)
+    assert None not in outcomes

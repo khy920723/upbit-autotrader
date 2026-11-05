@@ -62,7 +62,7 @@
 - myOrder는 주문·체결이 있을 때만 데이터가 온다. 상태값은 `wait`, `watch`, `trade`, `done`, `cancel`, `prevented`다([매매 로직 명세](../03-functional/trading-logic.md) 10장).
 - 웹소켓 숫자는 JSON 숫자(Double)로 오고 지수 표기(`9.101e-05`)도 온다. 시세 REST(ticker, orderbook, candles)도 JSON 숫자다. 거래 REST만 문자열이다. 모두 `Decimal`로 파싱한다([데이터 모델](../04-data/data-model.md) 2장, D-071).
 - 재연결 후에는 REST로 잔고·미체결·종목을 다시 대조한다(그동안 놓친 이벤트가 있을 수 있음). 공지(announcement)는 실시간 전용이라 놓친 공지는 다시 오지 않는다.
-- **웹소켓 오류 메시지:** 요청에 오류가 있으면 `{"error": {"name": "...", "message": "..."}}` 형식의 메시지가 온다. 타입별 문서(ticker, myOrder, myAsset, announcement)의 이름별 권장 조치는 다음과 같다. 오류 뒤에 서버가 연결을 끊는지와 기다릴 시간은 문서에 없다(처리 규칙은 9장, D-080).
+- **웹소켓 오류 메시지:** 요청에 오류가 있으면 `{"error": {"name": "...", "message": "..."}}` 형식의 메시지가 온다. 타입별 문서(ticker, myOrder, myAsset, announcement)의 이름별 권장 조치는 다음과 같다. 오류 뒤에 서버가 연결을 끊는지와 기다릴 시간은 문서에 없다(처리 규칙은 9장, D-080). 2026-11-05 공개 시세 웹소켓 녹화에서는 `codes` 없는 구독 요청에 `NO_CODES` 오류를 보낸 뒤 서버가 바로 close code 1000으로 연결을 끊었다. 서버의 프레임(ticker, 오류, `{"status":"UP"}`)은 모두 바이너리(UTF-8 JSON)였다([녹화](../../tests/fixtures/upbit/README.md)).
 
 | `error.name` | 발생 이유 | 공식 권장 조치 |
 |---|---|---|

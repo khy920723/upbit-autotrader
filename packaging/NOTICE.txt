@@ -22,6 +22,11 @@ replaced with compatible versions.
   https://github.com/qtproject/pyside-pyside-setup/tree/v6.12.0
   https://github.com/qt/qt5/tree/v6.12.0
 
+[certifi 2026.10.23 (MPL-2.0)]
+CA 인증서 묶음입니다. 고치지 않고 씁니다. 파일: _internal\certifi\
+CA certificate bundle, used unmodified. Files: _internal\certifi\
+소스 코드 / Source code: https://github.com/certifi/python-certifi/tree/2026.10.23
+
 [그 밖의 구성 요소 / Other components]
 Python 런타임, PyInstaller, keyring 등의 라이선스는 _internal\licenses\ 폴더와
 _internal\ 아래 각 *.dist-info 폴더에 있습니다. 목록: _internal\licenses\dependency-licenses.md

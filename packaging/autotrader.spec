@@ -159,8 +159,7 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     # PyInstaller의 jaraco 네임스페이스 처리가 setuptools(벤더링한 jaraco)를 끌어와
-    # 개발·빌드 전용 패키지가 번들에 들어간다. 앱은 쓰지 않는다
-    # (typing_extensions는 jaraco가 타입 검사 때만 import한다).
+    # 개발·빌드 전용 패키지가 번들에 들어간다. 앱은 쓰지 않는다.
     # QtNetwork는 PySide6/__init__.py가 실행되지 않는 분기에서 import해 끌려온다. 앱은 쓰지 않고
     # (TLS는 Python ssl), 넣으면 OpenSSL DLL을 PATH에서 찾아 넣을 수 있다.
     excludes=[
@@ -168,7 +167,6 @@ a = Analysis(
         "_distutils_hack",
         "pkg_resources",
         "packaging",
-        "typing_extensions",
         "PySide6.QtNetwork",
     ],
     # LGPL-3.0 4(d)(1): PySide6·shiboken6의 Python 부분도 exe(PYZ) 밖 .py로 두어 바꿀 수 있게 한다.

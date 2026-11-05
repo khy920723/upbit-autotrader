@@ -29,8 +29,14 @@
 <!-- license-inventory:runtime:start -->
 | 패키지 | 버전 | 라이선스 | 설치 플랫폼 | 비고 |
 |---|---|---|---|---|
+| anyio | 4.16.0 | MIT | Windows, Linux, macOS | httpx 의존. 번들에 들어감 |
+| certifi | 2026.10.23 | MPL-2.0 | Windows, Linux, macOS | httpx 의존(CA 인증서 묶음). 번들에 들어감. 고치지 않고 쓰며 소스 위치를 NOTICE.txt에 적음 |
 | cffi | 2.1.1 | MIT-0 | Linux | Linux 전용(SecretStorage → cryptography). Windows 번들에 없음 |
 | cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | Linux | Linux 전용(SecretStorage). Windows 번들에 없음 |
+| h11 | 0.16.0 | MIT | Windows, Linux, macOS | httpcore 의존. 번들에 들어감 |
+| httpcore | 1.0.9 | BSD-3-Clause | Windows, Linux, macOS | httpx 의존. 번들에 들어감 |
+| httpx | 0.28.1 | BSD-3-Clause | Windows, Linux, macOS | 직접 의존(업비트 REST, ADR-0006). 번들에 들어감 |
+| idna | 3.20 | BSD-3-Clause | Windows, Linux, macOS | httpx·anyio 의존. 번들에 들어감 |
 | jaraco.classes | 3.4.0 | MIT | Windows, Linux, macOS | keyring 의존. 번들에 들어감 |
 | jaraco.context | 6.1.2 | MIT | Windows, Linux, macOS | keyring 의존. 번들에 들어감 |
 | jaraco.functools | 4.6.0 | MIT | Windows, Linux, macOS | keyring 의존. 번들에 들어감 |
@@ -38,6 +44,7 @@
 | keyring | 25.7.0 | MIT | Windows, Linux, macOS | 직접 의존. 번들에 들어감(Windows 자격 증명 관리자 백엔드) |
 | more-itertools | 11.2.1 | MIT | Windows, Linux, macOS | jaraco.classes·jaraco.functools 의존. 번들에 들어감 |
 | pycparser | 3.12 | BSD-3-Clause | Linux | Linux 전용(cffi). Windows 번들에 없음 |
+| PyJWT | 2.15.1 | MIT | Windows, Linux, macOS | 직접 의존(업비트 JWT 서명, ADR-0006). 번들에 들어감 |
 | PySide6 | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Windows, Linux, macOS | 직접 의존. 메타 패키지(코드 없음), 메타데이터만 번들에 들어감 |
 | PySide6_Addons | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Windows, Linux, macOS | 설치만 됨. import하지 않아 바이너리는 번들에 없음. GPL 전용 모듈 포함(5.3) |
 | PySide6_Essentials | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Windows, Linux, macOS | QtCore·QtGui·QtWidgets와 Qt DLL·플러그인이 번들에 들어감(5장) |
@@ -46,13 +53,14 @@
 | pywin32-ctypes | 0.2.3 | BSD-3-Clause | Windows | Windows 전용. keyring의 Windows 백엔드가 씀. 번들에 들어감 |
 | SecretStorage | 3.5.0 | BSD-3-Clause | Linux | Linux 전용(keyring의 Secret Service 백엔드). Windows 번들에 없음 |
 | shiboken6 | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Windows, Linux, macOS | PySide6 바인딩 런타임. 번들에 들어감 |
+| typing_extensions | 4.16.0 | PSF-2.0 | Windows, Linux, macOS | anyio 의존(Python 3.15 미만). 번들에 들어감 |
 <!-- license-inventory:runtime:end -->
 
 ## 4. 개발·빌드 전용
 
 배포하지 않는다. 테스트·린트·빌드에만 쓴다.
 
-- PyInstaller는 jaraco 네임스페이스 패키지를 처리하면서 setuptools(벤더링한 jaraco)를 끌어오고, 그 의존성인 packaging·typing_extensions까지 번들에 넣는다. 앱은 이것들을 쓰지 않으므로 spec의 `excludes`로 뺐다(Linux 빌드 기준 번들 모듈 531개 → 247개).
+- PyInstaller는 jaraco 네임스페이스 패키지를 처리하면서 setuptools(벤더링한 jaraco)를 끌어오고, 그 의존성인 packaging까지 번들에 넣는다. 앱은 이것들을 쓰지 않으므로 spec의 `excludes`로 뺐다(Linux 빌드 기준 번들 모듈 531개 → 247개). typing_extensions는 3단계부터 런타임 의존성(anyio)이라 빼지 않는다.
 - spec은 번들의 Python 모듈이 런타임 의존성(3장) 밖의 배포판에 속하면 빌드를 멈춘다. `excludes`를 빼고 빌드하면 `_distutils_hack, packaging, setuptools, typing_extensions`에서 멈추는 것을 확인했다.
 
 <!-- license-inventory:dev:start -->
@@ -76,7 +84,6 @@
 | ruff | 0.17.3 | MIT | Windows, Linux, macOS | 린트 |
 | setuptools | 84.2.1 | MIT | Windows, Linux, macOS | PyInstaller 의존 |
 | sortedcontainers | 2.4.0 | Apache-2.0 | Windows, Linux, macOS | hypothesis 의존. 휠의 LICENSE가 Apache-2.0(메타데이터에는 License-Expression 없이 "Apache 2.0"). 번들에 없음 |
-| typing_extensions | 4.16.0 | PSF-2.0 | Windows, Linux, macOS | pytest-qt 의존 |
 <!-- license-inventory:dev:end -->
 
 ## 5. 번들에 함께 들어가는 구성 요소

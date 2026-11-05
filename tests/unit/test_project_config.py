@@ -34,8 +34,9 @@ def test_python_is_313_only(pyproject, repo_root):
     assert (repo_root / ".python-version").read_text(encoding="utf-8").strip() == "3.13"
 
 
-def test_runtime_dependencies_are_only_pyside6_and_keyring(pyproject):
-    assert set(runtime_requirements(pyproject)) == {"pyside6", "keyring"}
+def test_runtime_dependencies_are_the_approved_set(pyproject):
+    # PySide6·keyring(2단계), httpx·PyJWT(3단계, ADR-0006). 늘릴 때는 라이선스 목록도 고친다.
+    assert set(runtime_requirements(pyproject)) == {"pyside6", "keyring", "httpx", "pyjwt"}
 
 
 def test_runtime_dependencies_are_pinned_exactly(pyproject):

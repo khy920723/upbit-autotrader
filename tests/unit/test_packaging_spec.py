@@ -365,9 +365,10 @@ def test_analysis_excludes_build_only_packages(calls):
         "_distutils_hack",
         "pkg_resources",
         "packaging",
-        "typing_extensions",
         "PySide6.QtNetwork",
     } <= set(excludes)
+    # typing_extensions는 anyio(httpx 의존성)가 런타임에 쓴다.
+    assert "typing_extensions" not in excludes
 
 
 def test_dev_only_guard_flags_modules_of_non_runtime_distributions(spec_text):

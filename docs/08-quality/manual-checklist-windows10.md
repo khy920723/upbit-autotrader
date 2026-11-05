@@ -45,7 +45,7 @@
 
 | ID | 절차 | 기대 결과 |
 |---|---|---|
-| M-10 | PowerShell에서 `cd C:\Apps\upbit-autotrader` → `$p = Start-Process -FilePath .\autotrader.exe -ArgumentList '--self-test' -WorkingDirectory $PWD -Wait -PassThru; $p.ExitCode` | 창이 뜨지 않는다. `0`이 출력된다. 같은 폴더에 `self-test-report.txt`가 생기고 6개 항목(import, Qt, keyring, SQLite, TLS, 설정 경로)이 모두 통과이며 keyring 항목에 WinVaultKeyring이 나온다 |
+| M-10 | PowerShell에서 `cd C:\Apps\upbit-autotrader` → `$p = Start-Process -FilePath .\autotrader.exe -ArgumentList '--self-test' -WorkingDirectory $PWD -Wait -PassThru; $p.ExitCode` | 창이 뜨지 않는다. `0`이 출력된다. 같은 폴더에 `self-test-report.txt`가 생기고 6개 항목(import, Qt, keyring, SQLite, TLS, 설정 경로)이 모두 통과이며 keyring 항목에 WinVaultKeyring이 나온다. TLS 항목은 "certifi <버전> 묶음, CA 인증서 N개(약 120개), ..., 최소 TLSv1_2"다(시스템 저장소의 루트 수가 아니다, D-093) |
 | M-11 | 랜선을 뽑거나 Wi-Fi를 끈 상태에서 M-10을 다시 한다 | 결과가 같다(자가 점검이 네트워크를 쓰지 않음) |
 
 - 앱은 창 모드 exe라서 `.\autotrader.exe --self-test`만 입력하면 PowerShell이 끝나기를 기다리지 않아 종료 코드를 볼 수 없다. 위처럼 `Start-Process -Wait -PassThru`를 쓴다. 설치 가이드 "자가 점검"의 명령에 `-PassThru`와 `$p.ExitCode`를 더한 것이다.

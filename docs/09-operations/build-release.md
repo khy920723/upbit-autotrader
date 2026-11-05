@@ -36,3 +36,9 @@
 
 - `.github/workflows/`는 사용자 Mac의 로컬 세션에서 고치고 push한다.
 - 클라우드 세션은 바꿀 내용을 `docs/10-management/ci-proposals.md`에 적는다.
+
+## 7. TLS 인증서 묶음 갱신 (D-093)
+
+- 업비트 REST·웹소켓은 앱에 묶은 certifi 묶음만 믿는다. 운영체제 인증서 저장소는 쓰지 않으므로 인증서 갱신은 앱 업데이트로만 된다.
+- 릴리스할 때 PyPI의 certifi 최신 버전을 확인하고, 새 버전이 있으면 `pyproject.toml`의 `certifi==` 고정을 올리고 `uv lock`, 의존성 라이선스 목록, `packaging/NOTICE.txt`의 certifi 소스 주소(버전 태그)를 함께 고친다.
+- 빌드한 exe의 `--self-test` 보고서에서 TLS 줄이 "certifi <버전> 묶음, CA 인증서 N개, ..., 최소 TLSv1_2"인지 본다. 묶음(`_internal\certifi\cacert.pem`)이 빠지거나 번들 밖에 있으면 이 항목이 실패한다.

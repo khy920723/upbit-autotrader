@@ -93,7 +93,7 @@
 
 - 한도의 절반: 시세 그룹 `market`·`candles`·`trade`·`ticker`·`orderbook` 초당 5회(IP), `default` 15회, `order` 6회, `order-test` 4회(이상 포켓), `order-cancel-all` 4초에 1회, 웹소켓 연결 초당 2회, 메시지 연결마다 초당 2회·분당 50회.
 - 엄격 모드를 끄는 옵션은 두지 않는다. 오류 응답 처리를 시험할 때는 2.5절 주입을 쓴다.
-- **구현(3단계):** `tests/fakes/upbit_http.py`의 `FakeUpbitServer(clock, credentials, **options)`. `server.transport`를 앱의 HTTP 클라이언트에 꽂는다. 위반은 `FakeProtocolViolation.rule`로 구분한다: `path`, `origin`, `duplicate_header`, `post_body`, `delete_body`, `auth`, `jwt_alg`, `nonce`, `query_hash`, `query_encoding`, `query_params`, `smp_type`, `identifier`, `identifier_not_saved`, `order_params`, `auto_retry`, `rate_limit_half`, `rate_limit`, `rate_limit_pause`, `blocked_request`, `batch_cancel`. 서명은 앱 코드를 쓰지 않고 가짜 안에서 따로 검증한다(PyJWT 디코드 + SHA512 재계산). nonce는 하이픈 있는 표준 UUID만 받는다. 실제 네트워크 차단 픽스처는 아직 없다(남은 일).
+- **구현(3단계):** `tests/fakes/upbit_http.py`의 `FakeUpbitServer(clock, credentials, **options)`. `server.transport`를 앱의 HTTP 클라이언트에 꽂는다. 위반은 `FakeProtocolViolation.rule`로 구분한다: `path`, `origin`, `duplicate_header`, `post_body`, `delete_body`, `auth`, `jwt_alg`, `nonce`, `query_hash`, `query_encoding`, `query_params`, `smp_type`, `identifier`, `identifier_not_saved`, `order_params`, `auto_retry`, `rate_limit_half`, `rate_limit`, `rate_limit_pause`, `blocked_request`, `batch_cancel`. 서명은 앱 코드를 쓰지 않고 가짜 안에서 따로 검증한다(PyJWT 디코드 + SHA512 재계산). nonce는 하이픈 있는 표준 UUID만 받는다. 실제 네트워크 차단은 `tests/fakes/network_guard.py`와 루트 `tests/conftest.py`가 모든 테스트에 건다(3단계 3b, QA R17-02): 외부 주소·이름으로의 connect·getaddrinfo·create_connection·UDP 송신을 막고 루프백·AF_UNIX만 허용하며, 테스트 동안 프록시 설정을 비운다. 막은 시도는 넓은 except가 삼켜도 정리 단계에서 실패로 남는다. 끄는 마커·옵션은 없다.
 
 ### 2.4 상태 모형
 

@@ -139,7 +139,7 @@
 | 웹소켓 | `ws_drop(after)` | 연결 종료 | TS-41 |
 | | `ws_silence(seconds)` | 데이터를 보내지 않음(120초 넘으면 서버처럼 끊음) | TS-41, TS-92 |
 | | `ws_status_up` | 클라이언트가 `"PING"` 문자열을 보내면 10초마다 `{"status":"UP"}` | TS-92 |
-| | `ws_error(name)` | `{"error": {"name": ..., "message": ...}}`: `INVALID_AUTH`, `WRONG_FORMAT`, `NO_TICKET`, `NO_TYPE`, `NO_CODES`, `INVALID_PARAM` | TS-92 |
+| | `ws_error(name)` | `{"error": {"name": ..., "message": ...}}`: `INVALID_AUTH`, `WRONG_FORMAT`, `NO_TICKET`, `NO_TYPE`, `NO_CODES`, `INVALID_PARAM`, `TOO_MANY_REQUEST` | TS-92 |
 | | `ws_binary(bool)` | 메시지를 바이너리 프레임으로 보냄(공식 예제가 bytes를 UTF-8로 디코딩한다) | TS-92 |
 | | `ws_ticker_state(market, market_state, delisting_date)` | `market_state`(PREVIEW·ACTIVE·DELISTED), `delisting_date` | TS-26, TS-90 |
 | | `ws_announcement(category, title, event_type)` | 공지(`event_type` CREATED·UPDATED, `category` trade·wallet·maintenance·service) | TS-90 |
@@ -180,7 +180,7 @@
 | 호가 응답은 기본 30단계이고 `level: 0`이 붙는다 | 녹화 | 없음 |
 | REST ticker에는 `market_state`, `delisting_date`가 없다. 웹소켓 ticker에만 있다 | 녹화, ticker 웹소켓 문서 | 없음 |
 | 웹소켓 ticker의 `is_trading_suspended`, `market_warning`은 폐기(Deprecated)다 | ticker 웹소켓 문서 | 반영됨(업비트 API 연동 명세 2장) |
-| 웹소켓 오류 이름은 6개(`INVALID_AUTH`, `WRONG_FORMAT`, `NO_TICKET`, `NO_TYPE`, `NO_CODES`, `INVALID_PARAM`)다. `TOO_MANY_REQUEST`는 받은 문서 35쪽 어디에도 없다 | WebSocket 사용 및 에러 안내(2026-09-23 갱신) | 업비트 API 연동 명세 5장의 웹소켓 오류 목록에서 빼거나 출처를 적는다 |
+| 웹소켓 오류 이름은 7개다. WebSocket 사용 및 에러 안내의 표는 6개(`INVALID_AUTH`, `WRONG_FORMAT`, `NO_TICKET`, `NO_TYPE`, `NO_CODES`, `INVALID_PARAM`)만 적었지만, 데이터 타입별 문서(ticker, myOrder, myAsset, announcement)에 `TOO_MANY_REQUEST`(요청 한도 초과)가 더 있다 | WebSocket 사용 및 에러 안내(2026-09-23 갱신), 각 웹소켓 타입 문서 | 없음(업비트 API 연동 명세 5장과 같다) |
 | 취소 API 문서 예시에 `QUERY_PARAMETER_NOT_SUPPORTED`(400, 대문자)와 `bad_request`(400)가 있다. 오류 안내 문서의 목록에는 없다 | 개별 주문 취소, 주문 일괄 취소 문서 | 업비트 API 연동 명세 5장 오류 표 |
 | 418의 차단 시간 형식, 429 본문 형식, 2026-11-16 경로 오류의 응답 형식은 문서에 없다 | 요청 수 제한, REST API 안내, 경로 형식 공지 | 9장 확인 필요 |
 | `query_hash`는 URL 인코딩하지 않은 쿼리 문자열로 만든다. 콤마로 구분하는 값(`pairs=KRW-BTC,KRW-ETH`)은 그대로 쓴다 | 인증 문서(2026-09-22 갱신) | 없음 |
@@ -310,7 +310,7 @@
 |---|---|
 | `monotonic()` | 주기와 대기 계산용. PC 시계를 바꿔도 영향 없음 |
 | `utc_now()` | PC 시계. 기록용 |
-| `exchange_now()` | PC 시계 + 측정한 거래소 시각 오차. 날짜 경계 판단용 |
+| `exchange_now()` | PC 시계 + 측정한 거래소 시각 오차. 날짜 경계 판단용. PC 시계가 바뀐 직후 다음 측정까지는 어긋날 수 있다(추적표 Q-14) |
 | `sleep(seconds)` | 가상 시간으로 깨어나는 대기 |
 | `advance(seconds)` | 가상 시간을 앞으로 보내고, 그 사이 깨어날 대기와 예약 작업을 시각 순서대로 실행 |
 | `set_pc_offset(seconds)` | PC 시계만 틀어짐(거래소 시각과 monotonic은 그대로) → 시계 오차 시험 |

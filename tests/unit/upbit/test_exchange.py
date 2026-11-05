@@ -14,8 +14,11 @@ OrderRequest를 그대로 와이어로 옮기고 응답을 OrderSnapshot으로 �
 
 이 파일이 정한 점(설계 메모·문서에 없음):
 - 보내기 전 검사에 걸리면 ValueError이고 요청을 하나도 보내지 않는다(주문 유형별 필수값,
-  time_in_force, post_only, identifier 1~64자·공백과 `+` 없음, 가격·수량은 0보다 큰 유한값).
-- 가격·수량은 지수 표기 없는 문자열로 보낸다(D-071). 값은 Decimal로 다시 읽으면 같다.
+  time_in_force, post_only, identifier 1~64자·공백과 `+` 없음, 가격·수량은 0보다 큰 유한값,
+  수량은 소수 8자리까지. 반올림은 정책 몫이라 어댑터는 고치지 않고 거부한다).
+- 가격·수량은 지수 표기 없는 숫자 문자열(정수 또는 소수, 부호 없음)로 보낸다(D-071).
+  Decimal로 다시 읽으면 같다.
+- 응답에서 값이 없는 필드(시장가 매도의 price 등)는 키째 빠질 수 있다 → None.
 - OrderSnapshot.trades: 개별 조회는 튜플(체결이 없으면 빈 튜플), 응답에 trades가 없는
   주문 생성·취소·목록 조회는 None. 시각은 UTC(utcoffset 0)로 바꾼다.
 - get_order는 404 order_not_found만 None이고 그 밖의 오류는 그대로 낸다.

@@ -15,6 +15,11 @@
 
 - `.github/workflows/`는 수정하지 않는다. 클라우드 세션의 push가 거부된다. 바꿔야 하면 docs/10-management/ci-proposals.md에 변경안을 적고 PR 설명에 알린다. 사용자가 로컬에서 반영한다.
 - 태그를 push하지 않는다(프록시가 거부한다). 릴리스와 빌드 실행은 사용자가 한다.
+- `claude/` 브랜치에서 연 PR은 필수 검사(`test`, `windows`)를 통과하면 자동으로 squash 병합된다. 그래서:
+  - PR을 만들기 직전에 최신 `origin/main`을 병합해 충돌을 해결한다. 충돌이 있으면 자동 병합되지 않는다.
+  - PR은 초안(draft)으로 만들지 않는다.
+  - 사용자 결정이 필요한 항목은 결정 로그에 "제안"이나 "대기"로만 기록하고 확정하지 않는다.
+  - PR이 이미 병합된 뒤 추가 작업이 생기면 최신 `main`에서 새 브랜치를 만들어 새 PR을 연다.
 - `gh`는 REST만 동작한다: `gh api repos/khy920723/upbit-autotrader/...`. `gh pr`, `gh issue`, `gh run view` 같은 GraphQL 기반 명령은 403이다. Actions 로그는 `gh api repos/khy920723/upbit-autotrader/actions/runs/{id}/logs`로 읽는다.
 
 ## 고정 기술 기준

@@ -2,12 +2,9 @@ name: build-exe
 
 on:
   workflow_dispatch:
+  # Runs on every PR so the required "windows" check always reports; the build
+  # itself is skipped when a PR does not touch app or packaging files.
   pull_request:
-    paths:
-      - "src/**"
-      - "packaging/**"
-      - "pyproject.toml"
-      - "uv.lock"
 
 permissions:
   contents: read
@@ -22,16 +19,24 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-      - name: Check for packaging spec
+      - name: Decide whether to build
         id: spec
         shell: bash
         run: |
+          build=false
           if [ -f packaging/autotrader.spec ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::packaging/autotrader.spec not found yet; skipping the Windows build."
+            if [ "${{ github.event_name }}" != "pull_request" ]; then
+              build=true
+            elif git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qE '^(src/|packaging/|pyproject\.toml$|uv\.lock$)'; then
+              build=true
+            fi
+          fi
+          echo "exists=$build" >> "$GITHUB_OUTPUT"
+          if [ "$build" != true ]; then
+            echo "::notice::No app or packaging changes (or no spec yet); skipping the Windows build."
           fi
 
       - uses: astral-sh/setup-uv@v10.3.3

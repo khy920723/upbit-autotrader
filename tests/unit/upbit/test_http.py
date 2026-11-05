@@ -650,9 +650,8 @@ def test_recorded_quotation_responses_parse_to_decimal_without_floats(entry, cap
     assert isinstance(response, UpbitResponse)
     assert response.status == 200
     assert response.data == parse_like_data_model(body)
-    numbers = list(numbers_in(response.data))
-    assert numbers
-    assert [n for n in numbers if not isinstance(n, Decimal)] == []  # float도 int도 없다
+    # float도 int도 없다(market/all 녹화에는 숫자가 없다)
+    assert [n for n in numbers_in(response.data) if not isinstance(n, Decimal)] == []
     assert response.server_date == parsedate_to_datetime(entry["headers"]["Date"])
     assert unquote(request.url.query.decode("ascii")) == query
     # 녹화 헤더의 group은 경로 표와 같으므로 경고가 없어야 한다.

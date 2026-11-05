@@ -501,3 +501,353 @@ def test_auto_advance_is_off_by_default():
 
     asyncio.run(main())
     assert clock.monotonic() == 1000.0
+
+
+# ── 생성 인자 검사 ────────────────────────────────────────
+
+
+def test_naive_start_utc_is_rejected():
+    # 시간대 없는 시각은 PC 지역 시간으로 해석될 수 있다. 모호하므로 받지 않는다.
+    with pytest.raises(ValueError):  # noqa: PT011 (문구는 정하지 않는다)
+        FakeClock(start_utc=datetime(2026, 11, 5, 0, 0, 0))  # noqa: DTZ001 (일부러 naive)
+
+
+def test_monotonic_returns_a_float():
+    clock = FakeClock(monotonic_start=0)
+
+    clock.advance(1)
+
+    assert isinstance(clock.monotonic(), float)
+
+
+# ── 소수 초: 정수 나노초로 보관 ───────────────────────────
+
+
+def test_fractional_advance_wakes_a_fractional_sleep():
+    # float로 더하면 1000.1 + 0.07 < 1000.17이 되어 대기가 깨지 않았다.
+    clock = FakeClock()
+
+    async def main():
+        clock.advance(0.1)
+        task = asyncio.create_task(clock.sleep(0.07))
+        await settle()
+        clock.advance(0.07)
+        await settle()
+        assert task.done()
+
+    asyncio.run(main())
+
+
+def test_many_small_advances_reach_the_deadline_exactly():
+    clock = FakeClock()
+
+    async def main():
+        task = asyncio.create_task(clock.sleep(1))
+        await settle()
+        for _ in range(10):
+            clock.advance(0.1)
+        await settle()
+        assert task.done()
+
+    asyncio.run(main())
+    assert clock.monotonic() == 1001.0
+
+
+@settings(deadline=None, max_examples=60)
+@given(
+    before=st.lists(st.integers(min_value=0, max_value=5000), max_size=5),
+    duration=st.integers(min_value=1, max_value=5000),
+    pieces=st.integers(min_value=1, max_value=7),
+)
+def test_sleep_wakes_when_fractional_advances_add_up_to_its_duration(before, duration, pieces):
+    # 밀리초 단위 소수 조합: 앞서 옮긴 시각과 상관없이, 나눠 옮긴 합이 대기 시간과 같으면 깬다.
+    clock = FakeClock()
+    seconds = duration / 1000
+    split = [duration // pieces] * (pieces - 1)
+    split.append(duration - sum(split))
+
+    async def main():
+        for ms in before:
+            clock.advance(ms / 1000)
+        task = asyncio.create_task(clock.sleep(seconds))
+        await settle(3)
+        for ms in split[:-1]:
+            clock.advance(ms / 1000)
+        await settle(3)
+        assert not task.done()
+        clock.advance(split[-1] / 1000)
+        await settle(3)
+        assert task.done()
+
+    asyncio.run(main())
+
+
+@settings(deadline=None, max_examples=60)
+@given(
+    start=st.integers(min_value=0, max_value=10**6),
+    duration=st.integers(min_value=2, max_value=5000),
+)
+def test_sleep_does_not_wake_one_millisecond_early(start, duration):
+    clock = FakeClock()
+
+    async def main():
+        clock.advance(start / 1000)
+        task = asyncio.create_task(clock.sleep(duration / 1000))
+        await settle(3)
+        clock.advance((duration - 1) / 1000)
+        await settle(3)
+        assert not task.done()
+        clock.advance(0.001)
+        await settle(3)
+        assert task.done()
+
+    asyncio.run(main())
+
+
+# ── run_for: 만기마다 멈추며 진행 ─────────────────────────
+
+
+def test_run_for_is_async():
+    assert inspect.iscoroutinefunction(FakeClock.run_for)
+
+
+def test_run_for_moves_time_by_the_given_amount():
+    clock = FakeClock()
+
+    asyncio.run(clock.run_for(2.5))
+
+    assert clock.monotonic() == 1002.5
+    assert clock.utc_now() == DEFAULT_START + timedelta(seconds=2.5)
+
+
+def test_run_for_rejects_going_back():
+    clock = FakeClock()
+
+    with pytest.raises(ValueError):  # noqa: PT011
+        asyncio.run(clock.run_for(-1))
+
+
+def test_each_waiter_sees_its_own_deadline_under_run_for():
+    # 동기 advance(5)는 시각을 한 번에 1005로 옮기고 깨운다. run_for는 만기마다 멈춘다.
+    clock = FakeClock()
+    seen = {}
+
+    async def sleeper(name, seconds):
+        await clock.sleep(seconds)
+        seen[name] = clock.monotonic()
+
+    async def main():
+        tasks = [
+            asyncio.create_task(sleeper("A", 3)),
+            asyncio.create_task(sleeper("B", 1)),
+            asyncio.create_task(sleeper("C", 2.5)),
+        ]
+        await settle()
+        await clock.run_for(5)
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+
+    asyncio.run(main())
+    assert seen == {"A": 1003.0, "B": 1001.0, "C": 1002.5}
+    assert clock.monotonic() == 1005.0
+
+
+def test_one_second_loop_runs_ten_times_under_run_for():
+    clock = FakeClock()
+    ticks = []
+
+    async def loop():
+        while True:
+            await clock.sleep(1)
+            ticks.append(clock.monotonic())
+
+    async def main():
+        task = asyncio.create_task(loop())
+        await settle()
+        await clock.run_for(10)
+        task.cancel()
+
+    asyncio.run(main())
+    assert ticks == [1000.0 + n for n in range(1, 11)]
+
+
+def test_one_second_loop_under_sync_advance_runs_only_once():
+    # 차이 설명: 동기 advance는 그 시점에 등록된 대기만 깨운다. 깨어난 루프가 새로 건 대기는
+    # 이미 지난 시각 기준으로 만기가 정해져 다음 advance까지 기다린다.
+    clock = FakeClock()
+    ticks = []
+
+    async def loop():
+        while True:
+            await clock.sleep(1)
+            ticks.append(clock.monotonic())
+
+    async def main():
+        task = asyncio.create_task(loop())
+        await settle()
+        clock.advance(10)
+        await settle()
+        task.cancel()
+
+    asyncio.run(main())
+    assert ticks == [1010.0]
+
+
+def test_run_for_wakes_a_waiter_registered_by_a_woken_task_in_the_same_run():
+    clock = FakeClock()
+    order = []
+
+    async def chain():
+        await clock.sleep(1)
+        order.append(("first", clock.monotonic()))
+        await clock.sleep(0.5)
+        order.append(("second", clock.monotonic()))
+
+    async def main():
+        task = asyncio.create_task(chain())
+        await settle()
+        await clock.run_for(2)
+        await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(main())
+    assert order == [("first", 1001.0), ("second", 1001.5)]
+
+
+def test_run_for_leaves_later_waiters_pending():
+    clock = FakeClock()
+
+    async def main():
+        task = asyncio.create_task(clock.sleep(10))
+        await settle()
+        await clock.run_for(9.999)
+        assert not task.done()
+        await clock.run_for(0.001)
+        await settle()
+        assert task.done()
+
+    asyncio.run(main())
+
+
+def test_run_for_skips_cancelled_waiters():
+    clock = FakeClock()
+
+    async def main():
+        cancelled = asyncio.create_task(clock.sleep(1))
+        survivor = asyncio.create_task(clock.sleep(2))
+        await settle()
+        cancelled.cancel()
+        await settle()
+        await clock.run_for(3)
+        assert survivor.done()
+
+    asyncio.run(main())
+    assert clock.monotonic() == 1003.0
+
+
+@settings(deadline=None, max_examples=40)
+@given(periods=st.lists(st.integers(min_value=1, max_value=50), min_size=1, max_size=4))
+def test_periodic_loops_tick_floor_of_duration_over_period_times(periods):
+    # 주기 p(×0.1초) 루프는 run_for(T)에서 floor(T/p)번 돈다.
+    clock = FakeClock()
+    total = 10.0
+    counts = [0] * len(periods)
+
+    async def loop(index, period):
+        while True:
+            await clock.sleep(period / 10)
+            counts[index] += 1
+
+    async def main():
+        tasks = [asyncio.create_task(loop(i, p)) for i, p in enumerate(periods)]
+        await settle()
+        await clock.run_for(total)
+        for task in tasks:
+            task.cancel()
+
+    asyncio.run(main())
+    assert counts == [100 // p for p in periods]
+
+
+# ── true_utc_now: PC 오차를 뺀 실제 UTC ──────────────────
+
+
+def test_true_utc_now_starts_at_start_utc():
+    assert FakeClock().true_utc_now() == DEFAULT_START
+
+
+def test_true_utc_now_ignores_pc_and_exchange_offsets():
+    clock = FakeClock()
+
+    clock.set_pc_offset(30)
+    clock.jump_pc(-3600)
+    clock.set_exchange_offset(5)
+
+    assert clock.true_utc_now() == DEFAULT_START
+    assert clock.true_utc_now().utcoffset() == timedelta(0)
+
+
+def test_true_utc_now_follows_advance():
+    clock = FakeClock()
+    clock.set_pc_offset(-6)
+
+    clock.advance(10.25)
+
+    assert clock.true_utc_now() == DEFAULT_START + timedelta(seconds=10.25)
+    assert clock.utc_now() == clock.true_utc_now() - timedelta(seconds=6)
+
+
+# ── suspend: 잠자기 ───────────────────────────────────────
+
+
+@pytest.mark.parametrize("monotonic_advances", [True, False])
+def test_suspend_moves_pc_exchange_and_true_utc(monotonic_advances):
+    clock = FakeClock()
+    clock.set_pc_offset(3)
+    clock.set_exchange_offset(-1)
+
+    clock.suspend(600, monotonic_advances=monotonic_advances)
+
+    assert clock.true_utc_now() == DEFAULT_START + timedelta(seconds=600)
+    assert clock.utc_now() == DEFAULT_START + timedelta(seconds=603)
+    assert clock.exchange_now() == DEFAULT_START + timedelta(seconds=602)
+
+
+def test_suspend_with_monotonic_stopped_keeps_monotonic_and_sleepers():
+    clock = FakeClock()
+
+    async def main():
+        task = asyncio.create_task(clock.sleep(5))
+        await settle()
+        clock.suspend(600, monotonic_advances=False)
+        await settle()
+        assert clock.monotonic() == 1000.0
+        assert not task.done()
+        # 깨어난 뒤 monotonic이 다시 흐르면 원래 만기에 깬다.
+        clock.advance(5)
+        await settle()
+        assert task.done()
+
+    asyncio.run(main())
+    assert clock.true_utc_now() == DEFAULT_START + timedelta(seconds=605)
+
+
+def test_suspend_with_monotonic_flowing_wakes_due_sleepers():
+    clock = FakeClock()
+
+    async def main():
+        due = asyncio.create_task(clock.sleep(5))
+        later = asyncio.create_task(clock.sleep(700))
+        await settle()
+        clock.suspend(600, monotonic_advances=True)
+        await settle()
+        assert clock.monotonic() == 1600.0
+        assert due.done()
+        assert not later.done()
+
+    asyncio.run(main())
+
+
+def test_suspend_rejects_going_back():
+    clock = FakeClock()
+
+    with pytest.raises(ValueError):  # noqa: PT011
+        clock.suspend(-1, monotonic_advances=True)

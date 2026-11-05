@@ -161,7 +161,7 @@ Qt 6.12에서 오픈소스로는 GPL-3.0(또는 상용)으로만 제공되는 �
 | 정보 화면(SCR-11)에서 이 고지들을 보여 주기 | 6단계 |
 | 공개 릴리스 때 Qt·PySide6 소스 압축 파일을 Release에 함께 올릴지(5.2, GPLv3 6(d)) | 릴리스(8단계) 전 |
 | Windows 빌드의 Python이 python.org 빌드가 아니면 `LICENSE.txt` 위치가 다를 수 있다. 빌드 로그에 "Python LICENSE.txt를 찾지 못해" 경고가 없는지 본다(2026-11-05 빌드는 python.org 3.13.17이라 경고 없음) | Windows 빌드마다 |
-| PySide6 메타 패키지 대신 PySide6-Essentials만 의존하는 안: 내려받는 Windows 휠이 약 259MB에서 84MB로 준다. 가상 키보드 라이브러리(Addons)가 없어 PyInstaller가 그 플러그인을 스스로 뺀다. Essentials에도 GPL 전용 파일이 있으므로 훅과 빌드 검사는 그대로 둔다 | 사용자 결정 |
+| (결정됨) PySide6 메타 패키지를 그대로 쓴다(D-064). Essentials만 의존하는 안은 빌드 환경 설치 크기만 줄이고 배포 번들의 크기·라이선스는 같다 | 2026-11-05 결정 |
 
 ## 8. 근거 (2026-11-05 확인)
 

@@ -3,9 +3,13 @@
 - 모두 frozen·slots dataclass다. 만든 뒤 바꿀 수 없다.
 - 금액·수량·가격·수수료는 Decimal이다(INV-14). float 필드가 없다.
 - 종목 경고(TS-102): warning이 참이거나 caution 항목이 하나라도 참이면 경고 종목이다.
+- Decimal 필드에 float·int·bool·str을 넣으면 만들 때 TypeError다.
+- 비밀(UpbitCredentials)은 dataclass가 아니다. 복제·피클·asdict로 값이 나오지 않는다.
 """
 
+import copy
 import dataclasses
+import pickle
 import secrets
 import string
 from datetime import UTC, datetime
@@ -44,7 +48,12 @@ KNOWN_CAUTION_KEYS = (
 # 모델별 Decimal이어야 하는 필드(값이 없을 수 있는 필드는 `Decimal | None`도 된다).
 DECIMAL_FIELDS = {
     models.Candle: ("open", "high", "low", "close", "volume", "value"),
-    models.Ticker: ("trade_price", "change_rate", "acc_trade_price_24h", "acc_trade_volume_24h"),
+    models.Ticker: (
+        "trade_price",
+        "signed_change_rate",
+        "acc_trade_price_24h",
+        "acc_trade_volume_24h",
+    ),
     models.OrderbookUnit: ("ask_price", "bid_price", "ask_size", "bid_size"),
     models.OrderChance: (
         "bid_fee",
@@ -90,7 +99,7 @@ MODEL_FIELDS = {
     models.Ticker: (
         "market",
         "trade_price",
-        "change_rate",
+        "signed_change_rate",
         "acc_trade_price_24h",
         "acc_trade_volume_24h",
         "timestamp_ms",
@@ -154,8 +163,11 @@ MODEL_FIELDS = {
         "smp_type",
         "trades",
     ),
-    models.ApiKeyInfo: ("access_key", "expire_at"),
+    models.ApiKeyInfo: ("access_key_prefix", "is_current", "expire_at"),
 }
+
+# D-047 형식 `uat-{모드}-{UTC 시각 yyMMddHHmmss}-{임의 16진수 8자}`(매매 로직 명세 6장).
+IDENTIFIER = "uat-p-261105000000-9f3a7c1e"
 
 
 def fake_access_key() -> str:
@@ -179,7 +191,7 @@ def order_request(**overrides) -> models.OrderRequest:
         "market": "KRW-BTC",
         "side": "bid",
         "ord_type": "price",
-        "identifier": "L-20261105-0001",
+        "identifier": IDENTIFIER,
         "price": Decimal("10000"),
     }
     values.update(overrides)
@@ -234,10 +246,18 @@ def test_order_request_cannot_be_modified():
         req.smp_type = "reduce"  # type: ignore[misc]
 
 
+def api_key_info(**overrides) -> models.ApiKeyInfo:
+    values = {
+        "access_key_prefix": fake_access_key()[:4],
+        "is_current": True,
+        "expire_at": datetime(2027, 11, 5, tzinfo=UTC),
+    }
+    values.update(overrides)
+    return models.ApiKeyInfo(**values)
+
+
 def test_api_key_info_cannot_be_modified():
-    info = models.ApiKeyInfo(
-        access_key=fake_access_key(), expire_at=datetime(2027, 11, 5, tzinfo=UTC)
-    )
+    info = api_key_info()
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         info.expire_at = datetime(2030, 1, 1, tzinfo=UTC)  # type: ignore[misc]
@@ -305,13 +325,22 @@ def test_order_request_smp_type_defaults_to_cancel_maker():
 
 
 def test_order_request_optional_fields_default_to_none():
-    req = models.OrderRequest(market="KRW-BTC", side="ask", ord_type="market", identifier="L-1")
+    req = models.OrderRequest(
+        market="KRW-BTC", side="ask", ord_type="market", identifier=IDENTIFIER
+    )
 
     assert (req.volume, req.price, req.time_in_force) == (None, None, None)
 
 
-def test_order_request_smp_type_can_be_set():
-    assert order_request(smp_type="reduce").smp_type == "reduce"
+@pytest.mark.parametrize("smp_type", ["reduce", "cancel_taker", "none", "", None])
+def test_order_request_rejects_smp_types_other_than_cancel_maker(smp_type):
+    # D-047: 모든 주문은 cancel_maker. cancel_taker는 손절 주문이 취소될 수 있어 쓰지 않는다.
+    with pytest.raises(ValueError):  # noqa: PT011 (문구는 정하지 않는다)
+        order_request(smp_type=smp_type)
+
+
+def test_order_request_accepts_explicit_cancel_maker():
+    assert order_request(smp_type="cancel_maker").smp_type == "cancel_maker"
 
 
 def test_order_request_requires_identifier():
@@ -323,26 +352,322 @@ def test_order_request_requires_identifier():
 # ── ApiKeyInfo ────────────────────────────────────────────
 
 
-def test_api_key_info_repr_and_str_hide_the_access_key():
+def test_api_key_info_holds_only_the_prefix_and_expiry():
+    # 전체 access_key는 담지 않는다. 화면에는 앞 4자리만 보인다(INV-07). 현재 키인지는 어댑터가
+    # 비교해 is_current로 넘긴다.
     key = fake_access_key()
-    info = models.ApiKeyInfo(access_key=key, expire_at=datetime(2027, 11, 5, tzinfo=UTC))
+    expire_at = datetime(2027, 11, 5, 9, 0, tzinfo=UTC)
 
-    for text in (repr(info), str(info)):
-        assert key not in text
-        # 앞 4자리 정도는 보여도 되지만(INV-07, 화면 표시) 8자 이상 이어진 조각은 없어야 한다.
+    info = models.ApiKeyInfo(access_key_prefix=key[:4], is_current=True, expire_at=expire_at)
+
+    assert (info.access_key_prefix, info.is_current, info.expire_at) == (key[:4], True, expire_at)
+    assert not hasattr(info, "access_key")
+    for text in (repr(info), str(info), repr(dataclasses.asdict(info))):
         for start in range(len(key) - 7):
             assert key[start : start + 8] not in text
 
 
-def test_api_key_info_still_holds_the_access_key():
-    key = fake_access_key()
-    expire_at = datetime(2027, 11, 5, 9, 0, tzinfo=UTC)
+@pytest.mark.parametrize("prefix", ["abcde", "x" * 40])
+def test_api_key_info_rejects_more_than_four_chars(prefix):
+    with pytest.raises(ValueError):  # noqa: PT011
+        api_key_info(access_key_prefix=prefix)
 
-    info = models.ApiKeyInfo(access_key=key, expire_at=expire_at)
 
-    assert info.access_key == key
-    assert info.expire_at == expire_at
-    assert info == models.ApiKeyInfo(access_key=key, expire_at=expire_at)
+def test_api_key_info_is_comparable():
+    expire_at = datetime(2027, 11, 5, tzinfo=UTC)
+
+    a = api_key_info(access_key_prefix="Ab12", expire_at=expire_at)
+
+    assert a == api_key_info(access_key_prefix="Ab12", expire_at=expire_at)
+    assert a != api_key_info(access_key_prefix="Ab12", expire_at=expire_at, is_current=False)
+
+
+# ── UpbitCredentials: 비밀 ────────────────────────────────
+
+
+def credentials() -> models.UpbitCredentials:
+    return models.UpbitCredentials(access_key=fake_access_key(), secret_key=fake_access_key())
+
+
+def test_credentials_hold_both_keys():
+    access, secret = fake_access_key(), fake_access_key()
+
+    creds = models.UpbitCredentials(access_key=access, secret_key=secret)
+
+    assert (creds.access_key, creds.secret_key) == (access, secret)
+
+
+def test_credentials_repr_and_str_hide_both_keys():
+    creds = credentials()
+
+    for text in (repr(creds), str(creds), f"{creds}", f"{creds!r}"):
+        for value in (creds.access_key, creds.secret_key):
+            for start in range(len(value) - 7):
+                assert value[start : start + 8] not in text
+
+
+def test_credentials_are_slotted_and_read_only():
+    creds = credentials()
+
+    assert "__slots__" in type(creds).__dict__
+    assert not hasattr(creds, "__dict__")
+    with pytest.raises(AttributeError):
+        creds.access_key = "other"  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        creds.secret_key = "other"  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        creds.extra = "x"  # type: ignore[attr-defined]
+    with pytest.raises(AttributeError):
+        del creds.access_key  # type: ignore[misc]
+
+
+def test_credentials_are_not_a_dataclass():
+    # dataclasses.asdict·astuple이 비밀을 일반 dict로 꺼내지 못하게 한다.
+    creds = credentials()
+
+    assert not dataclasses.is_dataclass(creds)
+    with pytest.raises(TypeError):
+        dataclasses.asdict(creds)  # type: ignore[call-overload]
+    with pytest.raises(TypeError):
+        vars(creds)
+
+
+@pytest.mark.parametrize(
+    "dump",
+    [
+        pickle.dumps,
+        lambda c: pickle.dumps(c, protocol=0),
+        copy.copy,
+        copy.deepcopy,
+        lambda c: c.__reduce__(),
+        lambda c: c.__reduce_ex__(2),
+    ],
+    ids=["pickle", "pickle0", "copy", "deepcopy", "reduce", "reduce_ex"],
+)
+def test_credentials_cannot_be_copied_or_pickled(dump):
+    with pytest.raises(TypeError):
+        dump(credentials())
+
+
+def test_credentials_compare_by_value():
+    access, secret = fake_access_key(), fake_access_key()
+    creds = models.UpbitCredentials(access_key=access, secret_key=secret)
+
+    assert creds == models.UpbitCredentials(access_key=access, secret_key=secret)
+    assert creds != models.UpbitCredentials(access_key=access, secret_key=fake_access_key())
+    assert creds != models.UpbitCredentials(access_key=fake_access_key(), secret_key=secret)
+    assert creds != (access, secret)
+
+
+def test_credentials_require_strings():
+    with pytest.raises(TypeError):
+        models.UpbitCredentials(access_key=None, secret_key="x" * 40)  # type: ignore[arg-type]
+
+
+# ── MarketInfo.caution: 만든 뒤 바꿀 수 없음 ──────────────
+
+
+def test_market_info_copies_caution():
+    source = {"PRICE_FLUCTUATIONS": False}
+    info = market(caution=source)
+
+    source["PRICE_FLUCTUATIONS"] = True
+
+    assert info.is_warned is False
+
+
+def test_market_info_caution_is_read_only():
+    info = market()
+
+    with pytest.raises(TypeError):
+        info.caution["PRICE_FLUCTUATIONS"] = True  # type: ignore[index]
+    assert isinstance(info.caution, MappingProxyType)
+
+
+def test_market_info_is_hashable_and_comparable():
+    a, b = market(), market()
+
+    assert a == b
+    assert hash(a) == hash(b)
+    assert {a, b} == {a}
+
+
+# ── OrderSnapshot.trades ──────────────────────────────────
+
+
+def snapshot(**overrides) -> models.OrderSnapshot:
+    values = dict.fromkeys(MODEL_FIELDS[models.OrderSnapshot])
+    values.update(
+        uuid="00000000-0000-4000-8000-000000000000",
+        identifier=IDENTIFIER,
+        market="KRW-BTC",
+        side="bid",
+        ord_type="price",
+        state="wait",
+        trades_count=0,
+        created_at=datetime(2026, 11, 5, tzinfo=UTC),
+        trades=(),
+    )
+    values.update(overrides)
+    return models.OrderSnapshot(**values)
+
+
+def test_order_snapshot_trades_may_be_unknown():
+    # 목록 조회 응답에는 trades가 없다. 빈 튜플(체결 없음)과 None(모름)을 구분한다.
+    assert snapshot(trades=None).trades is None
+    assert snapshot(trades=()).trades == ()
+
+
+def test_order_snapshot_holds_trades():
+    trade = models.Trade(
+        uuid="t-1",
+        market="KRW-BTC",
+        price=Decimal("143250000"),
+        volume=Decimal("0.00006981"),
+        funds=Decimal("10000.2825"),
+        side="bid",
+        created_at=datetime(2026, 11, 5, tzinfo=UTC),
+    )
+
+    assert snapshot(trades=(trade,), trades_count=1).trades == (trade,)
+
+
+# ── Decimal 강제(INV-14) ──────────────────────────────────
+
+
+def valid_values(cls) -> dict:
+    """모델마다 올바른 값 한 벌."""
+    when = datetime(2026, 11, 5, tzinfo=UTC)
+    one = Decimal(1)
+    builders = {
+        models.Candle: lambda: dict(
+            market="KRW-BTC",
+            unit="m240",
+            start_utc=when,
+            open=one,
+            high=one,
+            low=one,
+            close=one,
+            volume=one,
+            value=one,
+        ),
+        models.Ticker: lambda: dict(
+            market="KRW-BTC",
+            trade_price=one,
+            signed_change_rate=Decimal("-0.003"),
+            acc_trade_price_24h=one,
+            acc_trade_volume_24h=one,
+            timestamp_ms=0,
+        ),
+        models.OrderbookUnit: lambda: dict(
+            ask_price=one, bid_price=one, ask_size=one, bid_size=one
+        ),
+        models.OrderChance: lambda: dict(
+            market="KRW-BTC",
+            bid_fee=one,
+            ask_fee=one,
+            maker_bid_fee=one,
+            maker_ask_fee=one,
+            bid_min_total=one,
+            ask_min_total=one,
+            max_total=one,
+            state="active",
+            bid_types=(),
+            ask_types=(),
+            order_types=(),
+            order_sides=(),
+        ),
+        models.Balance: lambda: dict(
+            currency="KRW",
+            balance=one,
+            locked=one,
+            avg_buy_price=one,
+            avg_buy_price_modified=False,
+            unit_currency="KRW",
+        ),
+        models.OrderRequest: lambda: dict(
+            market="KRW-BTC",
+            side="bid",
+            ord_type="limit",
+            identifier=IDENTIFIER,
+            volume=one,
+            price=one,
+            time_in_force="ioc",
+        ),
+        models.Trade: lambda: dict(
+            uuid="t",
+            market="KRW-BTC",
+            price=one,
+            volume=one,
+            funds=one,
+            side="bid",
+            created_at=when,
+        ),
+        models.OrderSnapshot: lambda: (
+            {name: one for name in DECIMAL_FIELDS[models.OrderSnapshot]}
+            | dict(
+                uuid="u",
+                identifier=IDENTIFIER,
+                market="KRW-BTC",
+                side="bid",
+                ord_type="limit",
+                state="wait",
+                trades_count=0,
+                created_at=when,
+                time_in_force=None,
+                smp_type="cancel_maker",
+                trades=(),
+            )
+        ),
+    }
+    return builders[cls]()
+
+
+DECIMAL_CASES = [(cls, name) for cls, names in DECIMAL_FIELDS.items() for name in names]
+NOT_DECIMALS = [1.5, 1, True, "1.5"]
+
+
+@pytest.mark.parametrize("cls", list(DECIMAL_FIELDS), ids=lambda c: c.__name__)
+def test_valid_values_build(cls):
+    cls(**valid_values(cls))
+
+
+@pytest.mark.parametrize(("cls", "name"), DECIMAL_CASES, ids=lambda v: getattr(v, "__name__", v))
+@pytest.mark.parametrize("bad", NOT_DECIMALS, ids=lambda v: type(v).__name__)
+def test_decimal_fields_reject_other_types(cls, name, bad):
+    values = valid_values(cls)
+    values[name] = bad
+
+    with pytest.raises(TypeError):
+        cls(**values)
+
+
+OPTIONAL_DECIMAL_CASES = [
+    (models.OrderRequest, "volume"),
+    (models.OrderRequest, "price"),
+    *((models.OrderSnapshot, name) for name in DECIMAL_FIELDS[models.OrderSnapshot]),
+]
+
+
+@pytest.mark.parametrize(
+    ("cls", "name"), OPTIONAL_DECIMAL_CASES, ids=lambda v: getattr(v, "__name__", v)
+)
+def test_optional_decimal_fields_accept_none(cls, name):
+    values = valid_values(cls)
+    values[name] = None
+
+    assert getattr(cls(**values), name) is None
+
+
+@pytest.mark.parametrize(("cls", "name"), DECIMAL_CASES, ids=lambda v: getattr(v, "__name__", v))
+def test_required_decimal_fields_reject_none(cls, name):
+    if (cls, name) in OPTIONAL_DECIMAL_CASES:
+        pytest.skip("None을 허용하는 필드")
+    values = valid_values(cls)
+    values[name] = None
+
+    with pytest.raises(TypeError):
+        cls(**values)
 
 
 # ── 설계 메모의 필드 이름 ─────────────────────────────────

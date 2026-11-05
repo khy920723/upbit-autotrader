@@ -17,22 +17,31 @@ TS-102(종목 해석)·TS-104(묶은 ticker의 전체 404)·TS-105(캔들)·TS-7
   docs.upbit.com/kr/reference/list-candles-minutes.md).
 - Ticker.timestamp_ms는 ticker 응답의 `timestamp`(trade_timestamp 아님)다.
 - 빈 마켓 목록이면 get_tickers·get_tick_sizes는 요청 없이 빈 결과다.
-- 묶은 ticker가 404면 마켓마다 1건씩 다시 부른다(fakes-spec 2.8절). 404가 아닌 오류는 그대로 낸다.
+- 묶은 ticker·instruments가 404면 마켓마다 1건씩 다시 부른다(fakes-spec 2.8절). 404가 아닌
+  오류는 그대로 낸다. 호가(get_orderbooks)의 404는 다시 부르지 않고 그대로 낸다.
+- 마켓 코드는 `대문자·숫자-대문자·숫자` 형식만 보낸다(아니면 ValueError, 목록 대신 문자열 하나면
+  TypeError). 중복은 처음 순서대로 한 번만.
+- market_event·warning·caution이 없거나 참·거짓·객체가 아니면 경고(신규 매수 막음)로 본다.
+- `to`의 마이크로초는 다음 초로 올려 `Z` 표기로 보낸다(그 초 안에 시작한 캔들을 빼지 않는다).
+- 응답 모양이 다르면(NaN·Infinity 문자열 포함) UpbitServerError, Date 헤더가 없으면 server_time도
+  UpbitServerError다.
 """
 
 import dataclasses
 import json
 import types
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fakes.upbit_json import RawNumber, loads_raw
 
-from autotrader.core.errors import UpbitNotFound, UpbitRateLimited
+from autotrader.core.errors import UpbitNotFound, UpbitRateLimited, UpbitServerError
 from autotrader.core.models import Candle, MarketInfo, Orderbook, Ticker
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "upbit"
@@ -499,19 +508,17 @@ def test_tick_sizes_come_from_orderbook_instruments(quotation):
 
 
 def test_tick_sizes_are_not_made_up_for_markets_the_server_does_not_know(quotation):
-    # 가짜의 instruments는 KRW-BTC·KRW-ETH만 있다(나머지 404). 실패를 알리든(UpbitNotFound)
-    # 아는 마켓만 돌려주든, 모르는 마켓의 값을 지어내지 않는다(그때는 tick_for가 표를 쓴다).
-    async def scenario(api):
-        try:
-            return await api.get_tick_sizes(["KRW-BTC", "KRW-XRP"])
-        except UpbitNotFound:
-            return None
+    # 가짜의 instruments는 KRW-BTC·KRW-ETH만 있다(나머지 404). 묶은 요청이 404면 마켓마다 다시
+    # 불러 아는 마켓만 돌려준다. 모르는 마켓의 값은 지어내지 않는다(그때는 tick_for가 표를 쓴다).
+    sizes = quotation.run(lambda api: api.get_tick_sizes(["KRW-BTC", "KRW-XRP"]))
 
-    sizes = quotation.run(scenario)
-
-    if sizes is not None:
-        assert "KRW-XRP" not in sizes
-        assert sizes.get("KRW-BTC", Decimal("1000")) == Decimal("1000")
+    assert sizes == {"KRW-BTC": Decimal("1000")}
+    sent = [quotation.params(r) for r in quotation.sent("GET", "/v1/orderbook/instruments")]
+    assert sent == [
+        [("markets", "KRW-BTC,KRW-XRP")],
+        [("markets", "KRW-BTC")],
+        [("markets", "KRW-XRP")],
+    ]
 
 
 def test_tick_sizes_for_no_markets_send_nothing(quotation):
@@ -565,3 +572,200 @@ def test_quotation_calls_send_no_authorization_and_no_origin(quotation):
         assert "authorization" not in names
         assert "origin" not in names
     assert quotation.server.jwt_payloads == []
+
+
+# --- market_event 해석: 읽을 수 없으면 경고 -------------------------------------------------
+
+
+def _edit_market(market: str, edit: Callable[[dict[str, Any]], None]):
+    def rewrite(items):
+        for item in items:
+            if item["market"] == market:
+                edit(item)
+
+    return rewrite
+
+
+MARKET_EVENT_GAPS = {
+    "no-market-event": lambda item: item.pop("market_event"),
+    "market-event-null": lambda item: item.update(market_event=None),
+    "market-event-not-object": lambda item: item.update(market_event=["warning"]),
+    "no-warning": lambda item: item["market_event"].pop("warning"),
+    "warning-not-bool": lambda item: item["market_event"].update(warning="false"),
+    "warning-null": lambda item: item["market_event"].update(warning=None),
+    "no-caution": lambda item: item["market_event"].pop("caution"),
+    "caution-null": lambda item: item["market_event"].update(caution=None),
+    "caution-not-object": lambda item: item["market_event"].update(caution=[]),
+    "caution-value-not-bool": lambda item: item["market_event"]["caution"].update(
+        PRICE_FLUCTUATIONS="false"
+    ),
+    "caution-value-zero": lambda item: item["market_event"]["caution"].update(PRICE_FLUCTUATIONS=0),
+    "caution-value-null": lambda item: item["market_event"]["caution"].update(
+        PRICE_FLUCTUATIONS=None
+    ),
+}
+
+
+@pytest.mark.parametrize("edit", MARKET_EVENT_GAPS.values(), ids=MARKET_EVENT_GAPS.keys())
+def test_market_event_that_cannot_be_read_marks_the_market_warned(quotation, edit):
+    # 녹화의 KRW-BTC는 정상(warning false, caution 모두 false)이다. 무엇이 빠지거나 참·거짓이
+    # 아니면 신규 매수를 막는 쪽(경고)으로 본다. 목록 전체를 실패시키지는 않는다.
+    quotation.rewrite_response("/v1/market/all", _edit_market("KRW-BTC", edit))
+
+    markets = by_market(quotation.run(lambda api: api.list_markets()))
+
+    assert markets["KRW-BTC"].is_warned is True
+    assert markets["KRW-ETH"].is_warned is False
+    assert set(markets) == KRW_MARKETS
+
+
+def test_unreadable_caution_value_keeps_its_key(quotation):
+    edit = MARKET_EVENT_GAPS["caution-value-not-bool"]
+    quotation.rewrite_response("/v1/market/all", _edit_market("KRW-BTC", edit))
+
+    btc = by_market(quotation.run(lambda api: api.list_markets()))["KRW-BTC"]
+
+    assert btc.warning is False
+    assert btc.caution["PRICE_FLUCTUATIONS"] is True
+    assert all(v is False for k, v in btc.caution.items() if k != "PRICE_FLUCTUATIONS")
+
+
+# --- 마켓 코드: 형식 검사·중복 제거 --------------------------------------------------------
+
+
+def test_duplicate_markets_are_asked_once_in_order(quotation):
+    tickers = quotation.run(lambda api: api.get_tickers(["KRW-ETH", "KRW-BTC", "KRW-ETH"]))
+
+    assert [t.market for t in tickers] == ["KRW-ETH", "KRW-BTC"]
+    [request] = quotation.sent("GET", "/v1/ticker")
+    assert quotation.params(request) == [("markets", "KRW-ETH,KRW-BTC")]
+
+
+BAD_MARKETS = ["krw-btc", "KRWBTC", "KRW-BTC,KRW-ETH", "", "KRW-BTC ", "KRW-비트", "KRW--BTC", 1]
+MARKET_CALLS = {
+    "tickers": lambda api, m: api.get_tickers(["KRW-BTC", m]),
+    "orderbooks": lambda api, m: api.get_orderbooks([m]),
+    "tick-sizes": lambda api, m: api.get_tick_sizes([m]),
+    "candles": lambda api, m: api.get_candles(m, "m240", count=1),
+}
+
+
+@pytest.mark.parametrize("call", MARKET_CALLS.values(), ids=MARKET_CALLS.keys())
+@pytest.mark.parametrize("market", BAD_MARKETS, ids=repr)
+def test_malformed_market_codes_are_rejected_before_sending(quotation, call, market):
+    async def scenario(api):
+        with pytest.raises((ValueError, TypeError)):
+            await call(api, market)
+
+    quotation.run(scenario)
+    assert quotation.sent() == []
+
+
+@pytest.mark.parametrize("call", ["get_tickers", "get_orderbooks", "get_tick_sizes"])
+def test_a_single_string_instead_of_a_list_is_rejected(quotation, call):
+    async def scenario(api):
+        with pytest.raises(TypeError):
+            await getattr(api, call)("KRW-BTC")
+
+    quotation.run(scenario)
+    assert quotation.sent() == []
+
+
+# --- get_orderbooks: 404는 그대로 ----------------------------------------------------------
+
+
+def test_orderbook_404_is_raised_not_retried_per_market(quotation):
+    async def scenario(api):
+        with pytest.raises(UpbitNotFound):
+            await api.get_orderbooks(["KRW-BTC", "KRW-NOTEXIST"])
+
+    quotation.run(scenario)
+
+    # 호가는 묶은 요청 404를 마켓마다 다시 부르지 않는다(호출하는 쪽이 정한다).
+    assert len(quotation.sent("GET", "/v1/orderbook")) == 1
+
+
+# --- 캔들 `to`: 마이크로초는 초 단위로 올린다 -----------------------------------------------
+
+
+def test_to_with_microseconds_is_rounded_up_to_the_next_second(quotation):
+    to = datetime(2026, 11, 4, 16, 0, 0, 1, tzinfo=UTC)
+
+    candles = quotation.run(lambda api: api.get_candles("KRW-BTC", "m240", count=5, to=to))
+
+    [request] = quotation.sent("GET")
+    assert dict(quotation.params(request))["to"] == "2026-11-04T16:00:01Z"
+    # 16:00 캔들은 `to`(16:00:00.000001)보다 앞에 시작하므로 들어간다.
+    assert candles[-1].start_utc == datetime(2026, 11, 4, 16, tzinfo=UTC)
+
+
+def test_to_on_a_whole_second_is_sent_as_is(quotation):
+    to = datetime(2026, 11, 5, 1, 0, 0, tzinfo=KST)
+
+    quotation.run(lambda api: api.get_candles("KRW-BTC", "m240", count=5, to=to))
+
+    [request] = quotation.sent("GET")
+    assert dict(quotation.params(request))["to"] == "2026-11-04T16:00:00Z"
+
+
+# --- 응답 모양 오류 -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "sNaN"])
+def test_non_finite_number_strings_are_a_server_error(quotation, value):
+    def edit(items):
+        items[0]["trade_price"] = value
+
+    quotation.rewrite_response("/v1/ticker", edit)
+
+    async def scenario(api):
+        with pytest.raises(UpbitServerError) as caught:
+            await api.get_tickers(["KRW-BTC"])
+        return caught.value
+
+    error = quotation.run(scenario)
+
+    assert error.http_status == 200
+    assert error.__context__ is None
+    assert error.__cause__ is None
+
+
+def test_tick_size_that_is_not_positive_is_a_server_error(quotation):
+    def edit(items):
+        items[0]["tick_size"] = "0"
+
+    quotation.rewrite_response("/v1/orderbook/instruments", edit)
+
+    async def scenario(api):
+        with pytest.raises(UpbitServerError):
+            await api.get_tick_sizes(["KRW-BTC"])
+
+    quotation.run(scenario)
+
+
+# --- server_time: Date 헤더 없음 ------------------------------------------------------------
+
+
+def test_server_time_without_a_date_header_is_a_server_error(quotation):
+    def strip_date(inner: httpx.AsyncBaseTransport) -> httpx.AsyncBaseTransport:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            response = await inner.handle_async_request(request)
+            await response.aread()
+            headers = [
+                (k, v)
+                for k, v in response.headers.multi_items()
+                if k.lower() not in ("date", "content-length")
+            ]
+            return httpx.Response(response.status_code, headers=headers, content=response.content)
+
+        return httpx.MockTransport(handler)
+
+    quotation.wrap = strip_date
+
+    async def scenario(api):
+        with pytest.raises(UpbitServerError):
+            await api.server_time()
+
+    quotation.run(scenario)
+    # PC 시계로 대신하지 않고 다시 부르지도 않는다.
+    assert len(quotation.sent()) == 1

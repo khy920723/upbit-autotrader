@@ -63,7 +63,8 @@ def round_price(price: Decimal, tick: Decimal, *, mode: RoundMode) -> Decimal:
     """price를 tick의 배수로 맞춘다.
 
     down은 내림, up은 올림, nearest는 가까운 쪽(정확히 가운데면 올림). 이미 배수면 그대로 둔다.
-    tick보다 작은 가격을 down으로 맞추면 0이 된다(주문에 쓸 수 있는지는 호출하는 쪽이 본다).
+    down·nearest는 0을 돌려줄 수 있다(tick보다 작은 가격의 down, tick의 절반 미만 가격의
+    nearest). 0이나 최소 주문 금액 미달을 주문에 쓸 수 있는지는 호출하는 쪽이 본다.
     """
     _check_positive(price, "price")
     _check_positive(tick, "tick")
@@ -91,6 +92,9 @@ def round_price(price: Decimal, tick: Decimal, *, mode: RoundMode) -> Decimal:
 def tick_for(market: str, price: Decimal, tick_sizes: Mapping[str, Decimal] | None) -> Decimal:
     """그 마켓의 호가 단위. instruments 값(tick_sizes)이 있으면 그 값, 없으면 KRW 표.
 
+    instruments의 tick_size는 받을 때의 가격 구간 기준이다(가격과 상관없이 그대로 쓴다). 가격이
+    다른 구간으로 움직이면 맞지 않을 수 있으므로 tick_sizes는 최신이어야 한다(언제 다시 받을지는
+    호출하는 쪽이 정한다).
     KRW가 아닌 마켓은 표가 없으므로 instruments 값이 없으면 ValueError다.
     """
     _check_positive(price, "price")

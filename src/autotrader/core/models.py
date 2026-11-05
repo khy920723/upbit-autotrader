@@ -122,6 +122,14 @@ class OrderChance:
     ask_types: tuple[str, ...]
     order_types: tuple[str, ...]
     order_sides: tuple[str, ...]
+    bid_balance: Decimal
+    """bid_account.balance: 주문 가능 호가 자산(KRW 마켓이면 원화). live의 주문 가능 원화."""
+    bid_locked: Decimal
+    """bid_account.locked: 주문 등에 묶인 호가 자산."""
+    ask_balance: Decimal
+    """ask_account.balance: 주문 가능 기준 자산(코인 수량)."""
+    ask_locked: Decimal
+    """ask_account.locked: 주문 등에 묶인 기준 자산."""
 
     __post_init__ = _check_decimals
 

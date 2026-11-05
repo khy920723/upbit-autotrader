@@ -9,8 +9,9 @@
 - 키: 실행 중에 만든 카나리아(fakes.canary.make_upbit_credentials). 시세 API는 키 없이 만든다
   (credentials=None이면 인증 요청은 보내기 전에 실패하므로 시세 API가 키를 쓰지 않는지도 본다).
 - `env.run(scenario)`는 asyncio.run으로 돌리고, 끝나면 가짜의 엄격 검사 위반이 0건이어야 한다.
-- `env.rewrite_response(path, edit)`는 가짜 응답을 테스트 안에서 고친다(가짜에 없는 응답 모양을
-  만들 때. 가짜 파일은 고치지 않는다). 더 일반적으로는 `env.wrap`에 전송 계층 감싸개를 넣는다.
+- `env.rewrite_response(path, edit)`는 가짜의 2xx 응답 본문을 테스트 안에서 고친다(가짜에 없는
+  응답 모양을 만들 때. 가짜 파일은 고치지 않는다). 더 일반적으로는 `env.wrap`에 전송 계층 감싸개를
+  넣는다(예: 헤더를 뺄 때).
 """
 
 import asyncio
@@ -50,7 +51,9 @@ def _build_http(
     )
 
 
-def _build_api(kind: str, http: Any, credentials: UpbitCredentials | None) -> Any:
+def _build_api(
+    kind: str, http: Any, credentials: UpbitCredentials | None, *, own_key_known: bool = True
+) -> Any:
     if kind == "quotation":
         from autotrader.adapters.upbit.quotation import UpbitQuotationApi
 
@@ -58,7 +61,8 @@ def _build_api(kind: str, http: Any, credentials: UpbitCredentials | None) -> An
     from autotrader.adapters.upbit.exchange import UpbitExchangeApi
 
     # list_api_keys가 자기 키를 찾을 때 쓰는 키 제공 함수(UpbitHttp에 준 것과 같은 키).
-    provider = None if credentials is None else (lambda: credentials)
+    # own_key_known=False면 어댑터에 키 제공 함수를 주지 않는다(credentials=None).
+    provider = None if credentials is None or not own_key_known else (lambda: credentials)
     return UpbitExchangeApi(http, credentials=provider)
 
 
@@ -71,6 +75,8 @@ class ApiEnv:
     creds: UpbitCredentials
     server: FakeUpbitServer
     wrap: Wrap | None = None
+    own_key_known: bool = True
+    """False면 거래 어댑터를 credentials=None으로 만든다(UpbitHttp에는 키를 준다)."""
 
     def run(self, scenario: Callable[[Any], Awaitable[Any]], *, clean: bool = True) -> Any:
         """scenario(api)를 돌린다. clean이면 끝난 뒤 가짜의 위반이 0건이어야 한다."""
@@ -82,7 +88,8 @@ class ApiEnv:
             keys = self.creds if self.kind == "exchange" else None
             http = _build_http(self.clock, keys, transport)
             try:
-                return await scenario(_build_api(self.kind, http, keys))
+                api = _build_api(self.kind, http, keys, own_key_known=self.own_key_known)
+                return await scenario(api)
             finally:
                 await http.aclose()
 
@@ -92,12 +99,14 @@ class ApiEnv:
         return result
 
     def rewrite_response(self, path: str, edit: Callable[[Any], None]) -> None:
-        """그 경로의 200 응답 본문을 edit(data)로 고쳐 돌려주게 한다. 숫자 토큰은 원문 그대로."""
+        """그 경로의 2xx 응답 본문을 edit(data)로 고쳐 돌려주게 한다. 숫자 토큰은 원문 그대로.
+
+        상태 코드는 그대로 둔다(주문 생성의 201도 고친다)."""
 
         def wrap(inner: httpx.AsyncBaseTransport) -> httpx.AsyncBaseTransport:
             async def handler(request: httpx.Request) -> httpx.Response:
                 response = await inner.handle_async_request(request)
-                if request.url.path != path or response.status_code != 200:
+                if request.url.path != path or not 200 <= response.status_code < 300:
                     return response
                 await response.aread()
                 data = loads_raw(response.text)

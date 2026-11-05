@@ -8,33 +8,47 @@ error.name 분기), 업비트 API 연동 명세 2·5장, 시스템 구성도 6�
 매매 로직 명세 6·7·9·10·11장, 가짜 구현 명세 2장, TS-13·TS-72·TS-78·TS-116·TS-118, INV-03·06·07·14,
 결정 D-047(smp_type=cancel_maker)·D-067(bid·ask 값 구분)·D-069(일괄 취소 금지).
 
-주문 정책(금액 계산, 주문 유형 선택, 분할 매수)은 시험하지 않는다(D-043·D-039 대기). 어댑터는
-OrderRequest를 그대로 와이어로 옮기고 응답을 OrderSnapshot으로 바꿀 뿐이다. 결과 불명(UNKNOWN)
+주문 정책(금액 계산, 주문 유형 선택, 분할 매수)은 시험하지 않는다(5단계, D-043·D-082~D-086).
+어댑터는 OrderRequest를 그대로 와이어로 옮기고 응답을 OrderSnapshot으로 바꿀 뿐이다. 결과 불명(UNKNOWN)
 처리는 상위 계층 몫이다(TS-72: 어댑터는 다시 보내지 않고 예외만 낸다).
 
 이 파일이 정한 점(설계 메모·문서에 없음):
 - 보내기 전 검사에 걸리면 ValueError이고 요청을 하나도 보내지 않는다(주문 유형별 필수값,
-  time_in_force, post_only, identifier 1~64자·공백과 `+` 없음, 가격·수량은 0보다 큰 유한값,
-  수량은 소수 8자리까지. 반올림은 정책 몫이라 어댑터는 고치지 않고 거부한다).
+  time_in_force, post_only, identifier 1~64자·공백과 `+` 없음, 마켓 코드 형식(`KRW-BTC`),
+  가격·수량은 0보다 큰 유한값이고 정수부+소수부 40자리까지, 수량은 소수 8자리까지. 반올림은
+  정책 몫이라 어댑터는 고치지 않고 거부한다).
 - 가격·수량은 지수 표기 없는 숫자 문자열(정수 또는 소수, 부호 없음)로 보낸다(D-071).
-  Decimal로 다시 읽으면 같다.
+  Decimal 정밀도(28자리)와 무관하게 값 그대로다. Decimal로 다시 읽으면 같다.
+- 응답 모양이 다르면(2xx·201 포함, 시각 범위 초과, NaN·Infinity 문자열) UpbitServerError이고
+  원래 예외를 잇지 않는다(`__cause__`·`__context__` 없음). 주문 생성이면 POST는 1회뿐이다.
+- 주문 객체의 필수 필드는 Order 스키마 required 가운데 uuid·market·side·ord_type·state·
+  created_at·trades_count다. 나머지는 빠지면 None(모름).
+- get_order_chance는 bid_account·ask_account의 balance·locked를 읽는다(문서 스키마 required).
 - 응답에서 값이 없는 필드(시장가 매도의 price 등)는 키째 빠질 수 있다 → None.
 - OrderSnapshot.trades: 개별 조회는 튜플(체결이 없으면 빈 튜플), 응답에 trades가 없는
   주문 생성·취소·목록 조회는 None. 시각은 UTC(utcoffset 0)로 바꾼다.
 - get_order는 404 order_not_found만 None이고 그 밖의 오류는 그대로 낸다.
 - get_orders·빈 목록은 요청 없이 []. list_open_orders는 states[]=wait·watch를 보낸다(매매 로직
-  명세 11장). list_closed_orders의 start_time·end_time은 밀리초 타임스탬프(매매 로직 명세 11장),
-  시간대 없는 datetime·end < start·7일 초과는 보내기 전에 ValueError.
+  명세 11장). page·limit=100·order_by=asc로 덜 찬 쪽까지 넘기고 uuid로 중복을 뺀다. 100쪽이
+  모두 차면 UpbitServerError. list_closed_orders의 start_time·end_time은 밀리초 타임스탬프(매매
+  로직 명세 11장), limit=1000·order_by=asc. 1,000개가 꽉 차면 UpbitServerError("구간을 나눠 다시
+  조회"). 시간대 없는 datetime·end < start·7일 초과는 보내기 전에 ValueError.
+- list_api_keys의 실패 경로(traceback 지역 변수 포함)에도 전체 Access Key가 없다. 키 제공 함수가
+  없으면(credentials=None) 어느 키도 현재 키가 아니다.
 - cancel_order의 대상 없음(404)은 UpbitNotFound로 낸다(None이 아니다).
 """
 
 import asyncio
 import dataclasses
+import itertools
+import json
 import logging
 import re
+import traceback
 import types
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -71,6 +85,7 @@ ID1 = "uat-l-261105000000-0000aa01"
 ID2 = "uat-l-261105000000-0000aa02"
 ID3 = "uat-l-261105000000-0000aa03"
 NEVER = "uat-l-261105000000-ffffffff"
+DOCS_EXAMPLES = Path(__file__).resolve().parents[2] / "fixtures" / "upbit" / "docs_examples"
 JWT_SHAPE = re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
 PLAIN_NUMBER = re.compile(r"\d+(\.\d+)?")  # 가짜가 받는 주문 값 모양(지수 표기·부호 없음)
 
@@ -249,6 +264,11 @@ def test_chance_maps_the_docs_example(exchange):
         ask_types=("best_fok", "best_ioc", "limit", "limit_fok", "limit_ioc", "market"),
         order_types=("limit",),
         order_sides=("ask", "bid"),
+        # 가짜의 bid_account·ask_account는 잔고 목록(get-balance 문서 예시)의 KRW·BTC 줄이다.
+        bid_balance=D("1000000.0"),
+        bid_locked=D("0.0"),
+        ask_balance=D("2.0"),
+        ask_locked=D("0.0"),
     )
     assert_decimal_fields(chance)
     [sent] = exchange.sent("GET", "/v1/orders/chance")
@@ -483,6 +503,19 @@ INVALID_REQUESTS = {
     "zero-volume": request(side="ask", ord_type="market", volume=D("0")),
     # 수량은 소수 8자리까지(가짜 엄격 검사). 반올림은 정책 몫이므로 어댑터는 보내지 않고 거부한다.
     "volume-9-decimals": request(side="ask", ord_type="market", volume=D("0.000000001")),
+    # 정밀도(28자리)를 넘는 값도 반올림하지 않고 본다. 소수 9자리면 거부한다.
+    "volume-9-decimals-29-digits": request(
+        side="ask", ord_type="market", volume=D("12345678901234567890.123456789")
+    ),
+    "price-over-40-digits": request(side="bid", ord_type="price", price=D("1" * 41)),
+    "price-huge-exponent": request(side="bid", ord_type="price", price=D("1E+1000000")),
+    "volume-tiny-exponent": request(side="ask", ord_type="market", volume=D("1E-1000000")),
+    "lowercase-market": request(market="krw-btc", side="bid", ord_type="price", price=D("10000")),
+    "market-without-dash": request(market="KRWBTC", side="bid", ord_type="price", price=D("10000")),
+    "two-markets": request(
+        market="KRW-BTC,KRW-ETH", side="bid", ord_type="price", price=D("10000")
+    ),
+    "market-with-space": request(market="KRW-BTC ", side="bid", ord_type="price", price=D("10000")),
     "empty-identifier": request(identifier="", side="bid", ord_type="price", price=D("10000")),
     "identifier-65-chars": request(
         identifier="uat-" + "a" * 61, side="bid", ord_type="price", price=D("10000")
@@ -1053,6 +1086,9 @@ def test_closed_orders_in_the_window_are_listed_without_trades(exchange):
     # 밀리초 타임스탬프로 보낸다(ISO 8601의 `:`·`+` 인코딩 실수를 피한다, 매매 로직 명세 11장).
     assert params["start_time"] == ms(start)
     assert params["end_time"] == ms(end)
+    # 한 번에 최대 1,000개를 오래된 것부터 받는다.
+    assert params["limit"] == "1000"
+    assert params["order_by"] == "asc"
 
 
 def test_closed_orders_outside_the_window_are_not_listed(exchange):
@@ -1240,3 +1276,465 @@ def test_exchange_calls_and_failures_leave_no_secrets_in_logs_or_errors(exchange
         assert find_canaries(text, secrets) == []
         assert JWT_SHAPE.search(text) is None
         assert "Bearer " not in text
+
+
+# --- 주문 값 문자열(정밀도와 무관) ----------------------------------------------------------
+
+
+def test_long_price_keeps_its_last_digit():
+    from autotrader.adapters.upbit.exchange import order_body
+
+    # 28자리(기본 정밀도)를 넘어도 끝 자리를 잃지 않는다(반올림해 다른 값을 보내지 않는다).
+    req = request(side="bid", ord_type="price", price=D("100.000000000000000000000000001"))
+
+    assert order_body(req)["price"] == "100.000000000000000000000000001"
+
+
+def test_volume_with_8_decimals_beyond_28_digits_is_kept_exactly():
+    from autotrader.adapters.upbit.exchange import order_body
+
+    req = request(side="ask", ord_type="market", volume=D("123456789012345678901.12345678"))
+
+    assert order_body(req)["volume"] == "123456789012345678901.12345678"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1" * 40, "1" * 40),
+        ("0." + "0" * 38 + "1", "0." + "0" * 38 + "1"),
+        ("1E+39", "1" + "0" * 39),
+        ("10000.00000000", "10000"),
+        ("0.0010", "0.001"),
+        ("5E+3", "5000"),
+    ],
+    ids=["40-digits", "40-digits-fraction", "exp-40-digits", "trailing-zeros", "frac-zero", "exp"],
+)
+def test_plain_number_keeps_values_up_to_40_digits(value, expected):
+    from autotrader.adapters.upbit.exchange import plain_number as to_wire
+
+    assert to_wire(D(value), "price") == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["1" * 41, "0." + "0" * 39 + "1", "1E+40", "1E+1000000", "1E-1000000", "9" * 100],
+    ids=["41-digits", "41-digits-fraction", "exp-41-digits", "huge-exp", "tiny-exp", "100-digits"],
+)
+def test_plain_number_rejects_more_than_40_digits_with_value_error(value):
+    from autotrader.adapters.upbit.exchange import plain_number as to_wire
+
+    # ArithmeticError(decimal 신호)가 새지 않고 ValueError다.
+    with pytest.raises(ValueError):  # noqa: PT011
+        to_wire(D(value), "price")
+
+
+@settings(max_examples=200, deadline=None)
+@given(
+    digits=st.integers(min_value=1, max_value=10**20),
+    exponent=st.integers(min_value=-19, max_value=19),
+)
+def test_plain_number_round_trips_exactly(digits, exponent):
+    from autotrader.adapters.upbit.exchange import plain_number as to_wire
+
+    value = D((0, tuple(int(c) for c in str(digits)), exponent))
+
+    textual = to_wire(value, "price")
+
+    assert PLAIN_NUMBER.fullmatch(textual), textual
+    assert D(textual) == value
+    assert not textual.endswith("0") or "." not in textual
+
+
+# --- 응답 모양 오류(2xx에서도 UpbitServerError) ---------------------------------------------
+
+
+def _shape_error(env, path, edit, call):
+    env.rewrite_response(path, edit)
+
+    async def scenario(api):
+        with pytest.raises(UpbitServerError) as caught:
+            await call(api)
+        return caught.value
+
+    error = env.run(scenario)
+    # 원래 예외(응답 값이 든 traceback)를 잇지 않는다.
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    return error
+
+
+def _set(key, value):
+    def edit(data):
+        data[key] = value
+
+    return edit
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        _set("created_at", "0001-01-01T00:00:00+09:00"),  # UTC로 바꾸면 OverflowError
+        _set("created_at", "2026-11-05T09:00:00"),  # 시간대 없음
+        _set("executed_volume", "NaN"),
+        _set("trades_count", "1.5"),
+        lambda data: data.pop("uuid"),
+    ],
+    ids=["created-at-overflow", "created-at-naive", "nan", "trades-count-fraction", "no-uuid"],
+)
+def test_created_order_with_a_bad_answer_is_a_server_error_sent_once(exchange, edit):
+    error = _shape_error(
+        exchange, "/v1/orders", edit, lambda api: api.create_order(market_buy(ID1))
+    )
+
+    # 201로 접수됐어도 응답을 못 읽으면 UpbitServerError다(결과 불명 판단은 상위 계층).
+    assert error.http_status == 201
+    assert len(exchange.sent("POST", "/v1/orders")) == 1
+    assert exchange.server.orders_received(ID1) == 1
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "sNaN", "inf", "-nan"])
+def test_non_finite_number_strings_are_a_server_error(exchange, value):
+    exchange.server.chance("KRW-BTC", bid_fee=value)
+
+    async def scenario(api):
+        with pytest.raises(UpbitServerError) as caught:
+            await api.get_order_chance("KRW-BTC")
+        return caught.value
+
+    error = exchange.run(scenario)
+
+    assert error.http_status == 200
+    assert error.__context__ is None
+
+
+def test_order_needs_only_the_documented_required_fields(exchange):
+    # 업비트 Order 스키마의 required(문서 예시 모두 포함)만 있으면 읽는다. 나머지는 None(모름).
+    required = {
+        "market",
+        "uuid",
+        "side",
+        "ord_type",
+        "state",
+        "created_at",
+        "remaining_volume",
+        "executed_volume",
+        "reserved_fee",
+        "remaining_fee",
+        "paid_fee",
+        "locked",
+        "trades_count",
+        "prevented_volume",
+        "prevented_locked",
+    }
+
+    def keep_required(data):
+        for key in set(data) - required:
+            del data[key]
+
+    exchange.rewrite_response("/v1/orders", keep_required)
+
+    snapshot = exchange.run(lambda api: api.create_order(limit_buy(ID1)))
+
+    assert snapshot.identifier is None
+    assert snapshot.price is None
+    assert snapshot.volume is None
+    assert snapshot.time_in_force is None
+    assert snapshot.smp_type is None
+    assert snapshot.trades is None
+    assert snapshot.trades_count == 0
+
+
+@pytest.mark.parametrize(
+    "key", ["uuid", "market", "side", "ord_type", "state", "created_at", "trades_count"]
+)
+def test_order_without_an_identity_field_is_a_server_error(exchange, key):
+    # 이 필드들은 Order 스키마의 required이고 OrderSnapshot에서 None이 아니다.
+    def drop(data):
+        for item in data:
+            del item[key]
+
+    exchange.rewrite_response("/v1/orders/open", drop)
+
+    async def scenario(api):
+        await api.create_order(limit_buy(ID1))
+        with pytest.raises(UpbitServerError):
+            await api.list_open_orders()
+
+    exchange.run(scenario)
+
+
+# --- get_order_chance: 주문 가능 잔고 -------------------------------------------------------
+
+
+def test_chance_reads_the_orderable_balances(exchange):
+    exchange.server.set_accounts(
+        [
+            {
+                "currency": "KRW",
+                "balance": "123456.7",
+                "locked": "5000.1",
+                "avg_buy_price": "0",
+                "avg_buy_price_modified": False,
+                "unit_currency": "KRW",
+            },
+            {
+                "currency": "BTC",
+                "balance": "0.5",
+                "locked": "0.00000001",
+                "avg_buy_price": "140000000",
+                "avg_buy_price_modified": False,
+                "unit_currency": "KRW",
+            },
+        ]
+    )
+
+    async def scenario(api):
+        return await api.get_order_chance("KRW-BTC"), await api.get_order_chance("KRW-ETH")
+
+    btc, eth = exchange.run(scenario)
+
+    # live의 주문 가능 원화는 bid_account.balance다(매매 로직 명세 7장).
+    assert (btc.bid_balance, btc.bid_locked) == (D("123456.7"), D("5000.1"))
+    assert (btc.ask_balance, btc.ask_locked) == (D("0.5"), D("0.00000001"))
+    assert (eth.ask_balance, eth.ask_locked) == (D("0"), D("0"))
+    assert_decimal_fields(btc)
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda data: data.pop("bid_account"),
+        lambda data: data["ask_account"].pop("balance"),
+        lambda data: data["bid_account"].pop("locked"),
+        _set("bid_account", None),
+    ],
+    ids=["no-bid-account", "no-ask-balance", "no-bid-locked", "bid-account-null"],
+)
+def test_chance_without_the_required_account_values_is_a_server_error(exchange, edit):
+    # 문서 스키마에서 bid_account·ask_account와 그 balance·locked는 required다.
+    _shape_error(exchange, "/v1/orders/chance", edit, lambda api: api.get_order_chance("KRW-BTC"))
+
+
+@pytest.mark.parametrize("market", ["krw-btc", "KRWBTC", "KRW-BTC,KRW-ETH", "", "KRW-BTC "])
+def test_chance_for_a_malformed_market_is_rejected_before_sending(exchange, market):
+    async def scenario(api):
+        with pytest.raises(ValueError):  # noqa: PT011
+            await api.get_order_chance(market)
+
+    exchange.run(scenario)
+    assert exchange.sent() == []
+
+
+# --- get_order: 404의 다른 이름 ------------------------------------------------------------
+
+
+def test_get_order_404_with_another_name_is_raised_as_not_found(exchange):
+    exchange.server.unknown_error("some_other_not_found", 404)
+
+    async def scenario(api):
+        with pytest.raises(UpbitNotFound) as caught:
+            await api.get_order(identifier=NEVER)
+        return caught.value
+
+    error = exchange.run(scenario)
+
+    # order_not_found만 None이다. 다른 이름의 404는 그대로 낸다.
+    assert error.error_name == "some_other_not_found"
+
+
+# --- list_open_orders: 쪽 넘김 --------------------------------------------------------------
+
+
+def _open_params(env):
+    return [env.params(r) for r in env.sent("GET", "/v1/orders/open")]
+
+
+def _make_limit_orders(count):
+    async def scenario(api):
+        for n in range(count):
+            await api.create_order(limit_buy(f"uat-l-261105000000-{n:08x}"))
+        return await api.list_open_orders()
+
+    return scenario
+
+
+def test_open_orders_send_page_limit_and_ascending_order(exchange):
+    assert exchange.run(lambda api: api.list_open_orders("KRW-BTC")) == []
+
+    [params] = _open_params(exchange)
+    assert params == [
+        ("market", "KRW-BTC"),
+        ("states[]", "wait"),
+        ("states[]", "watch"),
+        ("page", "1"),
+        ("limit", "100"),
+        ("order_by", "asc"),
+    ]
+
+
+@pytest.mark.parametrize(("count", "pages"), [(0, 1), (99, 1), (100, 2), (101, 2)])
+def test_open_orders_follow_pages_until_a_short_one(exchange, count, pages):
+    orders = exchange.run(_make_limit_orders(count))
+
+    # 오래된 것부터 빠짐없이, 한 번씩.
+    assert [o.identifier for o in orders] == [f"uat-l-261105000000-{n:08x}" for n in range(count)]
+    sent = _open_params(exchange)
+    assert len(sent) == pages
+    assert [dict(p)["page"] for p in sent] == [str(n) for n in range(1, pages + 1)]
+    assert all(dict(p)["limit"] == "100" and dict(p)["order_by"] == "asc" for p in sent)
+
+
+def _docs_order() -> dict[str, Any]:
+    data = json.loads((DOCS_EXAMPLES / "list-open-orders.json").read_text(encoding="utf-8"))
+    return data["example"][0]
+
+
+def _serve_pages(pages):
+    """/v1/orders/open이 쪽마다 pages[n]개의 uuid로 된 주문을 돌려주게 한다(쪽이 다하면 빈 목록)."""
+    calls = itertools.count()
+    template = _docs_order()
+
+    def edit(data):
+        n = next(calls)
+        data.clear()
+        uuids = pages[n] if n < len(pages) else []
+        data.extend({**template, "uuid": u} for u in uuids)
+
+    return edit
+
+
+def test_open_orders_drop_an_order_seen_on_two_pages(exchange):
+    first = [f"u-{n}" for n in range(100)]
+    second = ["u-99", "u-100"]  # 쪽 사이에 목록이 밀려 같은 주문이 다시 왔다
+    exchange.rewrite_response("/v1/orders/open", _serve_pages([first, second]))
+
+    orders = exchange.run(lambda api: api.list_open_orders())
+
+    assert [o.uuid for o in orders] == [*first, "u-100"]
+    assert len(_open_params(exchange)) == 2
+
+
+def test_open_orders_stop_with_an_error_after_100_full_pages(exchange):
+    pages = [[f"u-{p}-{n}" for n in range(100)] for p in range(101)]
+    exchange.rewrite_response("/v1/orders/open", _serve_pages(pages))
+
+    async def scenario(api):
+        with pytest.raises(UpbitServerError):
+            await api.list_open_orders()
+
+    exchange.run(scenario)
+
+    # 일부만 돌려주지 않는다. 100쪽에서 멈추고 101쪽은 묻지 않는다.
+    assert len(_open_params(exchange)) == 100
+
+
+@pytest.mark.parametrize("market", ["krw-btc", "KRW-BTC,KRW-ETH", ""])
+def test_open_orders_for_a_malformed_market_are_rejected_before_sending(exchange, market):
+    async def scenario(api):
+        with pytest.raises(ValueError):  # noqa: PT011
+            await api.list_open_orders(market)
+
+    exchange.run(scenario)
+    assert exchange.sent() == []
+
+
+# --- list_closed_orders: 1,000개 한도 -------------------------------------------------------
+
+
+def _serve_closed(count):
+    template = {**_docs_order(), "state": "done", "created_at": "2026-11-05T09:00:00+09:00"}
+
+    def edit(data):
+        data.clear()
+        data.extend({**template, "uuid": f"c-{n}"} for n in range(count))
+
+    return edit
+
+
+def test_closed_orders_just_under_the_limit_are_returned(exchange):
+    exchange.rewrite_response("/v1/orders/closed", _serve_closed(999))
+
+    orders = exchange.run(
+        lambda api: api.list_closed_orders(market=None, start=START, end=START + timedelta(hours=1))
+    )
+
+    assert len(orders) == 999
+
+
+def test_closed_orders_filling_the_limit_fail_instead_of_being_cut(exchange):
+    exchange.rewrite_response("/v1/orders/closed", _serve_closed(1000))
+
+    async def scenario(api):
+        with pytest.raises(UpbitServerError) as caught:
+            await api.list_closed_orders(market=None, start=START, end=START + timedelta(hours=1))
+        return caught.value
+
+    error = exchange.run(scenario)
+
+    # 1,000개가 꽉 차면 잘렸을 수 있다. 일부만 돌려주지 않고 구간을 나누라고 알린다.
+    assert "구간을 나눠 다시 조회" in str(error)
+    assert len(exchange.sent("GET", "/v1/orders/closed")) == 1
+
+
+@pytest.mark.parametrize("market", ["krw-btc", "KRW-BTC,KRW-ETH", ""])
+def test_closed_orders_for_a_malformed_market_are_rejected_before_sending(exchange, market):
+    async def scenario(api):
+        with pytest.raises(ValueError):  # noqa: PT011
+            await api.list_closed_orders(market=market, start=START, end=START)
+
+    exchange.run(scenario)
+    assert exchange.sent() == []
+
+
+# --- list_api_keys: 실패 경로의 비밀 --------------------------------------------------------
+
+
+API_KEY_BREAKAGES = {
+    # 다른 키의 만료 시각이 깨졌다(자기 키는 이미 읽은 뒤).
+    "other-expiry": lambda own, other: (
+        lambda items: items.append({"access_key": other, "expire_at": "not-a-date"})
+    ),
+    # 다른 키 줄이 객체가 아니다.
+    "other-not-object": lambda own, other: lambda items: items.append(["access_key", other]),
+    # 자기 키 줄의 만료 시각이 없다.
+    "own-expiry-missing": lambda own, other: (
+        lambda items: [
+            items[0].pop("expire_at"),
+            items.append({"access_key": other, "expire_at": "2027-01-31T09:00:00+09:00"}),
+        ]
+    ),
+    # 다른 키의 access_key가 문자열이 아니다(자기 키 비교 중).
+    "other-key-not-text": lambda own, other: (
+        lambda items: items.append(
+            {"access_key": [other], "expire_at": "2027-01-31T09:00:00+09:00"}
+        )
+    ),
+}
+
+
+@pytest.mark.parametrize("breakage", API_KEY_BREAKAGES.values(), ids=API_KEY_BREAKAGES.keys())
+def test_api_key_shape_errors_leave_no_key_in_the_traceback(exchange, caplog, breakage):
+    caplog.set_level(logging.DEBUG)
+    other = make_upbit_credentials()
+    edit = breakage(exchange.creds.access_key, other.access_key)
+
+    error = _shape_error(exchange, "/v1/api_keys", edit, lambda api: api.list_api_keys())
+
+    # 지역 변수까지 찍는 traceback(capture_locals)에도 전체 Access Key가 없다(INV-07).
+    report = traceback.TracebackException.from_exception(error, capture_locals=True)
+    text = "".join(report.format())
+    secrets = [exchange.creds.access_key, exchange.creds.secret_key, other.access_key]
+    assert find_canaries(text, secrets) == []
+    assert find_canaries(f"{error!s} {error!r} {error.args!r}", secrets) == []
+    assert find_canaries(caplog.text, secrets) == []
+
+
+def test_without_a_key_provider_no_key_is_current(exchange):
+    exchange.own_key_known = False
+
+    keys = exchange.run(lambda api: api.list_api_keys())
+
+    assert len(keys) == 1
+    assert keys[0].is_current is False
+    assert keys[0].access_key_prefix == exchange.creds.access_key[:4]

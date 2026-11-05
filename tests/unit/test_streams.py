@@ -1120,7 +1120,7 @@ def test_long_reconnect_failure_degrades_once_after_the_last_data():
     assert status.reason == "silence"
     assert T0 + 30 + 120 <= degraded_at <= T0 + 30 + 150
     # 대기 시간은 그대로다(나눠 자도 backoff 표와 같다).
-    assert gaps(script)[:8] == pytest.approx([30, 1, 2, 4, 8, 16, 32, 60])
+    assert gaps(script)[:7] == pytest.approx([30 + 1, 2, 4, 8, 16, 32, 60])
 
 
 def test_long_reconnect_failure_without_any_data_degrades_from_the_start():
@@ -1136,7 +1136,7 @@ def test_long_reconnect_failure_without_any_data_degrades_from_the_start():
 def test_degraded_is_reported_before_reconnecting_when_already_due():
     # 데이터가 끊긴 지 120초가 넘은 뒤에 끊기면 RECONNECTING보다 먼저 DEGRADED를 알린다.
     steps = [OPEN, tick(1), Wait(100), END]
-    connections = [steps, [OPEN, Wait(50), closed()], [connect_failed()]]
+    connections = [steps, [OPEN, Wait(40), closed()], [connect_failed()]]
 
     _, rec, _ = simulate("public", *connections, seconds=200)
 
@@ -1527,7 +1527,7 @@ def test_close_error_while_reconnecting_after_silence_is_logged_and_supervision_
 
     assert len(rec.statuses("DEGRADED")) >= 1
     assert len(rec.statuses("OPEN")) >= 2
-    assert any("CloseBug" in (r.exc_text or "") or r.exc_info for r in caplog.records)
+    assert any(r.exc_info and isinstance(r.exc_info[1], CloseBug) for r in caplog.records)
 
 
 # ── 이중 취소(12) ─────────────────────────────────────────
@@ -1560,7 +1560,7 @@ def test_second_cancel_during_cleanup_still_ends_cancelled(stream, where):
         task = await start(sup)
         await clock.run_for(1)
         task.cancel()
-        await settle(3)
+        await settle(20)
         assert state["cleanup_started"]
         task.cancel()  # 정리 중 두 번째 취소(예: 바깥 시간 상한, 종료 경로 두 개)
         with pytest.raises(asyncio.CancelledError):

@@ -1,0 +1,75 @@
+{
+  "source": "https://docs.upbit.com/kr/reference/batch-cancel-orders.md",
+  "retrieved_at": "2026-11-05",
+  "doc_updated_at": "2026-11-04T07:45:51.000Z",
+  "method": "DELETE",
+  "path": "/v1/orders/open",
+  "status": 200,
+  "example_title": "Successful Example",
+  "example": {
+    "success": {
+      "count": 2,
+      "orders": [
+        {
+          "uuid": "bbbb8e07-1689-4769-af3e-a117016623f8",
+          "market": "KRW-ETH"
+        },
+        {
+          "uuid": "4312ba49-5f1a-4a01-9f3b-2d2bce17267e",
+          "market": "KRW-ETH"
+        }
+      ]
+    },
+    "failed": {
+      "count": 1,
+      "orders": [
+        {
+          "uuid": "bdb49a54-de36-4eb4-a963-9c8d4337a9da",
+          "market": "BTC-XRP"
+        }
+      ]
+    }
+  },
+  "error_examples": [
+    {
+      "status": 400,
+      "title": "body parameter not supported error",
+      "body": {
+        "error": {
+          "name": "QUERY_PARAMETER_NOT_SUPPORTED",
+          "message": "이 API는 쿼리 파라미터 형식의 요청만 지원합니다. 요청 본문에 값을 포함할 수 없습니다."
+        }
+      }
+    },
+    {
+      "status": 400,
+      "title": "invalid parameter error",
+      "body": {
+        "error": {
+          "name": "invalid_parameter",
+          "message": "잘못된 파라미터"
+        }
+      }
+    },
+    {
+      "status": 401,
+      "title": "unauthorized jwt error",
+      "body": {
+        "error": {
+          "name": "invalid_query_payload",
+          "message": "Failed to verify the query of Jwt."
+        }
+      }
+    },
+    {
+      "status": 404,
+      "title": "not found order error",
+      "body": {
+        "error": {
+          "name": "order_not_found",
+          "message": "주문을 찾지 못했습니다."
+        }
+      }
+    }
+  ]
+}

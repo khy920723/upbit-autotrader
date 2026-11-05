@@ -1,0 +1,18 @@
+{
+  "source": "https://docs.upbit.com/kr/reference/list-api-keys.md",
+  "retrieved_at": "2026-11-05",
+  "doc_updated_at": "2026-11-04T07:45:51.000Z",
+  "method": "GET",
+  "path": "/v1/api_keys",
+  "status": 200,
+  "example_title": "Successful Example",
+  "example": [
+    {
+      "access_key": "CANARY-PLACEHOLDER",
+      "expire_at": "2026-06-25T11:22:54+09:00"
+    }
+  ],
+  "replaced_with_placeholder": [
+    "$.example[0].access_key"
+  ]
+}

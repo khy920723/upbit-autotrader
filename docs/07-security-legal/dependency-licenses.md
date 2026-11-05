@@ -54,6 +54,7 @@
 | SecretStorage | 3.5.0 | BSD-3-Clause | Linux | Linux 전용(keyring의 Secret Service 백엔드). Windows 번들에 없음 |
 | shiboken6 | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Windows, Linux, macOS | PySide6 바인딩 런타임. 번들에 들어감 |
 | typing_extensions | 4.16.0 | PSF-2.0 | Windows, Linux, macOS | anyio 의존(Python 3.15 미만). 번들에 들어감 |
+| websockets | 17.4 | BSD-3-Clause | Windows, Linux, macOS | 직접 의존(업비트 웹소켓, ADR-0006). 번들에 들어감 |
 <!-- license-inventory:runtime:end -->
 
 ## 4. 개발·빌드 전용

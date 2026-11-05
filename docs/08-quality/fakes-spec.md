@@ -312,12 +312,17 @@
 | `utc_now()` | PC 시계. 기록용 |
 | `exchange_now()` | PC 시계 + 측정한 거래소 시각 오차. 날짜 경계 판단용. PC 시계가 바뀐 직후 다음 측정까지는 어긋날 수 있다(추적표 Q-14) |
 | `sleep(seconds)` | 가상 시간으로 깨어나는 대기 |
-| `advance(seconds)` | 가상 시간을 앞으로 보내고, 그 사이 깨어날 대기와 예약 작업을 시각 순서대로 실행 |
+| `advance(seconds)` | 가상 시간을 한 번에 앞으로 보내고, 그때 걸려 있던 대기 중 만기된 것을 (만기, 호출 순서)대로 깨운다(동기). 깨어난 태스크가 새로 거는 대기는 옮긴 뒤 시각 기준이라 1초 주기 루프는 `advance(10)`에서 한 번만 돈다 |
+| `run_for(seconds)` | 비동기. 만기 순서대로 시각을 그 만기로 옮겨 깨우고 이벤트 루프에 양보한 뒤 다음 만기로 간다. 각 대기가 자기 만기 시각을 보고, 1초 주기 루프는 `run_for(10)`에서 10번 돈다(3단계 구현) |
+| `true_utc_now()` | PC 오차를 뺀 실제 UTC. 가짜 서버의 서버 시각(`Date`, `created_at`) 기준이고 앱 코드는 쓰지 않는다(3단계 구현) |
 | `set_pc_offset(seconds)` | PC 시계만 틀어짐(거래소 시각과 monotonic은 그대로) → 시계 오차 시험 |
 | `jump_pc(seconds)` | 사용자가 PC 시계를 바꿈(monotonic은 그대로) |
 | `suspend(seconds, monotonic_advances)` | 잠자기. PC·거래소 시각은 흐르고, monotonic은 흐르는 경우와 멈추는 경우를 모두 고른다(Windows에서 어느 쪽인지 확인하지 못함, 9장) |
 
 - core는 `time.time()`, `time.monotonic()`, `datetime.now()`, `asyncio.sleep()`을 직접 부르지 않고 `Clock`을 거친다(구조 검사, INV-16).
+- 경과 시간은 정수 나노초로 보관한다. 초는 들어올 때 한 번만 나노초로 바꾸므로 소수 초를 나눠 더해도 만기가 맞는다. naive 시작 시각은 거부한다.
+- `auto_advance=True`(sleep이 즉시 시각을 옮김)는 순차 테스트 전용이다. 동시에 sleep한 태스크들의 대기 시간이 더해진다. FakeClock은 이벤트 루프 스레드에서만 움직인다.
+- 구조 검사(3단계)는 `asyncio.wait_for`·`asyncio.timeout`·`timeout_at`, 루프의 `call_later`·`call_at`·`time()`, `time` 모듈 import(core/clock.py 제외)도 막는다. 시간 상한이 필요해지면 `Clock`을 거치는 도우미를 만든다.
 - `asyncio.wait_for()`의 시간 상한은 이벤트 루프의 실제 시간을 쓴다. FakeClock으로 시험하려면 시간 상한도 `Clock`을 거치는 도우미로 만들거나, 테스트 이벤트 루프의 시간을 FakeClock에 묶는다. 방법은 구현 세션이 정한다.
 
 ### 5.2 경계값
@@ -371,7 +376,8 @@
 - **만들기:** 업비트 Access·Secret Key, Gemini 키, 네이버 Client Secret, 디스코드 웹후크 주소의 가짜 값을 테스트 실행 중에 만든다. 서비스별 형식(길이, 문자 종류, 디스코드 웹후크는 `https://discord.com/api/webhooks/<숫자>/<문자열>`)은 맞추고, 값 안에 고유 표식을 넣는다. 실제 형식과 같은 문자열을 소스와 문서에 상수로 적지 않는다(GitHub 비밀 검사 오탐 방지).
 - **넣기:** 가짜 `SecretStore`에 넣고 마법사·설정·주문·알림·오류 경로를 모두 지나는 시나리오를 돌린다.
 - **찾을 곳:** 로그 파일, DB의 모든 TEXT 열(특히 events.context_json, order_events.payload_json, signals.raw_response), 설정 파일과 백업(`.bak`), `self-test-report.txt`, CSV, 진단 묶음, FakeLLM이 받은 프롬프트, FakeNotifier가 보낸 글, 로그에 남은 예외 traceback.
-- **찾을 모양:** 원문, URL 인코딩, base64·base64url(시작 위치 3가지), JWT 모양(`eyJ...`로 시작하는 점 2개짜리 문자열), `Authorization`, `Bearer `, `discord.com/api/webhooks/`.
+- **찾을 모양:** 원문, URL 인코딩(`quote` 기본·`safe=""`·`quote_plus`, 소문자 퍼센트 인코딩), JSON 이스케이프(`\/`, `\uXXXX`), base64·base64url(시작 위치 3가지), 원문의 8자 이상 부분 문자열(앞 4자만 허용, INV-07), JWT 모양(`eyJ...`로 시작하는 점 2개짜리 문자열), `Authorization`, `Bearer `, `discord.com/api/webhooks/`.
+- **구현(3단계):** `tests/fakes/canary.py`의 `make_upbit_credentials(marker=None)`(두 키 모두 영숫자 40자), `find_canaries(text, values)`(값별 모양, 8자 미만 값은 거부), `find_secret_shapes(text)`(값과 무관한 모양. `no_authorization_ip` 같은 오류 이름은 걸리지 않게 단어 경계를 본다).
 
 ## 8. 구현 단계
 

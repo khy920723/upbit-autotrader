@@ -188,3 +188,17 @@ def test_write_never_fills_new_licenses_from_metadata(inventory):
     assert "runtime: winonly 라이선스를 확인해 적어야 한다" in inventory.check(
         updated, FAKE_LOCK, installed_license=lambda name: "MIT"
     )
+
+
+def test_forked_packages_must_be_checked_per_version(inventory):
+    """uv.lock이 같은 패키지를 플랫폼별로 다른 버전으로 잡으면(fork) 표 한 줄로는 확인할 수 없다."""
+    forked = {
+        "package": [
+            *FAKE_LOCK["package"],
+            {"name": "sub", "version": "1.5", "source": {"registry": "x"}},
+        ]
+    }
+
+    problems = inventory.check(GOOD_DOC, forked, installed_license=no_metadata)
+
+    assert any("sub" in problem and "여러 버전" in problem for problem in problems)

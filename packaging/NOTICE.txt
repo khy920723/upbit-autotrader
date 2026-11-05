@@ -4,6 +4,8 @@ Open source notices
 [이 앱 / This application]
 MIT 라이선스입니다. 원문: _internal\licenses\LICENSE
 Licensed under the MIT License. Text: _internal\licenses\LICENSE
+소스 코드 / Source code: https://github.com/khy920723/upbit-autotrader
+(빌드 방법은 저장소의 docs/09-operations/build-release.md / build steps are in that document)
 
 [Qt for Python(PySide6, Shiboken6) 6.12.0 / Qt 6.12.0]
 이 앱은 위 라이브러리를 GNU LGPL 버전 3으로 사용합니다. 라이브러리 파일은

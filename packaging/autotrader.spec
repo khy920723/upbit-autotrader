@@ -27,11 +27,14 @@ LICENSES = "licenses"
 # 오픈소스로는 GPL-3.0(또는 상용)으로만 제공되는 Qt 모듈의 바이너리 이름. 하나라도 번들에 들어가면
 # 배포 전체가 GPL 조건을 따라야 하므로 빌드를 멈춘다. Qt 6.12 Licensing 페이지의 목록에
 # 모듈 페이지 기준 GPL 전용인 Charts, Data Visualization을 더했다.
-# Qt6Quick3DSpatialAudio는 Qt Multimedia 소속(LGPL-3.0)이라 뺀다(GPL 전용인 Quick 3D에 의존한다).
+# Designer(Qt6Designer 등)는 GPL-3.0 + Qt GPL 예외(도구 출력만 예외)라 링크하면 GPL이다.
+# Quick 3D는 이름으로 고른다: Qt6Quick3DSpatialAudio(Qt Multimedia, LGPL)와
+# Qt 3D의 quick3dcoreplugin 등(LGPL)은 GPL 전용이 아니다.
 GPL_ONLY_QT_BINARY = re.compile(
     r"canvaspainter|coap|qt6graphs|graphswidgets|grpc|httpserver|lottie|mqtt|networkauth"
-    r"|qmlcompiler|quick3d(?!spatialaudio)|quicktimeline|virtualkeyboard|qtvkb|waylandcompositor"
-    r"|qt6charts|chartsqml|datavisualization",
+    r"|qmlcompiler|qt6quick3d(?!spatialaudio)|qtquick3d|qquick3d|quick3dxr|quick3dphysics"
+    r"|quick3dprofiler|assimp|quicktimeline|virtualkeyboard|qtvkb|waylandcompositor"
+    r"|qt6charts|chartsqml|datavisualization|designer",
     re.IGNORECASE,
 )
 
@@ -80,6 +83,31 @@ def foreign_modules(module_names, owners, allowed):
     return sorted(found)
 
 
+def without_software_opengl(binaries):
+    """opengl32sw.dll(Mesa llvmpipe 소프트웨어 OpenGL, 약 20MB)을 뺀다.
+
+    위젯 앱은 래스터로 그려 쓰지 않고, 넣으면 Mesa(MIT, BSL-1.0) 고지가 더 필요하다.
+    """
+    return [
+        entry
+        for entry in binaries
+        if entry[0].replace("\\", "/").rsplit("/", 1)[-1].lower() != "opengl32sw.dll"
+    ]
+
+
+def binaries_outside(binaries, roots):
+    """roots(Python 설치, 가상 환경, 저장소) 밖에서 모은 바이너리의 번들 경로.
+
+    PATH에 있던 다른 프로그램의 DLL(예: 러너의 OpenSSL)이 섞이는 것을 막는다.
+    """
+    prefixes = tuple(root.replace("\\", "/").lower().rstrip("/") + "/" for root in roots)
+    return sorted(
+        dest
+        for dest, source, _kind in binaries
+        if not str(source).replace("\\", "/").lower().startswith(prefixes)
+    )
+
+
 def license_files(distribution):
     dist = importlib.metadata.distribution(distribution)
     names = ("LICENSE", "LICENCE", "COPYING", "NOTICE")
@@ -126,10 +154,29 @@ a = Analysis(
     # PyInstaller의 jaraco 네임스페이스 처리가 setuptools(벤더링한 jaraco)를 끌어와
     # 개발·빌드 전용 패키지가 번들에 들어간다. 앱은 쓰지 않는다
     # (typing_extensions는 jaraco가 타입 검사 때만 import한다).
-    excludes=["setuptools", "_distutils_hack", "pkg_resources", "packaging", "typing_extensions"],
+    # QtNetwork는 PySide6/__init__.py가 실행되지 않는 분기에서 import해 끌려온다. 앱은 쓰지 않고
+    # (TLS는 Python ssl), 넣으면 OpenSSL DLL을 PATH에서 찾아 넣을 수 있다.
+    excludes=[
+        "setuptools",
+        "_distutils_hack",
+        "pkg_resources",
+        "packaging",
+        "typing_extensions",
+        "PySide6.QtNetwork",
+    ],
+    # LGPL-3.0 4(d)(1): PySide6·shiboken6의 Python 부분도 exe(PYZ) 밖 .py로 두어 바꿀 수 있게 한다.
+    module_collection_mode={"PySide6": "py", "shiboken6": "py"},
     noarchive=False,
     optimize=0,
 )
+
+a.binaries = without_software_opengl(a.binaries)
+
+if sys.platform == "win32":
+    roots = [sys.base_prefix, sys.prefix, *sysconfig.get_paths().values(), str(ROOT)]
+    foreign = binaries_outside(a.binaries, roots)
+    if foreign:
+        raise SystemExit("Python·패키지 밖에서 가져온 바이너리가 있습니다: " + ", ".join(foreign))
 
 gpl_only = sorted(
     dest

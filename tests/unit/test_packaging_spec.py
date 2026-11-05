@@ -218,6 +218,12 @@ def hook_excludes(repo_root):
         "Qt6Grpc.dll",
         "Qt6QmlCompiler.dll",
         "Qt6WaylandCompositor.dll",
+        "Qt6Designer.dll",
+        "Qt6DesignerComponents.dll",
+        "designer.exe",
+        "qquick3dplugin.dll",
+        "qtquick3dhelpersplugin.dll",
+        "assimp.dll",
     ],
 )
 def test_guard_flags_gpl_only_qt_binaries(gpl_only_pattern, name):
@@ -239,6 +245,11 @@ def test_guard_flags_gpl_only_qt_binaries(gpl_only_pattern, name):
         "Qt6Pdf.dll",
         "Qt6SpatialAudio.dll",
         "Qt6Quick3DSpatialAudio.dll",
+        "quick3dspatialaudioplugin.dll",
+        "quick3dcoreplugin.dll",
+        "quick3drenderplugin.dll",
+        "quick3dextrasplugin.dll",
+        "Qt6UiTools.dll",
         "libQt6WaylandClient.so.6",
         "qwindows.dll",
         "qoffscreen.dll",
@@ -324,6 +335,7 @@ def test_build_checks_that_notice_targets_exist(spec_text):
         r"_internal\licenses\dependency-licenses.md",
         "https://code.qt.io/cgit/pyside/pyside-setup.git/",
         "https://github.com/qt/qt5/tree/v6.12.0",
+        "https://github.com/khy920723/upbit-autotrader",
     ],
 )
 def test_notice_names_the_lgpl_libraries_texts_and_sources(repo_root, needed):
@@ -354,6 +366,7 @@ def test_analysis_excludes_build_only_packages(calls):
         "pkg_resources",
         "packaging",
         "typing_extensions",
+        "PySide6.QtNetwork",
     } <= set(excludes)
 
 
@@ -398,3 +411,38 @@ def test_spec_checks_bundled_modules_against_runtime_dependencies(spec_text):
 
     assert ast.unparse(guard.value.func) == "foreign_modules"
     assert "importlib.metadata.packages_distributions()" in ast.unparse(guard.value)
+
+
+# --- 그 밖의 번들 내용 --------------------------------------------------------------
+
+
+def test_software_opengl_dll_is_dropped(spec_text):
+    # opengl32sw.dll(Mesa llvmpipe, 20MB)은 위젯 앱에 필요 없고 고지 의무만 늘린다.
+    drop = spec_function(spec_text, "without_software_opengl")
+    binaries = [
+        ("PySide6/opengl32sw.dll", "C:/sp/PySide6/opengl32sw.dll", "BINARY"),
+        ("PySide6/Qt6Core.dll", "C:/sp/PySide6/Qt6Core.dll", "BINARY"),
+    ]
+
+    assert drop(binaries) == [binaries[1]]
+    assert "a.binaries = without_software_opengl(a.binaries)" in spec_text
+
+
+def test_pyside_python_parts_stay_replaceable(calls):
+    # LGPL-3.0 4(d)(1): PySide6·shiboken6의 .py도 exe(PYZ) 밖에 두어 사용자가 바꿀 수 있게 한다.
+    assert keyword(calls["Analysis"], "module_collection_mode") == {
+        "PySide6": "py",
+        "shiboken6": "py",
+    }
+
+
+def test_windows_build_rejects_binaries_from_outside_python_and_packages(spec_text):
+    outside = spec_function(spec_text, "binaries_outside")
+    roots = ["C:/Python313", "D:/a/repo/.venv/Lib/site-packages"]
+    binaries = [
+        ("python313.dll", "C:/Python313/python313.dll", "BINARY"),
+        ("PySide6/Qt6Core.dll", "D:/a/repo/.venv/Lib/site-packages/PySide6/Qt6Core.dll", "BINARY"),
+        ("libssl-3-x64.dll", "C:/Program Files/OpenSSL/bin/libssl-3-x64.dll", "BINARY"),
+    ]
+
+    assert outside(binaries, roots) == ["libssl-3-x64.dll"]

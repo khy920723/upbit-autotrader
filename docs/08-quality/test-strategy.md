@@ -14,7 +14,7 @@
 |---|---|---|---|
 | 단위 | JWT 서명·query_hash(알려진 값), 호가 단위 반올림, 위험 한도, 규칙 조건, LLM 출력 검증, 상태 전이, 비밀 가리기 | pytest | 클라우드 세션, ci.yml |
 | 통합 | 가짜 거래소 + 주문 관리(타임아웃·재조정), 가짜 LLM, 가짜 뉴스, 가짜 시계 + 스케줄러, SQLite | pytest | 클라우드 세션, ci.yml |
-| 속성 기반 | [불변식](invariants.md)(INV-01~INV-19): 임의 입력·임의 사건 순서에서 위험 한도, 주문 안전, 비밀 보호가 깨지지 않음 | hypothesis(dev 그룹 추가 필요) | 클라우드 세션, ci.yml |
+| 속성 기반 | [불변식](invariants.md)(INV-01~INV-20): 임의 입력·임의 사건 순서에서 위험 한도, 주문 안전, 비밀 보호가 깨지지 않음 | hypothesis(dev 그룹 추가 필요) | 클라우드 세션, ci.yml |
 | 화면 | 마법사 흐름, 대시보드 상태 표시, 버튼 동작 | pytest-qt(offscreen) | 클라우드 세션, ci.yml |
 | 패키징 | exe 실행, `--self-test` | build-exe.yml | Windows 러너 |
 | 규칙 백테스트 | 규칙·위험 관리 부분만(LLM 제외) | 백테스트 도구 | 클라우드 세션(api.upbit.com 시세) |
@@ -44,7 +44,7 @@
 - `core` 패키지 줄 커버리지 80% 이상(초안). 위험 관리·주문 관리는 분기 커버리지 100%를 목표로 한다.
 - 커버리지는 pytest-cov로 잰다. CI에 넣는 변경은 [CI 변경 제안](../10-management/ci-proposals.md)에 있고 2단계에서 반영한다.
 - PR은 ci.yml이 통과해야 병합한다. 코드나 패키징이 바뀐 PR은 build-exe.yml도 통과해야 한다.
-- 불변식(INV-01~INV-19)은 [불변식 명세](invariants.md)에 정한 방법(단위, 속성 기반, 통합, 구조 검사)으로 증명한다.
+- 불변식(INV-01~INV-20)은 [불변식 명세](invariants.md)에 정한 방법(단위, 속성 기반, 통합, 구조 검사)으로 증명한다.
 - 요구사항과 테스트의 연결은 [추적표](traceability.md)로 관리하고, PR은 [PR 검토 기준](review-checklist.md)으로 검토한다.
 
 ## 6. 테스트하지 않는 것

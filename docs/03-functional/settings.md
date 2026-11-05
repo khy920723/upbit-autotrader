@@ -1,6 +1,6 @@
 # 설정 항목 정의서
 
-상태: 초안(1단계 제안 반영, 사용자 결정 대기: D-042 파일 형식, D-044 실행 모드 저장 위치, D-039 매수 방식, D-043 주문 유형, D-021 규칙 조건) · 관련: [화면 정의서](../02-ux/screen-spec.md), [위험 관리 정책서](risk-policy.md), [보안 정책](../07-security-legal/security-policy.md)
+상태: 초안(1단계 제안 반영, 사용자 결정 대기: D-042 파일 형식, D-044 실행 모드 저장 위치, D-086 2단계 하락률 기본값, D-021 규칙 조건) · 관련: [화면 정의서](../02-ux/screen-spec.md), [위험 관리 정책서](risk-policy.md), [보안 정책](../07-security-legal/security-policy.md)
 
 ## 1. 저장 위치
 
@@ -32,7 +32,8 @@
   "schema_version": 1,
   "coins": ["KRW-BTC", "KRW-ETH"],
   "signal": { "interval_hours": 4, "confidence_threshold": 0.7, "sell_on_negative": false },
-  "buy": { "method": "single", "split_count": 2 },
+  "buy": { "step_pcts": [100], "next_step_drop_pct": null },
+  "sell": { "take_profit_steps": [] },
   "risk": { "budget_per_coin_krw": 10000, "stop_loss_pct": "5.0" }
 }
 ```
@@ -47,7 +48,7 @@
 | 형식·검증 오류 | 매매를 시작하지 않고 시작 점검 결과(SCR-07)에 오류를 보여 준다. 사용자는 [백업에서 복원]과 [마법사 다시 실행] 중에서 고른다. [백업에서 복원]은 `settings.json.bak`을 되살린다. 기본값으로 조용히 바꾸지 않는다 |
 | `schema_version`이 앱보다 낮음 | 자동으로 옮기고(마이그레이션) 이전 파일을 `backup\settings.v{번호}.json`으로 남긴다 |
 | `schema_version`이 앱보다 높음 | 새 버전 앱이 만든 파일이다. 매매를 시작하지 않고 안내한다. 파일을 덮어쓰지 않는다 |
-| 앱 밖에서 고쳐짐(DB의 `settings_applied_json`과 다름) | 바뀐 항목을 이벤트(SETTING_EXTERNAL_CHANGE)로 남긴다. 위험 한도를 엄격하게 바꾼 값만 바로 적용한다. 나머지(위험 한도 완화, `coins`, `buy.*`, `signal.*`, `llm.*` 등)는 이전 값으로 매매하면서 대시보드에서 확인을 받은 뒤 적용한다(완화는 MSG-C006). 보유 중인 코인이 `coins`에서 빠졌으면 MSG-C007 응답 전까지 계속 관리한다. 외부에서 바꾼 값도 화면 저장과 같은 검사(예산 하한, 분할 매수 조건)를 하고, 못 맞추면 이전 값을 유지한다(D-068) |
+| 앱 밖에서 고쳐짐(DB의 `settings_applied_json`과 다름) | 바뀐 항목을 이벤트(SETTING_EXTERNAL_CHANGE)로 남긴다. 위험 한도를 엄격하게 바꾼 값만 바로 적용한다. 나머지(위험 한도 완화, `coins`, `buy.*`, `sell.*`, `signal.*`, `llm.*` 등)는 이전 값으로 매매하면서 대시보드에서 확인을 받은 뒤 적용한다(완화는 MSG-C006). 보유 중인 코인이 `coins`에서 빠졌으면 MSG-C007 응답 전까지 계속 관리한다. 외부에서 바꾼 값도 화면 저장과 같은 검사(예산 하한, 분할 매수 조건)를 하고, 못 맞추면 이전 값을 유지한다(D-068) |
 
 ## 2. 항목
 
@@ -88,22 +89,23 @@
 | 키 | 설명 | 기본값 | 범위 |
 |---|---|---|---|
 | `rules.*` | 규칙 조건 종류와 파라미터 | ADR-0007 확정 후 정의(D-021 대기) | - |
-| `buy.method` | 매수 방식: `single`(한 번에), `split`(분할) | single | single, split([ADR-0008](../06-architecture/adr/0008-buy-method.md), D-039 대기) |
-| `buy.split_count` | 분할 회차 수(`split`일 때만 씀) | 2 | 2, 3. 회차 금액(코인별 예산 ÷ 회차 수, 원 단위 내림) ≥ 예산 하한이어야 저장된다. 못 맞추면 MSG-E015 |
+| `buy.step_pcts` | 매수 단계별 비율(%). `[100]`이면 한 번에 산다(D-082) | `[100]` | 1~2개(D-083), 1% 단위 정수, 합 100. 단계 금액(내림(코인별 예산 × 비율 ÷ 100)) ≥ 예산 하한이어야 저장된다. 못 맞추면 MSG-E015 |
+| `buy.next_step_drop_pct` | 2단계 하락률(%): 시그널 평가 때 매수 조건을 다시 만족하고 현재가가 평균 단가보다 이만큼 이상 낮을 때만 2단계를 산다(D-084) | 없음(D-086 대기) | 매수가 2단계면 꼭 입력. 0 < 하락률 < 손절%. 화면에 MSG-W013을 늘 보인다 |
+| `sell.take_profit_steps` | 익절 단계: 발동 수익률(%)과 매도 비율(%). 비우면 익절 꺼짐(D-085) | 비어 있음 | 0~2개(D-083). 발동 수익률 0.5~500이고 단계마다 커야 한다. 매도 비율 1% 단위 정수, 합 100. 나눠 판 뒤 남는 원가 ≥ 예산 하한이어야 저장된다 |
 | `exit.*` | 규칙상 청산 조건 | ADR-0007 확정 후 정의 | - |
 
-신규 매수 주문 유형(최유리 FOK)과 매도 주문 유형(시장가)은 설정이 아니라 고정 동작이다([매매 로직 명세](trading-logic.md) 6장, D-043 대기).
+신규 매수 주문 유형(최유리 FOK)과 매도 주문 유형(시장가)은 설정이 아니라 고정 동작이다([매매 로직 명세](trading-logic.md) 6장, D-043).
 
-분할 매수·매도 재설계 제안이 있다([분할 매수·매도 설계 제안](split-trading.md) 3장, D-082~D-085 대기). 고르면 `buy.method`·`buy.split_count`·`risk.take_profit_pct`를 단계 입력 항목으로 바꾼다.
+- 단계 계획(`buy.*`, `sell.*`)은 포지션을 열 때 고정한다. 바꾸면 다음 포지션부터 적용하고 MSG-I010으로 알린다. 저장 검사 S1~S7과 실패 문구(MSG-E015, MSG-E020)는 [분할 매수·매도 설계](split-trading.md) 3.2에 있다.
+- 이전의 `buy.method`, `buy.split_count`, `risk.take_profit_pct`는 쓰지 않는다(D-082).
 
 ### 위험 한도
 
 | 키 | 설명 | 기본값(초안) | 범위 |
 |---|---|---|---|
-| `risk.budget_per_coin_krw` | 코인별 예산 | 10,000 | ≥ 예산 하한: 최소 주문 금액 ÷ (1 − 손절%/100) × 1.1. 분할 매수면 회차당 금액 기준(ADR-0008 표) |
+| `risk.budget_per_coin_krw` | 코인별 예산 | 10,000 | ≥ 예산 하한: 최소 주문 금액 ÷ (1 − 손절%/100) × 1.1. 매수 2단계면 단계마다, 익절을 나누면 나눠 판 뒤 남는 금액도 이 기준([분할 매수·매도 설계](split-trading.md) 3.2) |
 | `risk.max_total_exposure_krw` | 전체 노출 상한 | 30,000 | ≥ 코인별 예산 |
 | `risk.stop_loss_pct` | 손절 비율(%) | 5.0 | 0.5~50 |
-| `risk.take_profit_pct` | 익절 비율(%), 비우면 꺼짐 | 꺼짐 | 0.5~500 |
 | `risk.daily_loss_limit_krw` | 일일 손실 한도 | 3,000 | > 0 |
 | `risk.min_order_interval_sec` | 같은 코인 최소 주문 간격 | 60 | ≥ 10 |
 | `risk.max_orders_per_day` | 일일 주문 수 상한 | 20 | 1~100 |

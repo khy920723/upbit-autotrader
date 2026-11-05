@@ -102,6 +102,7 @@
 | 지정가(`ord_type=limit`) | 바로 체결되는 부분만 체결, 나머지는 대기 | `wait`. 앱은 쓰지 않는다. 사용자 수동 주문을 흉내 낼 때 쓴다 |
 
 - **수수료:** 체결 금액 × 수수료율을 `paid_fee`에 넣는다.
+- **익절 단계:** 수량 일부를 시장가로 팔 때도 매수호가를 위에서부터 소진해 계산한다(D-085, TS-149).
 - **SMP:** 같은 계정의 반대 방향 대기 주문(수동 지정가)과 맞부딪치면 테이커 주문의 `smp_type`을 따른다. `cancel_maker`면 대기 주문을 취소하고(`prevented_volume`, `prevented_locked`) 앱 주문은 진행한다. myOrder에는 `prevented`를 보낸다.
 - **시각:** `created_at`과 체결 시각은 FakeClock의 거래소 시각(KST 표기)으로 만든다.
 
@@ -132,7 +133,7 @@
 | 시장 정보 | `market_event(market, warning, caution)` | `warning`만 참, `caution` 일부만 참, 모르는 caution 키 추가 | TS-25, TS-102 |
 | | `market_removed(market)` | 마켓이 종목 목록과 시세 API에서 사라진다(그 마켓을 포함한 여러 마켓 ticker 요청은 전체 404) | TS-104 |
 | | `chance(market, ...)` | 수수료, `min_total`, `max_total`, `market.state` 변경 | TS-11, TS-113 |
-| | `orderbook(market, units)` | 얇은 호가(FOK 미체결), 빈 호가 | TS-63, TS-122 |
+| | `orderbook(market, units)` | 얇은 호가(FOK 미체결, 2단계 매수 미체결 포함), 빈 호가 | TS-63, TS-122, TS-148 |
 | | `candles(market, unit, series)` | 빈 구간 있는 캔들, 200개 넘는 기간 | TS-105 |
 | | `server_time_offset(seconds)` | `Date` 헤더를 PC 시계와 다르게 | TS-42 |
 | | `api_keys(result)` | 자기 키 있음, 없음, 호출 실패 | TS-78 |

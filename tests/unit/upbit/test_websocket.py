@@ -145,7 +145,7 @@ PUBLIC_URL = "wss://api.upbit.com/websocket/v1"
 PRIVATE_URL = "wss://api.upbit.com/websocket/v1/private"
 START = 1000.0  # FakeClock monotonic 시작값
 EPS = 1e-6
-STEP = 0.25  # next_item이 가상 시간을 흘리는 단위(초)
+STEP = 0.25  # Consumer가 결과를 기다리며 가상 시간을 흘리는 단위(초)
 APP_UA = f"upbit-autotrader/{autotrader.__version__}"
 APP_DIR = Path(autotrader.__file__).resolve().parent
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -195,7 +195,7 @@ def make_connector(**options: Any) -> WebsocketsConnector:
     return WebsocketsConnector(**options)
 
 
-# ── 도우미: 시간·이터레이터 ───────────────────────────────
+# ── 도우미: 시간·소비 태스크 ──────────────────────────────
 
 
 async def settle(rounds: int = 50) -> None:
@@ -203,43 +203,113 @@ async def settle(rounds: int = 50) -> None:
         await asyncio.sleep(0)
 
 
-async def next_item(clock: FakeClock, iterator: Any, *, within: float = 0.0) -> Any:
-    """이터레이터의 다음 항목. 가상 시간을 within초까지 흘리며 기다린다(실제로는 기다리지 않는다).
+class Consumer:
+    """이터레이터 하나를 태스크 하나에서만 소비한다(어댑터 계약: 첫 anext부터 aclose까지 같은 태스크).
 
-    끝났으면 StopAsyncIteration, 오류로 끝났으면 그 오류가 그대로 나온다.
+    테스트는 요청(`next`·`want`·`aclose`)을 보내고 결과를 기다린다. 기다리는 동안 가상 시간을
+    within초까지 흘린다(실제로는 기다리지 않는다). 앞 항목을 받은 뒤에만 다음 anext를 부른다.
     """
-    task = asyncio.ensure_future(anext(iterator))
-    await settle()
-    waited = 0.0
-    while not task.done() and waited < within - EPS:
-        step = min(STEP, within - waited)
-        await clock.run_for(step)
-        waited += step
-    if not task.done():
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
-        pytest.fail(f"가상 {within}초 안에 다음 항목이 오지 않았다")
-    return task.result()
 
+    def __init__(self, clock: FakeClock, iterator: Any) -> None:
+        self.clock = clock
+        self.iterator = iterator
+        self.busy = False
+        self._requests: asyncio.Queue[str] = asyncio.Queue()
+        self._results: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+        self.task = asyncio.get_running_loop().create_task(self._serve())
 
-async def drain(
-    clock: FakeClock, iterator: Any, *, within: float = 0.0
-) -> tuple[list[Any], BaseException | None]:
-    """끝날 때까지 받는다: (받은 항목, 끝낸 오류 또는 None).
+    async def _serve(self) -> None:
+        while True:
+            request = await self._requests.get()
+            self.busy = True
+            try:
+                if request == "close":
+                    try:
+                        await self.iterator.aclose()
+                    except Exception as exc:  # 닫기에서 난 오류를 테스트에 돌려준다
+                        self._results.put_nowait(("error", exc))
+                    else:
+                        self._results.put_nowait(("closed", None))
+                    return
+                try:
+                    item = await anext(self.iterator)
+                except StopAsyncIteration:
+                    self._results.put_nowait(("end", None))
+                except Exception as exc:  # 이터레이터를 끝낸 오류를 테스트에 돌려준다
+                    self._results.put_nowait(("error", exc))
+                else:
+                    self._results.put_nowait(("item", item))
+            finally:
+                self.busy = False
 
-    가짜의 위반(AssertionError)은 그대로 올린다.
-    """
-    items: list[Any] = []
-    while True:
-        try:
-            items.append(await next_item(clock, iterator, within=within))
-        except StopAsyncIteration:
-            return items, None
-        except AssertionError:
-            raise
-        except Exception as exc:  # 이터레이터를 끝낸 오류를 돌려준다
-            return items, exc
+    def want(self) -> None:
+        """다음 항목을 요청만 한다(결과는 기다리지 않는다)."""
+        self._requests.put_nowait("next")
+
+    def has_result(self) -> bool:
+        return not self._results.empty()
+
+    async def next(self, *, within: float = 0.0) -> Any:
+        """다음 항목. 끝났으면 StopAsyncIteration, 오류로 끝났으면 그 오류가 그대로 나온다."""
+        self.want()
+        kind, value = await self._result(within)
+        if kind == "item":
+            return value
+        if kind == "end":
+            raise StopAsyncIteration
+        raise value
+
+    async def drain(self, *, within: float = 0.0) -> tuple[list[Any], BaseException | None]:
+        """끝날 때까지 받는다: (받은 항목, 끝낸 오류 또는 None). 가짜의 위반(AssertionError)은 올린다."""
+        items: list[Any] = []
+        while True:
+            try:
+                items.append(await self.next(within=within))
+            except StopAsyncIteration:
+                return items, None
+            except AssertionError:
+                raise
+            except Exception as exc:  # 이터레이터를 끝낸 오류를 돌려준다
+                return items, exc
+
+    async def aclose(self) -> None:
+        """소비 태스크 안에서 aclose한다. 닫기에서 난 오류는 그대로 나온다."""
+        self._requests.put_nowait("close")
+        kind, value = await self._result(0.0)
+        if kind == "error":
+            raise value
+
+    async def cancel(self) -> None:
+        """소비 태스크를 취소하고 끝날 때까지 기다린다."""
+        self.task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self.task
+
+    async def _result(self, within: float) -> tuple[str, Any]:
+        getter = asyncio.ensure_future(self._results.get())
+        await settle()
+        waited = 0.0
+        while not getter.done() and waited < within - EPS:
+            step = min(STEP, within - waited)
+            await self.clock.run_for(step)
+            waited += step
+        if not getter.done():
+            getter.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await getter
+            await self.cancel()
+            pytest.fail(f"가상 {within}초 안에 결과가 오지 않았다")
+        return getter.result()
+
+    async def finish(self) -> None:
+        """시나리오 끝 정리: 쉬고 있으면 aclose, 받는 중이면 소비 태스크를 취소한다."""
+        if self.task.done():
+            return
+        if self.busy:
+            await self.cancel()
+            return
+        with contextlib.suppress(Exception):
+            await self.aclose()
 
 
 def is_app_file(filename: str) -> bool:
@@ -298,6 +368,7 @@ class Env:
     clock: FakeClock
     connector: Any
     iterators: list[Any] = field(default_factory=list)
+    consumers: list[Consumer] = field(default_factory=list)
 
     @property
     def fake(self) -> FakeUpbitWs:
@@ -321,25 +392,33 @@ class Env:
         return make_private_stream(self.connector, self.clock, credentials, **options)
 
     def track(self, iterator: Any) -> Any:
-        """run이 끝날 때 aclose할 이터레이터."""
+        """소비 태스크 없이 테스트 태스크에서 직접 다루는 이터레이터(run이 끝날 때 aclose)."""
         self.iterators.append(iterator)
         return iterator
 
+    def consume(self, iterator: Any) -> Consumer:
+        """이터레이터를 소비 태스크 하나에 맡긴다(run이 끝날 때 정리)."""
+        consumer = Consumer(self.clock, iterator)
+        self.consumers.append(consumer)
+        return consumer
+
     async def open_ticker(
         self, stream: UpbitPublicStream, markets: Sequence[str] = ("KRW-BTC",), *, within=0.0
-    ) -> tuple[Any, Any]:
-        iterator = self.track(stream.ticker(list(markets)))
-        return iterator, await next_item(self.clock, iterator, within=within)
+    ) -> tuple[Consumer, Any]:
+        consumer = self.consume(stream.ticker(list(markets)))
+        return consumer, await consumer.next(within=within)
 
-    async def open_events(self, stream: UpbitPrivateStream, *, within=0.0) -> tuple[Any, Any]:
-        iterator = self.track(stream.events())
-        return iterator, await next_item(self.clock, iterator, within=within)
+    async def open_events(
+        self, stream: UpbitPrivateStream, *, within=0.0
+    ) -> tuple[Consumer, Any]:
+        consumer = self.consume(stream.events())
+        return consumer, await consumer.next(within=within)
 
-    async def next(self, iterator: Any, *, within: float = 0.0) -> Any:
-        return await next_item(self.clock, iterator, within=within)
+    async def next(self, consumer: Consumer, *, within: float = 0.0) -> Any:
+        return await consumer.next(within=within)
 
-    async def drain(self, iterator: Any, *, within: float = 0.0) -> Any:
-        return await drain(self.clock, iterator, within=within)
+    async def drain(self, consumer: Consumer, *, within: float = 0.0) -> Any:
+        return await consumer.drain(within=within)
 
     def run(self, scenario: Callable[["Env"], Awaitable[None]]) -> None:
         """scenario를 돌린다. 끝나면 이터레이터를 닫고, 앱 태스크가 남지 않았는지와 루프에
@@ -353,6 +432,8 @@ class Env:
             try:
                 await scenario(self)
             finally:
+                for consumer in self.consumers:
+                    await consumer.finish()
                 for iterator in self.iterators:
                     with contextlib.suppress(RuntimeError):
                         await iterator.aclose()
@@ -369,24 +450,49 @@ def env(make_fake_upbit_ws: Callable[..., FakeUpbitWs]) -> Env:
     return Env(clock, make_fake_upbit_ws(clock=clock))
 
 
-# ── 도우미: 대본 연결(가짜가 만들 수 없는 서버 프레임) ─────────────
+# ── 도우미: 대본 연결(가짜가 만들 수 없는 서버·연결 동작) ──────────
+
+
+async def forever() -> None:
+    """취소될 때까지 기다린다."""
+    await asyncio.get_running_loop().create_future()
 
 
 class ScriptedConnection:
-    """서버 프레임을 차례로 주고, 다 주면 end_code로 끊는다(None이면 취소될 때까지 기다린다)."""
+    """서버 프레임을 차례로 주고, 다 주면 end_code로 끊는다(None이면 취소될 때까지 기다린다).
 
-    def __init__(self, frames: Sequence[str | bytes], end_code: int | None) -> None:
+    options: ping_error(PING에서 낼 예외), close_error(close에서 낼 예외), close_hangs(close가
+    끝나지 않음), send_hangs(send가 끝나지 않음).
+    """
+
+    def __init__(
+        self,
+        frames: Sequence[str | bytes],
+        end_code: int | None,
+        *,
+        ping_error: BaseException | None = None,
+        close_error: BaseException | None = None,
+        close_hangs: bool = False,
+        send_hangs: bool = False,
+    ) -> None:
         self._frames = deque(frames)
         self._end_code = end_code
+        self._ping_error = ping_error
+        self._close_error = close_error
+        self._close_hangs = close_hangs
+        self._send_hangs = send_hangs
         self.sent: list[str | bytes] = []
         self.pings = 0
         self.close_code: int | None = None
+        self.close_calls = 0
         self.closed_by_client: int | None = None
 
     async def send(self, text: str) -> None:
         if self.close_code is not None:
             raise StreamClosed(close_code=self.close_code, reason="닫힌 연결(대본)")
         self.sent.append(text)
+        if self._send_hangs:
+            await forever()
 
     async def recv(self) -> str | bytes:
         await asyncio.sleep(0)
@@ -395,36 +501,52 @@ class ScriptedConnection:
         if self._end_code is not None:
             self.close_code = self._end_code
             raise StreamClosed(close_code=self._end_code, reason="대본 끝")
-        await asyncio.get_running_loop().create_future()
+        await forever()
         raise AssertionError("도달하지 않는다")
 
     async def ping(self) -> None:
         self.pings += 1
+        if self._ping_error is not None:
+            raise self._ping_error
 
     async def close(self, code: int = 1000) -> None:
+        self.close_calls += 1
         if self.close_code is None:
             self.close_code = code
             self.closed_by_client = code
+        if self._close_hangs:
+            await forever()
+        if self._close_error is not None:
+            raise self._close_error
+
+
+Script = tuple[Sequence[str | bytes], int | None] | tuple[Sequence[str | bytes], int | None, dict]
 
 
 class ScriptedConnector:
-    """connect마다 대본 하나((프레임들, end_code))로 연결을 준다."""
+    """connect마다 대본 하나((프레임들, end_code[, 연결 옵션]))로 연결을 준다.
 
-    def __init__(self, *scripts: tuple[Sequence[str | bytes], int | None]) -> None:
+    connect_hangs=True면 connect가 끝나지 않는다(핸드셰이크 무응답).
+    """
+
+    def __init__(self, *scripts: Script, connect_hangs: bool = False) -> None:
         self._scripts = list(scripts)
+        self._connect_hangs = connect_hangs
         self.calls: list[tuple[str, tuple[tuple[str, str], ...]]] = []
         self.connections: list[ScriptedConnection] = []
 
     async def connect(self, url: str, *, headers: Sequence[tuple[str, str]]) -> ScriptedConnection:
         self.calls.append((url, tuple(headers)))
-        frames, end_code = self._scripts.pop(0)
-        conn = ScriptedConnection(frames, end_code)
+        if self._connect_hangs:
+            await forever()
+        frames, end_code, *rest = self._scripts.pop(0)
+        conn = ScriptedConnection(frames, end_code, **(rest[0] if rest else {}))
         self.connections.append(conn)
         return conn
 
 
-def scripted_env(*scripts: tuple[Sequence[str | bytes], int | None]) -> Env:
-    return Env(FakeClock(), ScriptedConnector(*scripts))
+def scripted_env(*scripts: Script, connect_hangs: bool = False) -> Env:
+    return Env(FakeClock(), ScriptedConnector(*scripts, connect_hangs=connect_hangs))
 
 
 def btc_frame(**changes: Any) -> str:
@@ -610,7 +732,7 @@ def test_bad_markets_fail_before_connecting(env, markets, error):
 
     async def scenario(e: Env) -> None:
         with pytest.raises(error, match=r".+"):
-            await anext(e.track(stream.ticker(markets)))
+            await e.next(e.consume(stream.ticker(markets)))
 
     env.run(scenario)
     assert env.fake.connections == []
@@ -623,7 +745,7 @@ def test_connection_numbers_count_opened_connections_per_stream_object(env):
     async def scenario(e: Env) -> None:
         numbers = []
         for _ in range(4):
-            iterator = e.track(stream.ticker(["KRW-BTC"]))
+            iterator = e.consume(stream.ticker(["KRW-BTC"]))
             try:
                 item = await e.next(iterator, within=2)
             except StreamConnectFailed:
@@ -740,7 +862,7 @@ def test_status_up_messages_are_skipped():
     stream = env.public()
 
     async def scenario(e: Env) -> None:
-        iterator = e.track(stream.ticker(["KRW-BTC"]))
+        iterator = e.consume(stream.ticker(["KRW-BTC"]))
         items, error = await e.drain(iterator)
         assert [type(item) for item in items] == [StreamOpened, TickerEvent, TickerEvent]
         assert isinstance(error, StreamClosed)
@@ -776,13 +898,11 @@ def test_ping_frames_every_thirty_seconds_keep_the_connection_open(env, kind):
             await e.next(iterator)  # 스냅숏. 그 뒤 서버는 아무것도 보내지 않는다
         else:
             iterator, _ = await e.open_events(stream)
-        waiting = asyncio.ensure_future(anext(iterator))
+        iterator.want()  # 다음 항목을 기다리는 중
         await e.clock.run_for(600)
-        assert not waiting.done()
+        assert not iterator.has_result()
         assert e.fake.connections[0].close_code is None
-        waiting.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await waiting
+        await iterator.cancel()
 
     env.run(scenario)
     record = env.fake.connections[0]
@@ -826,7 +946,7 @@ def test_server_error_message_ends_the_iterator_with_the_mapped_error(env, kind,
     stream = env.public() if kind == "public" else env.private()
 
     async def scenario(e: Env) -> None:
-        iterator = e.track(stream.ticker(["KRW-BTC"]) if kind == "public" else stream.events())
+        iterator = e.consume(stream.ticker(["KRW-BTC"]) if kind == "public" else stream.events())
         items, error = await e.drain(iterator)
         assert items == [opened(kind, 1)]  # 구독 직후 StreamOpened, 그다음 오류
         assert type(error) is ERROR_TYPES[name]
@@ -844,7 +964,7 @@ def test_error_message_default_text_from_the_recording_is_kept(env):
     stream = env.public()
 
     async def scenario(e: Env) -> None:
-        _, error = await e.drain(e.track(stream.ticker(["KRW-BTC"])))
+        _, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
         assert error.message == "codes 필드가 존재하지 않습니다."
 
     env.run(scenario)
@@ -855,7 +975,7 @@ def test_error_message_without_message_field_keeps_none():
     stream = env.public()
 
     async def scenario(e: Env) -> None:
-        _, error = await e.drain(e.track(stream.ticker(["KRW-BTC"])))
+        _, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
         assert type(error) is StreamRequestError
         assert (error.error_name, error.message) == ("NO_TYPE", None)
 
@@ -867,7 +987,7 @@ def test_adapter_closes_a_connection_the_server_left_open_after_an_error(env):
     stream = env.public()
 
     async def scenario(e: Env) -> None:
-        _, error = await e.drain(e.track(stream.ticker(["KRW-BTC"])))
+        _, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
         assert type(error) is StreamRequestError
         record = e.fake.connections[0]
         assert record.closed_at == START
@@ -904,7 +1024,7 @@ def test_unreadable_server_message_is_skipped_and_logged(case, caplog):
     stream = env.public()
 
     async def scenario(e: Env) -> None:
-        items, error = await e.drain(e.track(stream.ticker(["KRW-BTC"])))
+        items, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
         assert [type(item) for item in items] == [StreamOpened, TickerEvent]
         assert items[1].trade_price == Decimal("1")  # 깨진 메시지만 건너뛰었다
         assert type(error) is StreamClosed
@@ -950,7 +1070,7 @@ def test_messages_of_other_kinds_are_skipped(frame):
     stream = env.public()
 
     async def scenario(e: Env) -> None:
-        items, error = await e.drain(e.track(stream.ticker(["KRW-BTC"])))
+        items, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
         assert [type(item) for item in items] == [StreamOpened, TickerEvent]
         assert type(error) is StreamClosed
 
@@ -981,7 +1101,7 @@ def test_idle_close_code_passes_through():
     stream = env.public()
 
     async def scenario(e: Env) -> None:
-        items, error = await e.drain(e.track(stream.ticker(["KRW-BTC"])))
+        items, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
         assert len(items) == 2
         assert type(error) is StreamClosed
         assert error.close_code == 1001
@@ -996,7 +1116,7 @@ def test_rejected_connection_ends_with_connect_failed(env, kind, status):
     stream = env.public() if kind == "public" else env.private()
 
     async def scenario(e: Env) -> None:
-        iterator = e.track(stream.ticker(["KRW-BTC"]) if kind == "public" else stream.events())
+        iterator = e.consume(stream.ticker(["KRW-BTC"]) if kind == "public" else stream.events())
         items, error = await e.drain(iterator)
         assert items == []  # 연결하지 못하면 StreamOpened도 없다
         assert type(error) is StreamConnectFailed
@@ -1016,7 +1136,7 @@ def test_the_adapter_does_not_reconnect(env):
         assert type(error) is StreamClosed
         await e.clock.run_for(120)
         with pytest.raises(StopAsyncIteration):
-            await anext(iterator)
+            await e.next(iterator)
 
     env.run(scenario)
     assert len(env.fake.connections) == 1
@@ -1052,8 +1172,8 @@ def test_cancelling_the_consumer_closes_the_connection(env, kind):
 
     async def scenario(e: Env) -> None:
         items: list[Any] = []
-        iterator = e.track(stream.ticker(["KRW-BTC"]) if kind == "public" else stream.events())
-        task = asyncio.ensure_future(consume(iterator, items))
+        iterator = stream.ticker(["KRW-BTC"]) if kind == "public" else stream.events()
+        task = asyncio.ensure_future(consume(iterator, items))  # 이 태스크 하나가 소비한다
         await e.clock.run_for(10)
         assert items[0] == opened(kind, 1)
         task.cancel()
@@ -1123,7 +1243,7 @@ def test_too_many_request_says_whether_the_minute_budget_was_reached(env, nth, m
             iterator, _ = await e.open_ticker(stream, within=3)
             await iterator.aclose()
         e.fake.ws_error("TOO_MANY_REQUEST")
-        _, error = await e.drain(e.track(stream.ticker(["KRW-BTC"])), within=3)
+        _, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])), within=3)
         assert type(error) is StreamRateLimited
         assert error.minute_limited is minute_limited
 
@@ -1192,7 +1312,7 @@ def test_private_without_credentials_fails_before_connecting(env, credentials):
     stream = env.private(credentials=credentials)
 
     async def scenario(e: Env) -> None:
-        items, error = await e.drain(e.track(stream.events()))
+        items, error = await e.drain(e.consume(stream.events()))
         assert items == []
         assert type(error) is StreamAuthError
 
@@ -1205,7 +1325,7 @@ def test_private_works_again_once_credentials_appear(env):
     stream = env.private(credentials=lambda: current[0])
 
     async def scenario(e: Env) -> None:
-        _, error = await e.drain(e.track(stream.events()))
+        _, error = await e.drain(e.consume(stream.events()))
         assert type(error) is StreamAuthError
         current[0] = e.fake.credentials
         _, first = await e.open_events(stream, within=2)
@@ -1473,12 +1593,12 @@ async def private_failures(e: Env, stream: UpbitPrivateStream) -> tuple[list[Any
     ):
         await e.clock.run_for(1)  # TOO_MANY_REQUEST 뒤 1초 멈춤은 감시 몫이다
         inject()
-        got, error = await e.drain(e.track(stream.events()), within=3)
+        got, error = await e.drain(e.consume(stream.events()), within=3)
         items += got
         errors.append(error)
 
     missing = make_private_stream(e.connector, e.clock, lambda: None)
-    got, error = await e.drain(e.track(missing.events()))
+    got, error = await e.drain(e.consume(missing.events()))
     errors.append(error)
     return items, errors
 
@@ -1792,9 +1912,14 @@ def test_private_stream_over_the_default_connector_keeps_secrets_out_of_locals(m
     result: dict[str, Any] = {}
 
     async def main() -> None:
-        _, error = await drain(FakeClock(), stream.events())
-        result["error"] = error
-        result["locals"] = app_frame_locals(error)
+        iterator = stream.events()  # 이 태스크 하나에서 소비한다
+        try:
+            await anext(iterator)
+        except StreamConnectFailed as exc:
+            result["error"] = exc
+            result["locals"] = app_frame_locals(exc)
+        finally:
+            await iterator.aclose()
 
     asyncio.run(main())
     error = result["error"]

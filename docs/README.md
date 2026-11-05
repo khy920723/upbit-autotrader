@@ -40,7 +40,7 @@
 | | [디스코드 연동 명세](05-integration/discord.md) | 확정(D-081) |
 | 06 아키텍처 | [시스템 구성도](06-architecture/system-architecture.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [기술 스택·버전 정책](06-architecture/tech-stack.md) | 확정(1단계 제안 반영, 결정 대기 있음) |
-| | [결정 기록(ADR)](06-architecture/adr/README.md) | 확정 5건, 제안 3건, 대기 1건 |
+| | [결정 기록(ADR)](06-architecture/adr/README.md) | 확정 7건, 제안 1건(0008), 대기 1건(0007) |
 | 07 보안·법무 | [보안 정책·위협 모델](07-security-legal/security-policy.md) | 확정 |
 | | [리스크 관리 대장](07-security-legal/risk-register.md) | 초안 |
 | | [법·약관·라이선스 검토](07-security-legal/legal-compliance.md) | 초안(일부 미확인) |

@@ -35,10 +35,11 @@ def test_python_is_313_only(pyproject, repo_root):
 
 
 def test_runtime_dependencies_are_the_approved_set(pyproject):
-    # PySide6·keyring(2단계), httpx·PyJWT·websockets(3단계, ADR-0006).
-    # 늘릴 때는 라이선스 목록도 고친다.
+    # PySide6·keyring(2단계), httpx·PyJWT·websockets(3단계, ADR-0006),
+    # certifi(3단계, REST·웹소켓이 같은 CA 묶음을 쓰게, D-093). 늘릴 때는 라이선스 목록도 고친다.
     assert set(runtime_requirements(pyproject)) == {
         "pyside6",
+        "certifi",
         "keyring",
         "httpx",
         "pyjwt",

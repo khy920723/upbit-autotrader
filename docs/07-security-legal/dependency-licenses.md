@@ -30,7 +30,7 @@
 | 패키지 | 버전 | 라이선스 | 설치 플랫폼 | 비고 |
 |---|---|---|---|---|
 | anyio | 4.16.0 | MIT | Windows, Linux, macOS | httpx 의존. 번들에 들어감 |
-| certifi | 2026.10.23 | MPL-2.0 | Windows, Linux, macOS | httpx 의존(CA 인증서 묶음). 번들에 들어감. 고치지 않고 쓰며 소스 위치를 NOTICE.txt에 적음 |
+| certifi | 2026.10.23 | MPL-2.0 | Windows, Linux, macOS | 직접 의존(REST·웹소켓의 CA 인증서 묶음, D-093). httpx도 쓴다. 번들에 들어감. 고치지 않고 쓰며 소스 위치를 NOTICE.txt에 적음 |
 | cffi | 2.1.1 | MIT-0 | Linux | Linux 전용(SecretStorage → cryptography). Windows 번들에 없음 |
 | cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | Linux | Linux 전용(SecretStorage). Windows 번들에 없음 |
 | h11 | 0.16.0 | MIT | Windows, Linux, macOS | httpcore 의존. 번들에 들어감 |

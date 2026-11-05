@@ -14,6 +14,7 @@
 
 import copy
 import json
+import math
 import pickle
 from pathlib import Path
 
@@ -38,7 +39,7 @@ from autotrader.core.errors import (
 
 # isort: split
 # adapters.upbit는 아직 없어서 ruff가 서드파티로 분류한다. 구현 전후로 정렬이 바뀌지 않게 따로 둔다.
-from autotrader.adapters.upbit.errors import NAME_TYPES, to_error
+from autotrader.adapters.upbit.errors import NAME_TYPES, parse_retry_after, to_error
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "upbit"
 MANIFEST = {
@@ -532,6 +533,45 @@ def test_retry_after_whole_seconds_are_read_as_float():
     error = to_error(418, b"", headers(**{"Retry-After": "3600"}), group="ticker")
 
     assert error.retry_after == 3600.0
+
+
+# --- 아주 긴 Retry-After(D-089 보완 해석) ---------------------------------------------------
+# ASCII 숫자면 앞자리 0을 지운 뒤 길이를 본다. 9자리를 넘으면(10억 초, 약 31년 이상) 값을 읽지 않고
+# "상한 초과"(math.inf)로 둔다. 한도 장치는 inf를 24시간 상한으로 기다린다(5분 단계표로 가지 않는다).
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("0000090000", 90000.0),  # 앞자리 0은 지운다(10자리지만 9만 초)
+        ("000000000120", 120.0),
+        (" 0999999999 ", 999_999_999.0),
+        ("999999999", 999_999_999.0),  # 9자리: 그대로 읽는다
+    ],
+)
+def test_retry_after_leading_zeros_are_ignored(value, expected):
+    assert parse_retry_after(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["1000000000", "99999999999999", "0001000000000", "9" * 5000],
+    ids=["10-digits", "14-digits", "zero-padded-10-digits", "5000-digits"],
+)
+def test_retry_after_longer_than_nine_digits_is_over_the_cap(value):
+    # int 변환 길이 제한(4300자리)에 걸리지 않게 숫자로 바꾸지 않고 상한 초과로 본다.
+    assert parse_retry_after(value) == math.inf
+
+    error = to_error(418, b"", headers(**{"Retry-After": value}), group="ticker")
+
+    assert category(error) is UpbitBlocked
+    assert error.retry_after == math.inf
+
+
+@pytest.mark.parametrize("value", ["0", "00", "0" * 20, "\u0661\u0662\u0660", "1000000000.0"])
+def test_zero_and_non_ascii_or_decimal_retry_after_are_still_unusable(value):
+    # 0은 앞자리 0을 지워도 0이다. 아라비아 숫자(١٢٠)와 소수는 ASCII 정수가 아니다.
+    assert parse_retry_after(value) is None
 
 
 # --- T2 리뷰 반영 ----------------------------------------------------------------------------

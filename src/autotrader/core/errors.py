@@ -93,10 +93,15 @@ class UpbitOrderRejected(UpbitError):
 
 
 class UpbitIdentifierConflict(UpbitError):
-    """`duplicated_identifier`: 그 identifier를 이미 썼다. 거절이 아니라 결과 불명이다.
+    """`duplicated_identifier`: 그 identifier를 이미 썼다. 거절로 보지 않는다.
 
-    같은 요청이 한 번 더 전달돼 주문이 이미 접수됐을 수 있으므로 identifier로 조회해 확정한다
-    (D-070, 매매 로직 명세 8·10장, INV-03·INV-04, QA R17-01). UpbitOrderRejected를 상속하지 않는다.
+    - 주문 생성(POST /v1/orders): 결과 불명이다. 같은 요청이 한 번 더 전달돼 주문이 이미 접수됐을
+      수 있으므로 identifier로 조회해 확정한다(D-070, 매매 로직 명세 8·10장, INV-03·INV-04,
+      QA R17-01). 다시 보내지 않는다.
+    - 주문 검증(POST /v1/orders/test): 주문이 만들어지지 않으므로 검증 실패다. identifier를 새로
+      만들지 않은 버그로 기록한다.
+
+    UpbitOrderRejected를 상속하지 않는다.
     """
 
 
@@ -115,8 +120,11 @@ class UpbitRateLimited(UpbitError):
 class UpbitBlocked(UpbitError):
     """IP 차단(418). 본문에 name이 없어 원문을 남긴다.
 
-    retry_after는 서버가 준 원래 값(초)이다. retry_after_capped는 그 값이 24시간을 넘어 24시간만
-    기다린다는 표시다(D-089 보완, QA R17-09). 앱 계층이 이 표시로 긴급 알림을 보낸다.
+    retry_after는 서버가 준 원래 값(초)이다. 9자리를 넘어 읽지 않은 값은 math.inf(상한 초과)다.
+    네트워크 없이 낸 것(차단 중이거나 만기 뒤 확인 요청을 기다리는 중)의 retry_after는 차단이 풀릴
+    때까지 남은 시간이다(확인 요청 대기 중이면 None). retry_after_capped는 24시간을 넘는 값을
+    24시간으로 줄여 기다린다는 표시다(D-089 보완, QA R17-09). 네트워크 없이 낸 것에는 한도 장치의
+    표시를 담는다. 앱 계층은 한도 장치의 표시가 False에서 True로 바뀔 때 한 번 긴급 알림을 보낸다.
     """
 
     def __init__(

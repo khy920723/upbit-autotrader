@@ -16,6 +16,7 @@ import hmac
 import inspect
 import json
 import logging
+import math
 import re
 import ssl
 import traceback
@@ -1793,9 +1794,11 @@ def test_418_with_retry_after_over_24_hours_waits_24_hours_and_marks_the_error(r
             wait = limiter.blocked_until() - clock.monotonic()
             marked = limiter.retry_after_capped
             await advance(clock, DAY - 1.0)
+            local_errors = []
             for call in FIVE_CALLS:  # 아직 차단: 네트워크로 나가지 않는다
-                with pytest.raises(UpbitBlocked):
+                with pytest.raises(UpbitBlocked) as local:
                     await call(http)
+                local_errors.append(local.value)
             during = len(wire.requests)
             await advance(clock, 1.0)  # 만기 순간
             wire.gate.clear()
@@ -1804,13 +1807,20 @@ def test_418_with_retry_after_over_24_hours_waits_24_hours_and_marks_the_error(r
             on_wire = len(wire.requests)
             wire.gate.set()
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            return caught.value, wait, marked, during, on_wire, results, limiter
+            return caught.value, wait, marked, during, on_wire, results, limiter, local_errors
 
-    error, wait, marked, during, on_wire, results, limiter = run(scenario)
+    error, wait, marked, during, on_wire, results, limiter, local_errors = run(scenario)
 
     assert error.http_status == 418
     assert error.retry_after == float(retry_after)  # 원래 값은 그대로 보존
     assert error.retry_after_capped is True
+    # 네트워크 없이 낸 UpbitBlocked도 표시를 담는다. retry_after는 남은 시간이다.
+    assert all(e.retry_after_capped is True for e in local_errors)
+    assert all(e.retry_after == pytest.approx(1.0) for e in local_errors)
+    # 만기 뒤 확인 요청을 기다리는 동안 막힌 요청도 같다(retry_after는 없다).
+    waiting = [r for r in results if isinstance(r, UpbitBlocked)]
+    assert len(waiting) == 4
+    assert all(r.retry_after_capped is True and r.retry_after is None for r in waiting)
     assert wait == pytest.approx(DAY)
     assert marked is True
     assert during == 1
@@ -1818,6 +1828,28 @@ def test_418_with_retry_after_over_24_hours_waits_24_hours_and_marks_the_error(r
     assert sum(isinstance(result, UpbitResponse) for result in results) == 1
     assert all(isinstance(r, UpbitResponse | UpbitBlocked) for r in results), results
     assert limiter.retry_after_capped is False  # 확인 요청이 성공해 차단 기록이 지워졌다
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "kept"),
+    [("1000000000", math.inf), ("99999999999999", math.inf), ("0000090000", 90000.0)],
+    ids=["10-digits", "14-digits", "zero-padded"],
+)
+def test_418_with_an_overlong_retry_after_waits_24_hours_not_the_step_table(retry_after, kept):
+    # 9자리를 넘는 값은 상한 초과(math.inf)로 보고 24시간 상한을 쓴다(D-089 보완 해석).
+    # 앞자리 0은 지우고 읽는다.
+    async def scenario():
+        async with gated(blocked_for(retry_after)) as (http, _wire, clock, limiter):
+            with pytest.raises(UpbitBlocked) as caught:
+                await http.get("/v1/ticker", [("markets", "KRW-BTC")])
+            return caught.value, limiter.blocked_until() - clock.monotonic(), limiter
+
+    error, measured, limiter = run(scenario)
+
+    assert error.retry_after == kept
+    assert error.retry_after_capped is True
+    assert measured == pytest.approx(DAY)
+    assert limiter.retry_after_capped is True
 
 
 @pytest.mark.parametrize(

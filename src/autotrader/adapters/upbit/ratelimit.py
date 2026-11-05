@@ -10,8 +10,8 @@
   `max(floor(now)+1, now+1)`까지(최소 1초) 멈춘다.
 - 418(D-078, D-089): 모든 요청을 멈춘다. Retry-After가 있으면 그 시간,
   없으면 5·10·20·40·60분. 차단 중에 도착한 418(함께 나갔던 요청)은 단계를 올리지 않는다.
-  Retry-After가 24시간을 넘으면 24시간만 기다리고 `retry_after_capped`로 표시한다(D-089 보완,
-  QA R17-09). 표시는 만기 뒤 확인 요청이 성공할 때까지 남고, 성공하거나 새 차단이 오면 지운다.
+  Retry-After가 24시간을 넘으면(9자리를 넘어 math.inf로 읽은 값 포함) 24시간만 기다리고
+  `retry_after_capped`로 표시한다(D-089 보완, QA R17-09). 표시는 만기 뒤 확인 요청이 성공할 때까지 남고, 성공하거나 새 차단이 오면 지운다.
   긴급 알림은 앱 계층이 이 표시(또는 UpbitBlocked.retry_after_capped)를 보고 보낸다.
 - 418 만기 뒤 반개방: 성공 응답을 받기 전까지는 처리 중인 확인 요청을 1건만 허용하고,
   그동안 다른 요청은 네트워크 없이 UpbitBlocked다. 확인 요청이 성공(2xx)이면 단계를 처음으로
@@ -218,6 +218,10 @@ class RateLimiter:
 
         만기 뒤 확인 요청이 성공할 때까지 남는다. 성공하거나 새 차단(만기 뒤 418)이 오면 그 418의
         값으로 다시 정한다(줄이지 않았으면 지운다).
+
+        긴급 알림: 동시에 나간 요청 여러 개가 같은 차단으로 418을 받으면 그 UpbitBlocked마다
+        retry_after_capped가 참일 수 있고, 차단 중에 네트워크 없이 낸 UpbitBlocked도 이 표시를
+        담는다. 앱 계층은 예외마다 알리지 말고 이 표시가 False에서 True로 바뀔 때 한 번만 알린다.
         """
         return self._retry_after_capped
 
@@ -225,8 +229,10 @@ class RateLimiter:
         """418을 받았다. 모든 요청을 차단 시간 동안 멈춘다(D-078, D-089).
 
         Retry-After가 24시간을 넘으면 24시간만 기다린다. 이번 Retry-After를 줄였으면 True다.
+        `math.inf`는 parse_retry_after가 9자리를 넘는 값에 주는 "상한 초과"이므로 24시간 상한을
+        쓴다. 0 이하·NaN은 없는 것으로 보고 단계표를 쓴다.
         """
-        if retry_after is not None and not (math.isfinite(retry_after) and retry_after > 0):
+        if retry_after is not None and not retry_after > 0:  # NaN도 여기서 걸러진다
             retry_after = None
         capped = retry_after is not None and retry_after > MAX_RETRY_AFTER_WAIT
         if capped:
@@ -262,7 +268,11 @@ class RateLimiter:
         return self._blocked_until
 
     def check_not_blocked(self) -> None:
-        """차단 중이거나 만기 뒤 확인 요청이 처리 중이면 네트워크 없이 UpbitBlocked를 던진다."""
+        """차단 중이거나 만기 뒤 확인 요청이 처리 중이면 네트워크 없이 UpbitBlocked를 던진다.
+
+        그 retry_after는 남은 시간(확인 요청 처리 중이면 None)이고, retry_after_capped는 한도 장치의
+        표시(`retry_after_capped` 속성)다.
+        """
         until = self.blocked_until()
         if until is not None:
             raise UpbitBlocked(
@@ -271,6 +281,7 @@ class RateLimiter:
                 message="418 차단 중이라 요청을 보내지 않았다",
                 retry_after=until - self._clock.monotonic(),
                 raw_body="",
+                retry_after_capped=self._retry_after_capped,
             )
         if self._probe_in_flight:
             raise UpbitBlocked(
@@ -279,6 +290,7 @@ class RateLimiter:
                 message="418 차단이 풀렸는지 확인하는 요청이 처리 중이라 보내지 않았다",
                 retry_after=None,
                 raw_body="",
+                retry_after_capped=self._retry_after_capped,
             )
 
     def start_send(self) -> bool:

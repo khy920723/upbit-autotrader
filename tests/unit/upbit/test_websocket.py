@@ -17,10 +17,11 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
 - `WsConnection`·`WsConnector`는 Protocol이다. 연결: `async send(text)`, `async recv() -> str |
   bytes`, `async ping()`(PING 프레임, PONG을 기다리지 않음), `async close(code=1000)`,
   `close_code`(열려 있으면 None). 연결기: `async connect(url, *, headers)`(헤더는 (이름, 값) 쌍).
-- `UpbitPublicStream(connector, clock, *, url=공개 주소, ping_interval=30.0, ticket=uuid4 문자열을
-  주는 함수)`. `ticker(markets)`는 부르면 바로 이터레이터를 준다(코루틴 아님).
+- `UpbitPublicStream(connector, clock, *, url=공개 주소, ping_interval=30.0, open_timeout=10.0,
+  ticket=uuid4 문자열을 주는 함수)`. `ticker(markets)`는 부르면 바로 이터레이터를 준다(코루틴 아님).
 - `UpbitPrivateStream(connector, clock, credentials, *, url=비공개 주소, ping_interval=30.0,
-  ticket=...)`. credentials는 키 제공 함수(`() -> UpbitCredentials | None`)이고 연결마다 부른다.
+  open_timeout=10.0, ticket=...)`. credentials는 키 제공 함수(`() -> UpbitCredentials | None`)이고
+  연결마다 부른다.
 - `WebsocketsConnector(*, user_agent="upbit-autotrader/<버전>", tls_context=None,
   open_timeout=10.0)`. tls_context가 None이면 `autotrader.adapters.tls.create_tls_context()`.
 
@@ -64,7 +65,8 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
    그래서 이 파일은 그 뒤 1초 안에 같은 종류로 다시 연결하지 않는다. 형식 오류 뒤 같은 구독을
    다시 보내지도 않는다(가짜 repeat_after_error, D-080).
 11. 이터레이터를 aclose하거나 소비 태스크를 취소하면 연결을 닫고(close 1000) PING 태스크를
-   끝낸다. 이터레이터가 어떻게 끝나든 어댑터가 만든 태스크는 남지 않는다.
+   끝낸다. 이터레이터가 어떻게 끝나든 어댑터가 만든 태스크는 남지 않는다. 이 파일은 이터레이터를
+   언제나 한 태스크(Consumer)에서만 소비한다(core/ports.py 어댑터 계약).
 12. 비공개: 연결마다 새 JWT(HS512, 페이로드는 access_key·nonce만, nonce는 매번 새 UUID,
    query_hash 없음)를 `Authorization: Bearer <JWT>` 헤더 하나로 보낸다. 키 제공 함수가 None을
    주면 연결하지 않고 StreamAuthError(감시가 한 번 다시 연 뒤 AUTH_CHECK로 키를 확인한다).
@@ -81,6 +83,14 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
    만든다(REST와 문맥 객체를 함께 쓰지 않는다). 주면 그대로 쓰되 만들 때 검사한다(UpbitHttp와
    같다): ssl.SSLContext가 아니면 TypeError, check_hostname True·CERT_REQUIRED·최소 TLS 1.2
    이상이 아니면 ValueError(문구에 "tls_context").
+16. core/ports.py 어댑터 계약(B3 수정): 끝날 때는 core 오류 하나(NetworkError·StreamError 계열,
+   ExceptionGroup 아님). 연결 close에서 난 core 밖 예외(OSError 등)는 결과를 덮지 않고 앱 로거에
+   WARNING 이상으로 기록만 한다(aclose도 예외 없이 끝난다). 두 번째 취소가 오면 끝나지 않는
+   close를 기다리지 않고 CancelledError로 끝낸다. PING 태스크가 실패하면(StreamClosed·OSError)
+   연결을 닫고 이터레이터를 core 오류로 끝낸다(StreamClosed가 났으면 StreamClosed).
+   StreamOpened까지(connect + 구독 전송) open_timeout(Clock, 기본 10초)이 지나면
+   StreamConnectFailed(http_status=None)이고 열린 연결은 닫는다. 한도 대기는 open_timeout에 들지
+   않는다(연결 전에 기다린다).
 """
 
 import asyncio
@@ -112,9 +122,11 @@ from fakes.upbit_ws import FakeUpbitWs
 
 import autotrader
 from autotrader.core.errors import (
+    NetworkError,
     StreamAuthError,
     StreamClosed,
     StreamConnectFailed,
+    StreamError,
     StreamRateLimited,
     StreamRequestError,
 )
@@ -204,7 +216,9 @@ async def settle(rounds: int = 50) -> None:
 
 
 class Consumer:
-    """이터레이터 하나를 태스크 하나에서만 소비한다(어댑터 계약: 첫 anext부터 aclose까지 같은 태스크).
+    """이터레이터 하나를 태스크 하나에서만 소비한다.
+
+    어댑터 계약: 첫 anext부터 aclose까지 같은 태스크다(core/ports.py).
 
     테스트는 요청(`next`·`want`·`aclose`)을 보내고 결과를 기다린다. 기다리는 동안 가상 시간을
     within초까지 흘린다(실제로는 기다리지 않는다). 앞 항목을 받은 뒤에만 다음 anext를 부른다.
@@ -252,6 +266,10 @@ class Consumer:
     async def next(self, *, within: float = 0.0) -> Any:
         """다음 항목. 끝났으면 StopAsyncIteration, 오류로 끝났으면 그 오류가 그대로 나온다."""
         self.want()
+        return await self.take(within=within)
+
+    async def take(self, *, within: float = 0.0) -> Any:
+        """앞서 want()로 요청한 항목을 받는다(next와 같은 결과)."""
         kind, value = await self._result(within)
         if kind == "item":
             return value
@@ -260,7 +278,10 @@ class Consumer:
         raise value
 
     async def drain(self, *, within: float = 0.0) -> tuple[list[Any], BaseException | None]:
-        """끝날 때까지 받는다: (받은 항목, 끝낸 오류 또는 None). 가짜의 위반(AssertionError)은 올린다."""
+        """끝날 때까지 받는다: (받은 항목, 끝낸 오류 또는 None).
+
+        가짜의 위반(AssertionError)은 그대로 올린다.
+        """
         items: list[Any] = []
         while True:
             try:
@@ -408,9 +429,7 @@ class Env:
         consumer = self.consume(stream.ticker(list(markets)))
         return consumer, await consumer.next(within=within)
 
-    async def open_events(
-        self, stream: UpbitPrivateStream, *, within=0.0
-    ) -> tuple[Consumer, Any]:
+    async def open_events(self, stream: UpbitPrivateStream, *, within=0.0) -> tuple[Consumer, Any]:
         consumer = self.consume(stream.events())
         return consumer, await consumer.next(within=within)
 
@@ -459,7 +478,9 @@ async def forever() -> None:
 
 
 class ScriptedConnection:
-    """서버 프레임을 차례로 주고, 다 주면 end_code로 끊는다(None이면 취소될 때까지 기다린다).
+    """서버 프레임을 차례로 주고, 다 주면 end_code로 끊는다(None이면 닫힐 때까지 기다린다).
+
+    가짜·websockets처럼 close하면 기다리던 recv가 StreamClosed로 깬다.
 
     options: ping_error(PING에서 낼 예외), close_error(close에서 낼 예외), close_hangs(close가
     끝나지 않음), send_hangs(send가 끝나지 않음).
@@ -486,6 +507,7 @@ class ScriptedConnection:
         self.close_code: int | None = None
         self.close_calls = 0
         self.closed_by_client: int | None = None
+        self._closed = asyncio.Event()
 
     async def send(self, text: str) -> None:
         if self.close_code is not None:
@@ -498,11 +520,11 @@ class ScriptedConnection:
         await asyncio.sleep(0)
         if self._frames:
             return self._frames.popleft()
-        if self._end_code is not None:
+        if self._end_code is not None and self.close_code is None:
             self.close_code = self._end_code
-            raise StreamClosed(close_code=self._end_code, reason="대본 끝")
-        await forever()
-        raise AssertionError("도달하지 않는다")
+        if self.close_code is None:
+            await self._closed.wait()
+        raise StreamClosed(close_code=self.close_code, reason="대본 끝")
 
     async def ping(self) -> None:
         self.pings += 1
@@ -514,6 +536,7 @@ class ScriptedConnection:
         if self.close_code is None:
             self.close_code = code
             self.closed_by_client = code
+        self._closed.set()
         if self._close_hangs:
             await forever()
         if self._close_error is not None:
@@ -1189,6 +1212,148 @@ def test_cancelling_the_consumer_closes_the_connection(env, kind):
     env.run(scenario)
 
 
+# ── 어댑터 계약(core/ports.py): 닫기 오류·두 번째 취소·PING 태스크 실패·open_timeout ──
+
+
+def test_a_failing_connection_close_does_not_replace_the_result(caplog):
+    # core 밖 예외(OSError)는 원래 결과를 덮지 않고 기록만 된다.
+    caplog.set_level(logging.DEBUG)
+    error_frame = b'{"error":{"name":"NO_CODES","message":"m"}}'
+    env = scripted_env(([error_frame], None, {"close_error": OSError("close failed (test)")}))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
+        assert items == [opened("public", 1)]
+        assert type(error) is StreamRequestError
+        assert error.error_name == "NO_CODES"
+        assert e.connector.connections[0].close_calls >= 1
+
+    env.run(scenario)
+    assert app_warnings(caplog)
+
+
+def test_aclose_with_a_failing_connection_close_returns_normally(caplog):
+    caplog.set_level(logging.DEBUG)
+    env = scripted_env(([BTC_FRAME], None, {"close_error": OSError("close failed (test)")}))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        iterator, _ = await e.open_ticker(stream)
+        await iterator.aclose()  # 예외 없이 끝난다
+        assert e.connector.connections[0].close_calls >= 1
+        await settle()
+        assert adapter_tasks() == []
+
+    env.run(scenario)
+    assert app_warnings(caplog)
+
+
+def test_a_second_cancel_ends_a_hanging_close_at_once():
+    env = scripted_env(([BTC_FRAME], None, {"close_hangs": True}))
+    stream = env.public()
+
+    async def consume(iterator: Any, items: list[Any]) -> None:
+        async for item in iterator:
+            items.append(item)
+
+    async def scenario(e: Env) -> None:
+        items: list[Any] = []
+        task = asyncio.ensure_future(consume(stream.ticker(["KRW-BTC"]), items))
+        await settle()
+        assert [type(item) for item in items] == [StreamOpened, TickerEvent]
+        task.cancel()  # 첫 취소: 끝나지 않는 close를 기다릴 수 있다
+        await settle()
+        task.cancel()  # 두 번째 취소: 서둘러 끝낸다(삼키고 버티지 않는다)
+        await settle()
+        assert task.done()
+        assert task.cancelled()
+        assert e.connector.connections[0].close_calls >= 1
+        assert adapter_tasks() == []
+
+    env.run(scenario)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [StreamClosed(close_code=1006, reason="ping (test)"), OSError("ping failed (test)")],
+    ids=["stream-closed", "oserror"],
+)
+def test_a_failing_ping_task_closes_the_connection_and_ends_with_a_core_error(failure):
+    env = scripted_env(([], None, {"ping_error": failure}))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        iterator, _ = await e.open_ticker(stream)
+        items, error = await iterator.drain(within=31)
+        assert items == []
+        assert isinstance(error, NetworkError | StreamError)
+        assert not isinstance(error, BaseExceptionGroup)
+        if isinstance(failure, StreamClosed):
+            assert type(error) is StreamClosed
+        conn = e.connector.connections[0]
+        assert conn.pings == 1
+        assert conn.close_calls >= 1
+        assert START + 30 - EPS <= e.now <= START + 30 + STEP
+
+    env.run(scenario)
+
+
+def _hanging_stream(e: Env, kind: str, **options: Any) -> Any:
+    if kind == "public":
+        return e.public(**options).ticker(["KRW-BTC"])
+    return e.private(credentials=make_upbit_credentials, **options).events()
+
+
+@pytest.mark.parametrize("kind", ["public", "private"])
+@pytest.mark.parametrize(("options", "limit"), [({}, 10.0), ({"open_timeout": 3.0}, 3.0)])
+def test_connect_that_never_finishes_ends_with_connect_failed(kind, options, limit):
+    # StreamOpened까지 open_timeout(기본 10초) 상한. 감시는 StreamOpened 전 무수신을 재지 않는다.
+    env = scripted_env(connect_hangs=True)
+
+    async def scenario(e: Env) -> None:
+        iterator = e.consume(_hanging_stream(e, kind, **options))
+        iterator.want()
+        await e.clock.run_for(limit - 0.5)
+        assert not iterator.has_result()
+        with pytest.raises(StreamConnectFailed) as info:
+            await iterator.take(within=1.0)
+        assert info.value.http_status is None
+        assert START + limit - EPS <= e.now <= START + limit + STEP
+
+    env.run(scenario)
+
+
+def test_subscription_that_never_goes_out_ends_with_connect_failed():
+    env = scripted_env(([], None, {"send_hangs": True}))
+    stream = env.public(open_timeout=3.0)
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])), within=4)
+        assert items == []  # StreamOpened 전에 끝났다
+        assert type(error) is StreamConnectFailed
+        assert e.connector.connections[0].close_calls >= 1
+
+    env.run(scenario)
+
+
+def test_malformed_frames_from_the_fake_are_skipped(env, caplog):
+    caplog.set_level(logging.DEBUG)
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        iterator, _ = await e.open_ticker(stream)
+        await e.next(iterator)  # 스냅숏
+        e.fake.ws_raw(b"\xff not utf-8")
+        e.fake.ws_raw("{not json")
+        e.fake.ws_raw('{"type":"ticker","code":"KRW-BTC"}')  # 필드가 빠짐
+        e.fake.push_ticker("KRW-BTC", trade_price=Decimal("2"))
+        assert (await e.next(iterator)).trade_price == Decimal("2")
+
+    env.run(scenario)
+    assert len(app_warnings(caplog)) >= 3
+
+
 # ── 한도(절반, INV-13) ────────────────────────────────────
 
 
@@ -1385,6 +1550,7 @@ def test_my_order_from_the_docs_example(env):
             {
                 "trade_uuid": "68315169-fba4-4175-ade3-aff14a616657",
                 "trade_timestamp": 1710751590421,
+                "order_timestamp": 1710751590000,
                 "prevented_volume": RawNumber("1.174291929"),
             }
         )
@@ -1407,14 +1573,45 @@ def test_my_order_side_and_order_type_names(env):
                 "ask_bid": "ASK",
                 "order_type": "market",
                 "state": "wait",
-                "price": None,
                 "volume": Decimal("0.5"),
             }
         )
         event = await e.next(iterator)
         assert (event.market, event.side, event.ord_type) == ("KRW-ETH", "ask", "market")
-        assert event.price is None
         assert event.volume == Decimal("0.5")
+
+    env.run(scenario)
+
+
+def test_my_order_null_numbers_become_none(env):
+    # 시장가 매도는 price가, 시장가 매수는 volume이 null일 수 있다(문서 예시는 값만 있다).
+    # 가짜의 ws_my_order는 null 숫자를 받지 않아 원문 프레임(ws_raw)으로 보낸다.
+    example = loads_raw((DOCS_EXAMPLES / "websocket-myorder.json").read_text(encoding="utf-8"))
+    stream = env.private()
+
+    async def scenario(e: Env) -> None:
+        iterator, _ = await e.open_events(stream)
+        message = dict(
+            example["example"],
+            order_type="market",
+            ask_bid="ASK",
+            state="wait",
+            price=None,
+            avg_price=None,
+            remaining_volume=None,
+            trade_uuid=None,
+            trade_fee=None,
+            is_maker=None,
+            trade_timestamp=None,
+            timestamp=RawNumber(str(now_ms(e.clock))),
+        )
+        e.fake.ws_raw(dumps(message), stream="private")
+        event = await e.next(iterator)
+        assert (event.side, event.ord_type, event.state) == ("ask", "market", "wait")
+        assert (event.price, event.avg_price, event.remaining_volume) == (None, None, None)
+        assert (event.trade_uuid, event.trade_fee, event.is_maker) == (None, None, None)
+        assert event.trade_timestamp_ms is None
+        assert event.volume == Decimal("30925891.29839369")
 
     env.run(scenario)
 

@@ -743,13 +743,57 @@ def test_capped_retry_after_is_logged_with_the_original_value(caplog):
     assert any("90000" in m and "86400" in m for m in messages), messages
 
 
-@pytest.mark.parametrize("retry_after", [-1.0, 0.0, math.nan, math.inf], ids=str)
+@pytest.mark.parametrize("retry_after", [-1.0, 0.0, math.nan, -math.inf], ids=str)
 def test_unusable_retry_after_falls_back_to_the_step_table(retry_after):
     limiter = RateLimiter(FakeClock())
 
-    limiter.on_blocked(retry_after)
+    capped = limiter.on_blocked(retry_after)
 
     assert limiter.blocked_until() == pytest.approx(START + 300.0)
+    assert capped is False
+    assert limiter.retry_after_capped is False
+
+
+def test_infinite_retry_after_is_over_the_cap_and_waits_24_hours():
+    # parse_retry_after는 9자리를 넘는 값을 math.inf(상한 초과)로 준다. 5분 단계표로 가지 않는다.
+    limiter = RateLimiter(FakeClock())
+
+    capped = limiter.on_blocked(math.inf)
+
+    assert capped is True
+    assert limiter.retry_after_capped is True
+    assert limiter.blocked_until() == pytest.approx(START + DAY)
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "capped"),
+    [(90000.0, True), (math.inf, True), (DAY, False), (None, False)],
+    ids=["90000", "inf", "exactly-24h", "none"],
+)
+def test_blocked_errors_raised_without_network_carry_the_capped_mark(retry_after, capped):
+    # 차단 중(check_not_blocked)과 만기 뒤 확인 요청 대기 중(start_send) 모두 한도 장치 표시를 담는다.
+    # retry_after는 남은 시간이다(확인 요청 대기 중에는 None).
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        limiter.on_blocked(retry_after)
+        wait = limiter.blocked_until() - clock.monotonic()
+        await advance(clock, 100.0)
+        with pytest.raises(UpbitBlocked) as during:
+            limiter.check_not_blocked()
+        await advance(clock, wait - 100.0)  # 만기 순간
+        probe = limiter.start_send()
+        with pytest.raises(UpbitBlocked) as waiting:
+            limiter.start_send()
+        limiter.end_send(probe)
+        return wait, during.value, waiting.value
+
+    wait, during, waiting = asyncio.run(scenario())
+
+    assert during.retry_after == pytest.approx(wait - 100.0)
+    assert during.retry_after_capped is capped
+    assert waiting.retry_after is None
+    assert waiting.retry_after_capped is capped
 
 
 def test_check_not_blocked_raises_blocked_with_the_remaining_wait():

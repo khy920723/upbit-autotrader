@@ -10,12 +10,14 @@ import autotrader
 PACKAGE_DIR = Path(autotrader.__file__).resolve().parent
 
 # 오픈소스로는 GPL-3.0(또는 상용)으로만 제공되는 Qt 모듈.
+# Designer는 GPL-3.0 + Qt GPL 예외(도구 출력에만 해당).
 # MIT 앱에 묶으면 배포 전체가 GPL 조건을 따라야 한다.
 # 근거: docs/07-security-legal/dependency-licenses.md
 GPL_ONLY_QT_MODULES = frozenset(
     {
         "QtCanvasPainter",
         "QtCharts",
+        "QtDesigner",
         "QtDataVisualization",
         "QtGraphs",
         "QtGraphsWidgets",
@@ -24,7 +26,8 @@ GPL_ONLY_QT_MODULES = frozenset(
         "QtQuick3D",
     }
 )
-# 쓰지 않기로 한 모듈: WebEngine(Chromium, 크기와 고지 부담), PDF(PDFium), Designer(개발 도구용).
+# 쓰지 않기로 한 모듈: WebEngine(Chromium, 크기와 고지 부담), PDF(PDFium),
+# Network(TLS는 Python ssl로 한다).
 UNUSED_QT_MODULES = frozenset(
     {
         "QtWebEngineCore",
@@ -32,7 +35,7 @@ UNUSED_QT_MODULES = frozenset(
         "QtWebEngineQuick",
         "QtPdf",
         "QtPdfWidgets",
-        "QtDesigner",
+        "QtNetwork",
     }
 )
 

@@ -17,6 +17,7 @@ import importlib.metadata
 import re
 import sys
 import tomllib
+from collections import Counter
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -96,8 +97,23 @@ def load_lock(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
+class ForkedLockError(ValueError):
+    """uv.lock이 같은 패키지를 플랫폼마다 다른 버전으로 잡았다(fork).
+
+    표 한 줄로는 확인할 수 없다.
+    """
+
+    def __init__(self, names: list[str]) -> None:
+        super().__init__(", ".join(names))
+        self.names = names
+
+
 def inventory(lock: Mapping, table: str) -> Inventory:
     """표 하나에 들어갈 패키지. runtime은 앱 의존성, dev는 dev 그룹 중 runtime이 아닌 것."""
+    counts = Counter(package["name"] for package in lock["package"])
+    forked = sorted(name for name, count in counts.items() if count > 1)
+    if forked:
+        raise ForkedLockError(forked)
     packages = {package["name"]: package for package in lock["package"]}
     root = next(p for p in lock["package"] if p["source"].get("editable") == ".")
     starts = {
@@ -237,6 +253,14 @@ def check(
 ) -> list[str]:
     """문서 표와 uv.lock이 다른 점. 없으면 빈 목록."""
     problems: list[str] = []
+    try:
+        inventory(lock, "runtime")
+    except ForkedLockError as exc:
+        return [
+            f"{name}: uv.lock에 여러 버전이 있다(fork). "
+            "버전마다 라이선스를 확인하고 이 스크립트를 고친다"
+            for name in exc.names
+        ]
     for table in TABLES:
         expected = inventory(lock, table)
         rows = parse_table(doc_text, table)

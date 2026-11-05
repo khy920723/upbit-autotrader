@@ -14,7 +14,7 @@
 추천: **httpx(REST) + websockets(웹소켓) + PyJWT(서명)로 얇은 자체 클라이언트를 만든다. 공식 `upbit-sdk`는 의존성으로 넣지 않고, 필드 이름·타입·엔드포인트를 대조하는 자료로 쓴다.**
 
 - 자체 클라이언트는 [시스템 구성도](../system-architecture.md) 6장의 `QuotationApi`, `ExchangeApi`, `PublicStream`, `PrivateStream` 인터페이스를 구현한다.
-- 지킬 것: 자동 재시도 없음(조회 재시도는 호출하는 쪽이 정함), HS512 서명, 매 요청 새 nonce, 업비트 안내대로 배열 이름의 대괄호는 인코딩하지 않고 그 전송 문자열 그대로 `query_hash` 계산, 헤더는 `Authorization`·`Content-Type`(POST만)·`Accept`·`User-Agent` 한 번씩, `Origin` 없음, 기본 URL `https://api.upbit.com` + `/v1/...`, 리다이렉트를 따라가지 않음, 응답마다 `Remaining-Req` 파싱, 오류는 `error.name`으로 [시스템 구성도](../system-architecture.md) 7장 오류 타입에 매핑, 웹소켓은 앱의 감시 루프가 지수 백오프로 재연결(정상 종료 코드 포함)하고 재연결 뒤 REST로 대조.
+- 지킬 것: 자동 재시도 없음(조회 재시도는 호출하는 쪽이 정함), HS512 서명, 매 요청 새 nonce, `query_hash`는 파라미터 순서를 유지한 URL 인코딩 전 문자열(`uuids[]=a&uuids[]=b`, `pairs=KRW-BTC,KRW-ETH`)의 SHA512로 계산하고 전송할 때만 값을 URL 인코딩(배열 이름의 `[]`는 인코딩하지 않음, [업비트 API 연동 명세](../../05-integration/upbit-api.md) 3장), 헤더는 `Authorization`·`Content-Type`(POST만)·`Accept`·`User-Agent` 한 번씩, `Origin` 없음, 기본 URL `https://api.upbit.com` + `/v1/...`, 리다이렉트를 따라가지 않음, 응답마다 `Remaining-Req` 파싱, 오류는 `error.name`으로 [시스템 구성도](../system-architecture.md) 7장 오류 타입에 매핑, 웹소켓은 앱의 감시 루프가 지수 백오프로 재연결(정상 종료 코드 포함)하고 재연결 뒤 REST로 대조.
 - 테스트: JWT·`query_hash` 알려진 값(TS-16), 보내는 헤더와 URL(TS-15), 자동 재시도 없음(TS-72), httpx `MockTransport`와 공식 문서 예시로 만든 녹화 응답.
 - 공식 SDK를 다시 검토할 조건: (1) 주문 생성의 자동 재시도를 기본으로 끄거나 요청별로 안전하게 끌 수 있고, (2) aiohttp가 선택 의존성이 되고, (3) websockets 상한이 풀리고, (4) SDK 라이선스 관계가 분명해지면.
 - 절충안: SDK를 `ExchangeApi` 뒤의 어댑터로만 쓰는 방법도 있다(`max_retries=0`, 앱의 한도 조절기, 앱의 웹소켓 감시 루프, 쓰는 메서드만 허용). 서명·쿼리 해시·응답 모델을 업비트가 유지보수하는 이점은 있지만, 위 의존성·라이선스 문제는 그대로다.

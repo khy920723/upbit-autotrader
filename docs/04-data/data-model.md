@@ -113,9 +113,8 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | warning | INTEGER | 필수 | `market_event.warning`(유의 종목) |
 | caution_json | TEXT | 필수 | `market_event.caution` 원본(항목별 참·거짓) |
 | caution_any | INTEGER | 필수 | 주의 항목 중 하나라도 참 |
-| market_state | TEXT | | 시세 웹소켓 `market_state`(예: ACTIVE) |
+| market_state | TEXT | | 시세 웹소켓 `market_state`(PREVIEW·ACTIVE·DELISTED) |
 | delisting_date | TEXT | | 거래지원 종료일 |
-| trading_suspended | INTEGER | | 시세 웹소켓 `trading_suspended` |
 | listed | INTEGER | 필수 | 마지막 목록 조회에 있었는지. 목록에서 빠지면 0 |
 | updated_at | TEXT | 필수 | |
 

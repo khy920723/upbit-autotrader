@@ -19,8 +19,8 @@
 
 - `google-genai`(`from google import genai`, Python 3.11 이상)를 정확한 버전으로 고정한다(2026-10-29 기준 2.34.0).
 - 2026-05~06에 API 스키마가 바뀐 적이 있으므로 버전을 올릴 때는 테스트를 먼저 돌린다.
-- **호출 API(제안, D-054 대기):** 공식 문서는 Interactions API(`client.aio.interactions.create`)를 모든 신규 개발의 기본으로 권하고, `generateContent`는 "legacy이지만 완전 지원"이라고 한다(폐지 일정 공지 없음). Interactions는 2026-06 GA, v1에서 구조화 출력과 thinking이 GA다. 추천: Interactions API, 비동기 경로(`client.aio`)만 쓴다. 출처: aistudio.google.com/llms.txt, /docs/interactions-overview, /docs/migrate-to-interactions.
-- **SDK 자동 재시도(확인 결과):** google-genai 2.34.0에서 Interactions 경로는 재시도가 기본으로 켜져 있다(408·409·429·5xx, 최대 3회 재시도, 0.5→1→2초, `Retry-After`가 오면 상한 없이 그만큼 기다림). `models`(generateContent) 경로는 기본으로 꺼져 있다. 공식 문제 해결 문서의 "Python SDK는 최대 4회 자동 재시도" 설명과 다르다. 앱이 재시도를 직접 정하려고 클라이언트에 `HttpRetryOptions(attempts=1, http_status_codes=[500, 502, 503, 504])`를 준다. 그러면 429·408·409는 SDK가 다시 보내지 않고, 5xx만 SDK가 1회 다시 보낸다. 앱은 그 위에 재시도를 더하지 않는다. Interactions 경로는 `attempts`를 "재시도 횟수"로 쓰고(`attempts=N`이면 N회 재시도), `attempts=0`도 1회 재시도가 될 수 있다(소스 분석, 실행 검증 전). 실제 전송 횟수는 가짜 transport 테스트로 확인한다. 호출 전체는 `asyncio.wait_for`로 시간 상한(`llm.timeout_sec`) 안에 묶는다. 출처: python-genai v2.34.0 `google/genai/_gaos/google_genai.py`, `_gaos/utils/retries.py`, `types.py`, aistudio.google.com/docs/troubleshooting.
+- **호출 API(제안, D-054 대기):** 공식 문서는 Interactions API(`client.aio.interactions.create`)를 모든 신규 개발의 기본으로 권하고, `generateContent`는 "legacy이지만 완전 지원"이라고 한다(폐지 일정 공지 없음). Interactions는 2026-06 GA, v1에서 구조화 출력과 thinking이 GA다. 추천: Interactions API, 비동기 경로(`client.aio`)만 쓴다. 클라이언트는 `HttpOptions(api_version="v1")`로 만든다. SDK 기본은 v1beta이고, v1beta 기능은 바뀔 수 있다고 문서가 밝힌다(서버 쪽 변경은 SDK 버전을 고정해도 막지 못함). Interactions와 이 앱이 쓰는 구조화 출력·thinking·system instruction은 v1에서 지원된다. 출처: aistudio.google.com/llms.txt, /docs/interactions-overview, /docs/migrate-to-interactions, /api-reference/api-versions, python-genai v2.34.0 `_api_client.py`.
+- **SDK 자동 재시도(확인 결과):** google-genai 2.34.0에서 Interactions 경로는 재시도가 기본으로 켜져 있다(408·409·429·5xx, 최대 3회 재시도, 0.5→1→2초, `Retry-After`가 오면 상한 없이 그만큼 기다림). `models`(generateContent) 경로는 기본으로 꺼져 있다. 공식 문제 해결 문서의 "Python SDK는 최대 4회 자동 재시도" 설명과 다르다. 앱이 재시도를 직접 정하려고 클라이언트에 `HttpRetryOptions(attempts=1, http_status_codes=[500, 502, 503, 504])`를 준다. 그러면 429·408·409는 SDK가 다시 보내지 않고, 5xx와 연결 오류·요청 타임아웃(httpx `NetworkError`·`TimeoutException`)만 SDK가 1회 다시 보낸다. 연결 오류·타임아웃 재시도는 설정으로 끌 수 없다(`retry_connection_errors`가 항상 참). 앱은 그 위에 재시도를 더하지 않는다. Interactions 경로는 `attempts`를 "재시도 횟수"로 쓰고(`attempts=N`이면 N회 재시도), `attempts=0`도 1회 재시도가 될 수 있다(소스 분석, 실행 검증 전). 실제 전송 횟수(5xx·429·타임아웃·연결 오류 1건당)는 가짜 transport 테스트로 확인한다. 호출 전체는 `asyncio.wait_for`로 시간 상한(`llm.timeout_sec`) 안에 묶는다. 요청 단위 타임아웃(`HttpOptions.timeout`)은 `llm.timeout_sec`보다 짧게 두지 않는다. 그래야 응답이 늦을 때 `asyncio.wait_for`가 먼저 끊고 SDK의 타임아웃 재시도가 나가지 않는다. 출처: python-genai v2.34.0 `google/genai/_gaos/google_genai.py`, `_gaos/utils/retries.py`, `types.py`, aistudio.google.com/docs/troubleshooting.
 - **타임아웃 단위:** 클라이언트 `HttpOptions.timeout`은 밀리초, `interactions.create(timeout=)`는 초다. SDK 기본은 타임아웃 없음이라 반드시 정한다.
 - **예외 계층:** Interactions 경로의 오류(`RateLimitError` 등, `google.genai._interactions`)는 `google.genai.errors.APIError`의 하위 클래스가 아니다. 어댑터 한 곳에서 두 계층을 모두 잡고, 비공개 모듈 경로에 의존하므로 버전을 고정하고 올릴 때 회귀 테스트를 한다.
 - **의존성:** google-genai 2.34.0은 websockets <18, httpx ≥0.28.1, pydantic ≥2.12.5, anyio ≥4.8, google-auth, requests, tenacity를 요구한다.
@@ -69,10 +69,11 @@ class Signal(BaseModel):
 
 | 상황 | 처리 |
 |---|---|
-| 타임아웃(30초) | 중립. 그 주기에는 다시 시도하지 않음 |
+| 타임아웃(`llm.timeout_sec`, 기본 30초) | 중립. 앱은 그 주기에 다시 시도하지 않는다. 시간 상한 안에서 연결 오류가 나면 SDK가 1회 다시 보낼 수 있다(3장) |
 | 429 | 오류 코드로 분당·일일을 구분해 기록한다(아래 "429 구분 방법"). 분당이면 잠시 기다렸다가 다음 코인을 평가하고 이번 코인은 중립. 일일이면 중립 처리하고 한도 초기화 시각(태평양 자정)까지 호출하지 않음(MSG-E006). 구분할 수 없으면 분당으로 본다 |
 | 5xx | SDK가 1회 다시 보낸 뒤(3장 설정) 중립. 앱은 더 시도하지 않음 |
 | 형식 오류·검증 실패 | 중립(MSG-E007) |
+| 403(`permission_denied`) | 중립. 재시도하지 않고 LLM 호출을 멈춘다(MSG-E018, NTF-22). 앱을 다시 시작하거나 Gemini 키를 다시 저장해 테스트 호출이 성공하면 다시 호출한다(제안) |
 | 안전 정책에 따른 거절 | 중립. 우회를 시도하지 않음 |
 | 3회 연속 실패 | NTF-11 알림 |
 
@@ -89,7 +90,7 @@ class Signal(BaseModel):
 - 오류 코드 문자열은 문서끼리 설명이 달라("snake_case 코드" 대 "오류 유형 URI") 정확히 같은지 대신 포함 여부로 비교한다.
 - 모르는 코드의 429는 분당으로 본다. 그날 분당으로 본 429가 같은 코인 평가에서 연속 3회 나오면 일일 소진으로 보고 초기화 시각까지 호출을 멈춘다(제안).
 - 무료 등급은 지출 기반 한도가 없다(유료 Tier에만 있음).
-- 무료 등급 자격이 없으면 `403 PERMISSION_DENIED`(FREE_TIER_VERIFICATION_REQUIRED)가 온다. 재시도하지 않고 MSG-E007로 알린다.
+- 403(`permission_denied`, 세부에 `FREE_TIER_VERIFICATION_REQUIRED` 등)은 프로젝트·계정 검증이 필요하거나, 무료 등급을 쓸 수 없거나, 결제 설정이 필요할 때 온다. 검증은 AI Studio의 모바일 기기 인증이나 결제 설정으로 풀린다. 무료 등급을 쓸 수 없는 프로젝트는 같은 프로젝트에서 새 키를 만들어도 풀리지 않고 유료로 바꿔야 한다. 그래서 재시도하지 않고 LLM 호출을 멈춘 뒤 MSG-E018로 AI Studio의 프로젝트 상태를 확인하라고 알린다. 출처: aistudio.google.com/docs/troubleshooting(#verification-required, #free-tier-unavailable), /docs/api-errors.
 
 ## 7. 비용과 데이터 정책
 

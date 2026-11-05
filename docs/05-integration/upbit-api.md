@@ -32,8 +32,8 @@
 | 용도 | 메서드·경로 | 권한 | 한도 그룹 | 비고 |
 |---|---|---|---|---|
 | 종목 목록·경고 | GET /v1/market/all?is_details=true | 없음 | market(초당 10, IP) | `market_event.warning`, `market_event.caution`(5개 항목) 사용. `market_warning`은 폐기 |
-| 분 캔들 | GET /v1/candles/minutes/{unit} | 없음 | candle(초당 10, IP) | unit 1, 3, 5, 10, 15, 30, 60, 240. count 최대 200. 체결이 없던 구간은 캔들이 없다 |
-| 일 캔들 | GET /v1/candles/days | 없음 | candle | 경계는 UTC 00:00(KST 09:00) |
+| 분 캔들 | GET /v1/candles/minutes/{unit} | 없음 | candles(초당 10, IP. 한도표 표기는 candle) | unit 1, 3, 5, 10, 15, 30, 60, 240. count 최대 200. 체결이 없던 구간은 캔들이 없다 |
+| 일 캔들 | GET /v1/candles/days | 없음 | candles | 경계는 UTC 00:00(KST 09:00) |
 | 현재가 | GET /v1/ticker | 없음 | ticker(초당 10, IP) | 웹소켓 보조, DEGRADED 손절 |
 | 호가 | GET /v1/orderbook | 없음 | orderbook(초당 10, IP) | 페이퍼 체결 계산 |
 | 호가 단위 | GET /v1/orderbook/instruments | 없음 | orderbook | `tick_size`(2025-07-31 추가) |
@@ -53,7 +53,7 @@
 
 | 종류 | 주소 | 타입 | 인증 |
 |---|---|---|---|
-| 공개 | wss://api.upbit.com/websocket/v1 | ticker(`market_state`, `delisting_date`, `trading_suspended` 포함), trade, orderbook, candle | 없음 |
+| 공개 | wss://api.upbit.com/websocket/v1 | ticker(`market_state`(PREVIEW·ACTIVE·DELISTED)와 `delisting_date`를 쓴다. `is_trading_suspended`·`market_warning`은 폐기 필드라 읽지 않는다), trade, orderbook, candle | 없음 |
 | 비공개 | wss://api.upbit.com/websocket/v1/private | myOrder, myAsset(권한 필요), announcement(2026-08-31부터, 권한 불필요) | JWT(Authorization 헤더) |
 
 - 한도: 연결 초당 5회(인증 없으면 IP, 있으면 포켓 단위), 메시지는 연결마다 초당 5회·분당 100회. 웹소켓은 남은 요청 수를 알려 주지 않으므로 앱이 센다.
@@ -67,7 +67,7 @@
 
 - JWT, `Authorization: Bearer <JWT>`. 서명 알고리즘은 HS512를 쓴다(업비트 권장). Secret Key는 Base64 디코딩 없이 그대로 쓴다.
 - 페이로드: `access_key`, `nonce`(매 요청 새 UUID, 다시 쓰면 `nonce_used`), 파라미터나 본문이 있으면 `query_hash`(SHA512 16진수)와 `query_hash_alg`(SHA512).
-- GET·DELETE: 실제 전송하는 쿼리 문자열을 순서 그대로, URL 인코딩 전 상태로 해시한다. 배열은 `uuids[]=a&uuids[]=b`처럼 키를 반복한다. 쿼리 값은 URL 인코딩하되 배열 이름의 `[`, `]`는 인코딩하지 않는다(REST 안내). 공식 SDK 1.1.0은 대괄호를 `%5B%5D`로 인코딩해 보내므로 두 공식 출처가 다르다. 앱은 REST 안내를 따르고, 사용자 PC에서 첫 키 검증 때 배열 파라미터가 있는 읽기 전용 호출(`/v1/orders/uuids` 등)로 확인한다(확인 필요).
+- GET·DELETE: 전송할 쿼리 파라미터를 같은 순서로 이은 문자열을 URL 인코딩하기 전 상태로 해시한다. 예를 들어 `pairs=KRW-BTC,KRW-ETH`는 `,`를 그대로 둔 문자열로 해시하고, 전송 URL에서만 값을 인코딩한다. 인코딩한 문자열로 해시하면 `:`·`+`·`,`처럼 인코딩으로 바뀌는 문자가 든 요청에서 서버가 계산한 해시와 달라져 401 인증 오류(`invalid_query_payload` 등)가 날 수 있다. 배열은 `uuids[]=a&uuids[]=b`처럼 키를 반복한다. 쿼리 값은 URL 인코딩하되 배열 이름의 `[`, `]`는 인코딩하지 않는다(REST 안내). 공식 SDK 1.1.0은 대괄호를 `%5B%5D`로 인코딩해 보내므로 두 공식 출처가 다르다. 앱은 REST 안내를 따르고, 사용자 PC에서 첫 키 검증 때 배열 파라미터가 있는 읽기 전용 호출(`/v1/orders/uuids` 등)로 확인한다(확인 필요).
 - identifier와 쿼리 값에는 공백·`+`를 넣지 않는다. 해시 문자열과 서버 해석이 어긋날 수 있다.
 - POST: JSON 본문을 `key=value&...` 형태로 바꿔 해시한다.
 - 페이로드에 시각이 없어서 PC 시계 오차가 인증에 영향을 주지 않는다.
@@ -76,6 +76,7 @@
 
 - `Remaining-Req: group=...; min=...; sec=...`에서 `sec`만 쓴다(`min`은 폐기, 2026-08-21부터 분당 한도 없음).
 - 그룹별 토큰 버킷으로 한도의 절반 이하만 쓴다.
+- 버킷은 경로별 고정 표(`/v1/candles` → candles, `/v1/market` → market 등, 2장 표)로 고른다. 응답 헤더의 group 값은 표와 맞는지 확인하고 기록하는 데만 쓰고, 모르는 group 값이면 경고만 남긴다. 공식 한도표는 캔들 그룹을 `candle`로 적지만, 실제 헤더와 공식 예제는 `candles`다(2026-11-05 공개 시세 호출 `remaining-req: group=candles; min=600; sec=9`). 녹화 응답에는 실제 헤더 값을 넣는다.
 - 429: 그 그룹 호출을 멈추고 다음 초 경계까지 기다린다. 조회(GET)는 다음 초에 같은 요청을 다시 보낸다. 주문 생성(POST)은 REJECTED(RATE_LIMIT_429)로 기록하고, 다시 주문할 때는 새 identifier로 위험 검사부터 한다(손절은 다음 초에 바로).
 - 418: 429가 쌓여 일시 차단된 것이다(IP·포켓·연결 단위). 응답에 담긴 차단 시간이 지날 때까지 SUSPENDED로 두고 알린다. 반복되면 차단 시간이 길어진다.
 - `Origin` 헤더를 보내지 않는다. 보내면 시세 REST와 웹소켓이 10초에 1회로 제한되고 `Remaining-Req`의 group이 `origin`으로 온다. 화면에 웹뷰를 쓰더라도 업비트 호출은 Python에서만 한다.

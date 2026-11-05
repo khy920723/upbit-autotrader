@@ -24,7 +24,7 @@
 | 대안 | 장점 | 단점 | 판단 |
 |---|---|---|---|
 | **A. 전용 스레드의 표준 asyncio 루프 + 앱 계층 브리지** | Qt 루프와 독립이라 모달 창·무거운 화면 작업 중에도 손절과 웹소켓 PING이 돈다. 표준 asyncio만 쓴다(추가 의존성 없음). core 테스트가 Qt 없이 표준 루프에서 그대로 돈다. Windows 기본 Proactor 루프를 그대로 써서 httpx·websockets 호환 문제가 적다 | 스레드 경계 규칙을 지켜야 한다(공유 가변 객체 금지, 명령·알림 경로 고정). 종료 순서를 직접 구현한다. 디버깅이 조금 더 어렵다 | **추천** |
-| B. qasync(Qt 루프와 asyncio 루프 통합) | 스레드가 하나라 공유 상태 문제가 없다. 슬롯에서 바로 `await`할 수 있다(`@asyncSlot`) | GUI와 매매 루프가 같은 스레드라 화면 작업이 길면 손절·PING도 늦어진다. 모달 대화상자를 그냥 띄우면 asyncio 처리가 막혀서, qasync 자체가 `asyncWrap`으로 감싸 띄우라고 안내한다(모든 확인 창에 지켜야 할 규칙이 생김). Windows에서는 qasync가 자체 IOCP 프로액터와 폴링 스레드를 쓴다. 서드파티 의존성이다 | 기각 |
+| B. qasync(Qt 루프와 asyncio 루프 통합) | 스레드가 하나라 공유 상태 문제가 없다. 슬롯에서 바로 `await`할 수 있다(`@asyncSlot`) | GUI와 매매 루프가 같은 스레드라 화면 작업이 길면 손절·PING도 늦어진다. 코루틴(`@asyncSlot`) 안에서 띄우는 모달 창은 `asyncWrap`으로 감싸 띄우라고 qasync가 안내한다(그런 창마다 지킬 규칙이 생김). Windows에서는 qasync가 자체 IOCP 프로액터와 폴링 스레드를 쓴다. 서드파티 의존성이다 | 기각 |
 | C. PySide6 QtAsyncio | PySide6에 들어 있다(추가 의존성 없음) | PySide6 6.12.0의 QtAsyncio는 `create_connection`, `getaddrinfo`, `sock_*`, `start_tls`, `add_reader`, `subprocess_exec` 등이 `NotImplementedError`다. httpx·websockets 같은 네트워크 라이브러리를 쓸 수 없다. B의 단일 스레드 단점도 같다 | 기각 |
 | D. asyncio 없이 QThread + 동기 클라이언트 | Qt 방식 그대로 | 웹소켓 2개, REST, 스케줄러를 스레드 여러 개로 나눠 동기화해야 한다. core가 QThread를 쓰면 Qt에 의존하게 된다. 지금 문서의 asyncio 설계와 맞지 않는다 | 기각 |
 
@@ -37,8 +37,8 @@
 | qasync `asyncWrap`: "Wrap a blocking function ... run it on the native Qt event loop ... An example usage of this is raising a modal dialogue inside an asyncSlot." | qasync `src/qasync/__init__.py` |
 | PySide6 6.12.0 QtAsyncio(`PySide6_Addons` 휠에 포함)의 네트워크·소켓·서브프로세스 메서드가 `NotImplementedError("... is not implemented yet")` | pyside6_addons-6.12.0 휠의 `PySide6/QtAsyncio/events.py` |
 | PySide6 6.12.0 배포일 2026-10-08, requires-python ≥3.10,<3.16 | pypi.org/project/PySide6 |
-
-- Python 문서(asyncio 스레드 안전성, `call_soon_threadsafe`·`run_coroutine_threadsafe`)와 Qt 문서(스레드 간 시그널의 큐 연결)는 이 세션의 네트워크 정책에서 직접 열지 못했다. 둘 다 널리 쓰이는 표준 동작이지만 2단계 구현 때 문서로 다시 확인한다(확인 필요).
+| asyncio 객체는 대부분 스레드 안전하지 않다. 다른 스레드에서 콜백은 `loop.call_soon_threadsafe`로, 코루틴은 `asyncio.run_coroutine_threadsafe`로 넣고, 후자는 `concurrent.futures.Future`를 돌려준다 | CPython v3.13.18 `Doc/library/asyncio-dev.rst` "Concurrency and Multithreading"(태그 소스) |
+| 기본 연결(`Qt::AutoConnection`)은 받는 객체가 시그널을 보내는 스레드와 다른 스레드에 있으면 `QueuedConnection`이 되어 받는 쪽 스레드의 이벤트 루프에서 슬롯을 실행한다. 연결 방식은 emit 시점에 정해진다 | qtbase v6.12.0 `src/corelib/global/qnamespace.qdoc` `Qt::ConnectionType`(태그 소스) |
 
 ## 결과
 
@@ -51,5 +51,5 @@
 
 ## 결정이 필요한 것
 
-- 추천안 A로 할지. B(qasync)를 고르면 모든 모달 창을 `asyncWrap`으로 띄우는 규칙과 화면 작업 시간 제한을 따로 둬야 한다.
+- 추천안 A로 할지. B(qasync)를 고르면 코루틴 안에서 띄우는 모달 창은 `asyncWrap`으로 감싸는 규칙과 화면 작업 시간 제한을 따로 둬야 한다.
 - core가 멈췄을 때 원격으로 알리는 방법(D-060): 앱 계층의 비상 텔레그램 전송(NTF-21, "네트워크는 core에서만" 규칙의 예외)으로 할지, heartbeat가 2분 넘게 없으면 앱이 스스로 다시 시작하게 할지. 둘 다 없으면 다음 일일 요약이 오지 않을 때까지(최대 약 24시간) 모를 수 있다.

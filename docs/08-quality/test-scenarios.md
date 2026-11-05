@@ -23,7 +23,7 @@
 | TS-13 | 모든 주문에 smp_type 포함 | 누락 0건, 값은 cancel_maker(paper·live-validate 포함) | 단위 |
 | TS-14 | 같은 코인에 매수·매도 동시 주문 시도 | 두 번째 주문 차단(자기체결 방지) | 단위 |
 | TS-15 | 보내는 헤더와 URL | POST는 Content-Type 1개, GET·DELETE는 Content-Type 없음, 헤더 이름마다 1개, 끝 슬래시·중복 슬래시 없음 | 단위 |
-| TS-16 | JWT·query_hash | 알려진 값과 일치 | 단위 |
+| TS-16 | JWT·query_hash | 알려진 값과 일치. 배열 키(`uuids[]=a&uuids[]=b`)와 `:`·`+`·`,`가 든 값(`start_time`의 ISO 8601, `pairs=KRW-BTC,KRW-ETH`)은 URL 인코딩 전 문자열로 해시하고, 전송 URL에서만 값을 인코딩한다 | 단위 |
 | TS-17 | 손절 매도가 거절됨 | NTF-18 긴급 알림, 다음 주기에 새 identifier로 다시 시도 | 통합 |
 
 ## 시그널

@@ -82,7 +82,7 @@ flowchart TD
 
 ## 6. 주문 유형 (제안, D-043 대기)
 
-업비트 주문 유형은 `limit`(지정가), `price`(시장가 매수, 총액 지정), `market`(시장가 매도, 수량 지정), `best`(최유리 지정가, `time_in_force`로 `ioc` 또는 `fok` 필수)다. `post_only`는 `limit`에만 쓸 수 있고 `smp_type`과 함께 쓸 수 없다.
+업비트 주문 유형은 `limit`(지정가), `price`(시장가 매수, 총액 지정), `market`(시장가 매도, 수량 지정), `best`(최유리 지정가, `time_in_force`로 `ioc` 또는 `fok` 필수)다. `post_only`는 `limit` 전용이고 `smp_type`의 `cancel_maker`·`cancel_taker`·`reduce`와 함께 쓸 수 없다(2026-11-09부터 `none`은 함께 쓸 수 있고, post_only 주문에서 `smp_type`을 빼면 `none`으로 처리된다). 앱은 `post_only`를 쓰지 않는다.
 
 | 용도 | 제안 | 대안 | 이유 |
 |---|---|---|---|
@@ -228,7 +228,7 @@ UNKNOWN이 되는 경우: 주문 생성 요청을 보낸 뒤 응답을 받지 �
 **주문**
 
 1. 로컬에서 끝나지 않은 주문은 identifier로 조회해 10장 표로 맞춘다(`/v1/orders/uuids`로 최대 100개씩).
-2. 거래소 미체결 목록(`/v1/orders/open`, `states[]=wait&states[]=watch`)과 최근 종료 목록(`/v1/orders/closed`, 마지막 대조 시각부터, 최대 7일 구간)에서 `uat-` 접두어인데 로컬에 없는 주문은 들여온다(`decision_id` NULL, source=reconcile, 경고 이벤트 ORDER_IMPORTED). DB를 백업에서 복원했을 때 생길 수 있다.
+2. 거래소 미체결 목록(`/v1/orders/open`, `states[]=wait&states[]=watch`)과 최근 종료 목록(`/v1/orders/closed`, 마지막 대조 시각부터, 최대 7일 구간. `start_time`은 밀리초 타임스탬프로 보낸다. ISO 8601도 받지만 `:`·`+`가 들어가 인코딩 실수가 생기기 쉽다)에서 `uat-` 접두어인데 로컬에 없는 주문은 들여온다(`decision_id` NULL, source=reconcile, 경고 이벤트 ORDER_IMPORTED). DB를 백업에서 복원했을 때 생길 수 있다.
 3. `uat-` 접두어가 없는 미체결 주문(같은 포켓에서 사용자가 직접 낸 주문)은 관리하지 않는다. 선택한 코인의 주문이면 경고 이벤트 MANUAL_ORDER_DETECTED를 남긴다(자기체결 위험).
 
 **잔고**

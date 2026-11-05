@@ -459,3 +459,117 @@ def test_success_after_block_resets_the_wait():
         return limiter.blocked_until() - now
 
     assert asyncio.run(scenario()) == pytest.approx(300.0)
+
+
+# --- 418 세부(D-088 제안: 오케스트레이터 결정 D·E·F) ---------------------------------------
+
+
+def test_418_arriving_while_already_blocked_does_not_raise_the_step():
+    # 결정 D: 차단 전에 함께 나간 요청의 418은 단계를 올리지 않고 만기만 유지한다.
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        limiter.on_blocked(None)  # 5분
+        first = limiter.blocked_until()
+        await advance(clock, 10.0)
+        limiter.on_blocked(None)  # 동시에 나갔던 요청의 418
+        second = limiter.blocked_until()
+        await advance(clock, 300.0)
+        now = clock.monotonic()
+        limiter.on_blocked(None)  # 풀린 뒤 확인 조회의 418 → 두 번째 단계(10분)
+        return first, second, limiter.blocked_until() - now
+
+    first, second, next_wait = asyncio.run(scenario())
+
+    assert first == pytest.approx(START + 300.0)
+    assert second == pytest.approx(first)
+    assert next_wait == pytest.approx(600.0)
+
+
+def test_418_with_retry_after_while_blocked_keeps_the_later_expiry():
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        limiter.on_blocked(None)  # START+300
+        await advance(clock, 10.0)
+        limiter.on_blocked(900.0)  # START+910이 더 늦다
+        later = limiter.blocked_until()
+        limiter.on_blocked(5.0)  # 더 이른 만기는 무시
+        return later, limiter.blocked_until()
+
+    later, kept = asyncio.run(scenario())
+
+    assert later == pytest.approx(START + 910.0)
+    assert kept == pytest.approx(START + 910.0)
+
+
+def test_retry_after_also_raises_the_step():
+    # 결정 E: Retry-After가 있어도 단계 계수는 올린다(다음 418은 다음 단계).
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        limiter.on_blocked(120.0)
+        await advance(clock, 120.5)
+        now = clock.monotonic()
+        limiter.on_blocked(None)
+        return limiter.blocked_until() - now
+
+    assert asyncio.run(scenario()) == pytest.approx(600.0)
+
+
+def test_retry_after_longer_than_sixty_minutes_is_kept():
+    # 결정 E: 거래소 지시가 우선이므로 Retry-After에는 60분 상한을 두지 않는다.
+    limiter = RateLimiter(FakeClock())
+
+    limiter.on_blocked(7200.0)
+
+    assert limiter.blocked_until() == pytest.approx(START + 7200.0)
+
+
+@pytest.mark.parametrize("retry_after", [-1.0, 0.0, math.nan, math.inf], ids=str)
+def test_unusable_retry_after_falls_back_to_the_step_table(retry_after):
+    limiter = RateLimiter(FakeClock())
+
+    limiter.on_blocked(retry_after)
+
+    assert limiter.blocked_until() == pytest.approx(START + 300.0)
+
+
+def test_check_not_blocked_raises_blocked_with_the_remaining_wait():
+    # 결정 F: 네트워크 없이 던지는 UpbitBlocked의 필드.
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        limiter.on_blocked(None)
+        await advance(clock, 100.0)
+        with pytest.raises(UpbitBlocked) as caught:
+            limiter.check_not_blocked()
+        return caught.value
+
+    error = asyncio.run(scenario())
+
+    assert error.http_status == 418
+    assert error.error_name is None
+    assert error.retry_after == pytest.approx(200.0)
+    assert error.raw_body == ""
+
+
+UNKNOWN_PATHS = [
+    ("GET", "/v1/candles/weeks"),
+    ("GET", "/v1/orders"),
+    ("POST", "/v1/order"),
+    ("PUT", "/v1/orders"),
+    ("GET", "/v1/withdraws"),
+    ("GET", "/v1/ticker/"),
+    ("GET", "/v1/candles/minutes/2"),
+    ("POST", "/v1/ticker"),
+]
+
+
+@pytest.mark.parametrize(
+    ("method", "path"), UNKNOWN_PATHS, ids=[f"{method} {path}" for method, path in UNKNOWN_PATHS]
+)
+def test_group_for_rejects_paths_outside_the_table(method, path):
+    # 결정 F: 모든 경로를 표에 명시하고, 표에 없는 경로는 보내지 않는다.
+    with pytest.raises(ValueError):  # noqa: PT011
+        group_for(method, path)

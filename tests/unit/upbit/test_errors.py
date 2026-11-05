@@ -395,3 +395,78 @@ def test_remaining_req_header_name_is_case_insensitive():
     error = to_error(400, error_body("invalid_parameter"), lowered, group="default")
 
     assert error.remaining_sec == 3
+
+
+# --- 우선순위와 모르는 이름(오케스트레이터 결정 B·C·F·G) -------------------------------------
+
+STATUS_FIRST = [
+    (500, "insufficient_funds_bid", UpbitServerError),
+    (503, "order_not_found", UpbitServerError),
+    (502, "jwt_verification", UpbitServerError),
+    (504, "market_offline", UpbitServerError),
+    (429, "invalid_parameter", UpbitRateLimited),
+    (429, "out_of_scope", UpbitRateLimited),
+]
+
+
+@pytest.mark.parametrize(
+    ("status", "name", "expected"),
+    STATUS_FIRST,
+    ids=[f"{status}-{name}" for status, name, _ in STATUS_FIRST],
+)
+def test_5xx_and_429_are_classified_by_status_even_with_a_known_name(status, name, expected):
+    # 결정 C: 418 > 429 > 5xx는 상태가 먼저다(5xx를 주문 거절로 보면 "안 만들어졌다"고 잘못 판단).
+    error = to_error(status, error_body(name), headers(), group="order")
+
+    assert category(error) is expected
+    assert error.http_status == status
+    assert error.error_name == name
+
+
+def test_unknown_403_name_is_a_permission_error():
+    # 결정 B: 모르는 403 이름은 보수적으로 권한 오류(매매 멈춤 쪽)로 본다.
+    error = to_error(403, error_body("some_forbidden_thing"), headers(), group="order")
+
+    assert category(error) is UpbitPermissionError
+
+
+def test_unknown_401_name_is_an_auth_error():
+    error = to_error(401, error_body("some_new_auth_error"), headers(), group="default")
+
+    assert category(error) is UpbitAuthError
+
+
+def test_bad_request_name_outside_the_table_is_a_request_error():
+    # 결정 G
+    error = to_error(400, error_body("bad_request"), headers(), group="default")
+
+    assert category(error) is UpbitRequestError
+    assert error.error_name == "bad_request"
+
+
+@pytest.mark.parametrize("status", [300, 301, 302, 303, 304, 307, 308])
+def test_redirect_statuses_are_request_errors(status):
+    # 결정 F: 3xx는 따라가지 않고 요청 오류로 보며 상태를 보존한다.
+    error = to_error(status, b"", headers(), group="default")
+
+    assert category(error) is UpbitRequestError
+    assert error.http_status == status
+
+
+@pytest.mark.parametrize(
+    "retry_after",
+    ["120.5", "-5", "1e3", "Thu, 05 Nov 2026 02:02:01 GMT", "0", "", "+30"],
+)
+def test_retry_after_is_read_only_as_positive_whole_seconds(retry_after):
+    # 결정 E: Retry-After는 정수 초만 해석한다(HTTP 날짜는 PC 시계에 기대야 해서 쓰지 않는다).
+    # 0초는 차단을 바로 풀게 만들어 차단을 늘릴 수 있으므로 없는 것으로 본다.
+    error = to_error(418, b"", headers(**{"Retry-After": retry_after}), group="ticker")
+
+    assert category(error) is UpbitBlocked
+    assert error.retry_after is None
+
+
+def test_retry_after_whole_seconds_are_read_as_float():
+    error = to_error(418, b"", headers(**{"Retry-After": "3600"}), group="ticker")
+
+    assert error.retry_after == 3600.0

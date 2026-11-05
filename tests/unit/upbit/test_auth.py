@@ -17,6 +17,7 @@ import hmac
 import json
 import re
 import uuid
+import warnings
 from urllib.parse import unquote
 
 import pytest
@@ -311,3 +312,28 @@ def test_credentials_repr_and_str_hide_both_keys():
         assert made.access_key not in text
         assert made.secret_key not in text
         assert find_canaries(text, [made.access_key, made.secret_key]) == []
+
+
+# --- 경고(오케스트레이터 결정 H) -------------------------------------------------------------
+
+
+def test_make_token_emits_no_warnings_for_upbit_length_secret_keys():
+    # PyJWT는 64바이트보다 짧은 HS512 키에 InsecureKeyLengthWarning을 낸다. 키 길이는 거래소가
+    # 정하므로 make_token 안에서 그 경고만 국소적으로 억제한다.
+    creds = make_upbit_credentials()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        make_token(creds, hash_input=OPEN_ORDERS_INPUT)
+        make_token(creds, hash_input=None)
+
+    assert [str(w.message) for w in caught] == []
+
+
+def test_make_token_leaves_the_callers_warning_filters_alone():
+    creds = make_upbit_credentials()
+    before = list(warnings.filters)
+
+    make_token(creds, hash_input=None)
+
+    assert list(warnings.filters) == before

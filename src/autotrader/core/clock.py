@@ -8,7 +8,7 @@ core는 시각을 Clock으로만 본다(INV-16). 주기와 대기는 monotonic, 
 import asyncio
 import time
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
 class Clock(Protocol):
@@ -21,8 +21,18 @@ class Clock(Protocol):
     async def sleep(self, seconds: float) -> None: ...
 
 
+@runtime_checkable
+class AdjustableClock(Clock, Protocol):
+    """거래소 시각 오차를 넣을 수 있는 시계. 오차를 재는 쪽(Date 헤더 측정, JOB-09)만 받는다."""
+
+    def set_exchange_offset(self, seconds: float) -> None: ...
+
+
 class SystemClock:
-    """실제 시계. exchange_now는 utc_now에 측정한 거래소 오차를 더한 값이다."""
+    """실제 시계(AdjustableClock 구현).
+
+    exchange_now는 utc_now에 측정한 거래소 오차를 더한 값이다.
+    """
 
     def __init__(self) -> None:
         self._exchange_offset = timedelta(0)

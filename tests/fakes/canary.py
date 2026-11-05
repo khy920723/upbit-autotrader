@@ -92,9 +92,7 @@ def _shapes(value: str) -> set[str]:
 
 
 def _windows(value: str) -> set[str]:
-    return {
-        value[i : i + MIN_CANARY_LENGTH] for i in range(len(value) - MIN_CANARY_LENGTH + 1)
-    }
+    return {value[i : i + MIN_CANARY_LENGTH] for i in range(len(value) - MIN_CANARY_LENGTH + 1)}
 
 
 def find_canaries(text: str, values: Iterable[str]) -> list[str]:

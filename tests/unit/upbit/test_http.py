@@ -42,6 +42,7 @@ from autotrader.core.errors import (
     UpbitNotFound,
     UpbitOrderRejected,
     UpbitRateLimited,
+    UpbitRequestError,
     UpbitServerError,
 )
 
@@ -1053,3 +1054,105 @@ def test_secrets_never_reach_logs_or_exception_text(caplog):
         assert token not in blob
     assert JWT_SHAPE.search(blob) is None
     assert BEARER_VALUE.search(blob) is None
+
+
+# --- 오케스트레이터 결정 D·F와 응답 본문 -----------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+def test_redirect_raises_a_request_error_with_the_status(status):
+    # 결정 F: 3xx는 따라가지 않고 UpbitRequestError(http_status 보존).
+    location = {"Location": "https://api.upbit.com/v1/accounts/elsewhere"}
+
+    async def scenario():
+        async with connect(reply(status, content=b"", headers=location)) as h:
+            with pytest.raises(UpbitRequestError) as caught:
+                await h.http.get("/v1/accounts", auth=True)
+            return caught.value
+
+    error = run(scenario)
+
+    assert error.http_status == status
+    assert error.rate_group == "default"
+
+
+def test_concurrent_418s_from_one_block_raise_the_wait_only_once():
+    # 결정 D: 차단 전에 함께 나간 요청들이 모두 418을 받아도 대기는 한 단계만 오른다.
+    async def scenario():
+        clock = FakeClock(auto_advance=True)
+        limiter = RateLimiter(clock)
+        gate = asyncio.Event()
+        sent = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            if len(sent) <= 3:
+                await gate.wait()
+            return httpx.Response(418, content=b"")
+
+        http = UpbitHttp(
+            clock=clock,
+            limiter=limiter,
+            credentials=make_upbit_credentials,
+            transport=httpx.MockTransport(handler),
+            user_agent=UA,
+        )
+        try:
+            tasks = [
+                asyncio.create_task(http.get("/v1/ticker", [("markets", "KRW-BTC")]))
+                for _ in range(3)
+            ]
+            await settle()
+            assert len(sent) == 3  # 셋 다 차단 전에 나갔다
+            gate.set()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            first_wait = limiter.blocked_until() - clock.monotonic()
+            await advance(clock, first_wait + 0.5)
+            with pytest.raises(UpbitBlocked):
+                await http.get("/v1/ticker", [("markets", "KRW-BTC")])  # 확인 조회도 418
+            second_wait = limiter.blocked_until() - clock.monotonic()
+            return results, first_wait, second_wait
+        finally:
+            await http.aclose()
+
+    results, first_wait, second_wait = run(scenario)
+
+    assert all(isinstance(result, UpbitBlocked) for result in results)
+    assert first_wait == pytest.approx(300.0)
+    assert second_wait == pytest.approx(600.0)
+
+
+@pytest.mark.parametrize("content", [b"", b"<html>ok</html>", b"{"], ids=["empty", "html", "cut"])
+def test_success_status_with_an_unreadable_body_is_a_server_error(content):
+    # 2xx인데 본문을 읽을 수 없으면 결과를 모른다. 주문 POST가 UNKNOWN으로 가도록 5xx와 같은 타입.
+    async def scenario():
+        async with connect(reply(201, content=content)) as h:
+            with pytest.raises(UpbitServerError) as caught:
+                await h.http.post("/v1/orders", ORDER_BODY)
+            return caught.value, len(h.wire.requests)
+
+    error, sent = run(scenario)
+
+    assert error.http_status == 201
+    assert error.rate_group == "order"
+    assert sent == 1
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda http: http.post("/v1/orders", {"market": "KRW-BTC", "volume": Decimal("0.1")}),
+        lambda http: http.get("/v1/ticker", [("markets", 1)]),
+        lambda http: http.delete("/v1/order", [("identifier", None)]),
+    ],
+    ids=["post_decimal", "get_int", "delete_none"],
+)
+def test_parameter_values_must_already_be_strings(call):
+    # 해시 문자열과 전송 값이 어긋나지 않게 값은 호출하는 쪽이 문자열로 만들어 넘긴다.
+    async def scenario():
+        async with connect() as h:
+            with pytest.raises(TypeError):
+                await call(h.http)
+            return h.wire.requests
+
+    assert run(scenario) == []

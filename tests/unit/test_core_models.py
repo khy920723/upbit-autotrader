@@ -540,84 +540,87 @@ def valid_values(cls) -> dict:
     when = datetime(2026, 11, 5, tzinfo=UTC)
     one = Decimal(1)
     builders = {
-        models.Candle: lambda: dict(
-            market="KRW-BTC",
-            unit="m240",
-            start_utc=when,
-            open=one,
-            high=one,
-            low=one,
-            close=one,
-            volume=one,
-            value=one,
-        ),
-        models.Ticker: lambda: dict(
-            market="KRW-BTC",
-            trade_price=one,
-            signed_change_rate=Decimal("-0.003"),
-            acc_trade_price_24h=one,
-            acc_trade_volume_24h=one,
-            timestamp_ms=0,
-        ),
-        models.OrderbookUnit: lambda: dict(
-            ask_price=one, bid_price=one, ask_size=one, bid_size=one
-        ),
-        models.OrderChance: lambda: dict(
-            market="KRW-BTC",
-            bid_fee=one,
-            ask_fee=one,
-            maker_bid_fee=one,
-            maker_ask_fee=one,
-            bid_min_total=one,
-            ask_min_total=one,
-            max_total=one,
-            state="active",
-            bid_types=(),
-            ask_types=(),
-            order_types=(),
-            order_sides=(),
-        ),
-        models.Balance: lambda: dict(
-            currency="KRW",
-            balance=one,
-            locked=one,
-            avg_buy_price=one,
-            avg_buy_price_modified=False,
-            unit_currency="KRW",
-        ),
-        models.OrderRequest: lambda: dict(
-            market="KRW-BTC",
-            side="bid",
-            ord_type="limit",
-            identifier=IDENTIFIER,
-            volume=one,
-            price=one,
-            time_in_force="ioc",
-        ),
-        models.Trade: lambda: dict(
-            uuid="t",
-            market="KRW-BTC",
-            price=one,
-            volume=one,
-            funds=one,
-            side="bid",
-            created_at=when,
-        ),
+        models.Candle: lambda: {
+            "market": "KRW-BTC",
+            "unit": "m240",
+            "start_utc": when,
+            "open": one,
+            "high": one,
+            "low": one,
+            "close": one,
+            "volume": one,
+            "value": one,
+        },
+        models.Ticker: lambda: {
+            "market": "KRW-BTC",
+            "trade_price": one,
+            "signed_change_rate": Decimal("-0.003"),
+            "acc_trade_price_24h": one,
+            "acc_trade_volume_24h": one,
+            "timestamp_ms": 0,
+        },
+        models.OrderbookUnit: lambda: {
+            "ask_price": one,
+            "bid_price": one,
+            "ask_size": one,
+            "bid_size": one,
+        },
+        models.OrderChance: lambda: {
+            "market": "KRW-BTC",
+            "bid_fee": one,
+            "ask_fee": one,
+            "maker_bid_fee": one,
+            "maker_ask_fee": one,
+            "bid_min_total": one,
+            "ask_min_total": one,
+            "max_total": one,
+            "state": "active",
+            "bid_types": (),
+            "ask_types": (),
+            "order_types": (),
+            "order_sides": (),
+        },
+        models.Balance: lambda: {
+            "currency": "KRW",
+            "balance": one,
+            "locked": one,
+            "avg_buy_price": one,
+            "avg_buy_price_modified": False,
+            "unit_currency": "KRW",
+        },
+        models.OrderRequest: lambda: {
+            "market": "KRW-BTC",
+            "side": "bid",
+            "ord_type": "limit",
+            "identifier": IDENTIFIER,
+            "volume": one,
+            "price": one,
+            "time_in_force": "ioc",
+        },
+        models.Trade: lambda: {
+            "uuid": "t",
+            "market": "KRW-BTC",
+            "price": one,
+            "volume": one,
+            "funds": one,
+            "side": "bid",
+            "created_at": when,
+        },
         models.OrderSnapshot: lambda: (
-            {name: one for name in DECIMAL_FIELDS[models.OrderSnapshot]}
-            | dict(
-                uuid="u",
-                identifier=IDENTIFIER,
-                market="KRW-BTC",
-                side="bid",
-                ord_type="limit",
-                state="wait",
-                trades_count=0,
-                created_at=when,
-                time_in_force=None,
-                smp_type="cancel_maker",
-                trades=(),
-            )
+            dict.fromkeys(DECIMAL_FIELDS[models.OrderSnapshot], one)
+            | {
+                "uuid": "u",
+                "identifier": IDENTIFIER,
+                "market": "KRW-BTC",
+                "side": "bid",
+                "ord_type": "limit",
+                "state": "wait",
+                "trades_count": 0,
+                "created_at": when,
+                "time_in_force": None,
+                "smp_type": "cancel_maker",
+                "trades": (),
+            }
         ),
     }
     return builders[cls]()
@@ -659,10 +662,12 @@ def test_optional_decimal_fields_accept_none(cls, name):
     assert getattr(cls(**values), name) is None
 
 
-@pytest.mark.parametrize(("cls", "name"), DECIMAL_CASES, ids=lambda v: getattr(v, "__name__", v))
+@pytest.mark.parametrize(
+    ("cls", "name"),
+    [case for case in DECIMAL_CASES if case not in OPTIONAL_DECIMAL_CASES],
+    ids=lambda v: getattr(v, "__name__", v),
+)
 def test_required_decimal_fields_reject_none(cls, name):
-    if (cls, name) in OPTIONAL_DECIMAL_CASES:
-        pytest.skip("None을 허용하는 필드")
     values = valid_values(cls)
     values[name] = None
 

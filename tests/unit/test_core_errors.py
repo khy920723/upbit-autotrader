@@ -4,7 +4,9 @@
 UpbitOrderRejected는 REJECTED. 그래서 형제 타입이 서로를 상속하면 안 된다.
 """
 
+import copy
 import itertools
+import pickle
 
 import pytest
 
@@ -68,6 +70,7 @@ def test_autotrader_error_is_an_ordinary_exception():
         (errors.NetworkError, errors.ExternalError),
         (errors.RequestTimeout, errors.NetworkError),
         (errors.UpbitError, errors.ExternalError),
+        (errors.StorageError, errors.AutotraderError),
     ],
     ids=lambda c: c.__name__,
 )
@@ -199,3 +202,46 @@ def test_upbit_errors_reject_request_details(cls):
     for name in ("headers", "request", "authorization", "token"):
         with pytest.raises(TypeError):
             make_error(cls, **{name: "Bearer x"})
+
+
+def test_storage_error_is_not_external():
+    # SQLite 오류는 외부 연동 오류처럼 백오프·재시도 대상이 아니다.
+    assert not issubclass(errors.StorageError, errors.ExternalError)
+    assert not issubclass(errors.StorageError, errors.InvariantViolation)
+
+
+# ── 복제·피클(프로세스 경계, 로그 처리기, 테스트 도구) ───
+
+
+@pytest.mark.parametrize("cls", ALL_UPBIT_ERRORS, ids=lambda c: c.__name__)
+@pytest.mark.parametrize(
+    "clone",
+    [copy.copy, copy.deepcopy, lambda e: pickle.loads(pickle.dumps(e))],
+    ids=["copy", "deepcopy", "pickle"],
+)
+def test_upbit_errors_survive_copy_and_pickle(cls, clone):
+    err = make_error(cls)
+
+    cloned = clone(err)
+
+    assert type(cloned) is cls
+    assert vars(cloned) == vars(err)
+    assert str(cloned) == str(err)
+
+
+def test_upbit_error_with_unknown_fields_survives_pickle():
+    err = errors.UpbitError()
+
+    cloned = pickle.loads(pickle.dumps(err))
+
+    assert (cloned.http_status, cloned.error_name, cloned.remaining_sec) == (None, None, None)
+
+
+def test_upbit_error_notes_survive_pickle():
+    err = make_error(errors.UpbitServerError)
+    err.add_note("재시도 1회")
+
+    cloned = pickle.loads(pickle.dumps(err))
+
+    assert cloned.__notes__ == ["재시도 1회"]
+    assert cloned.http_status == err.http_status

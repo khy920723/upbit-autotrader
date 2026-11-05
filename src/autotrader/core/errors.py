@@ -3,8 +3,11 @@
 외부 연동 오류는 타입으로 처리를 나눈다(예: 주문 생성 중 NetworkError는 결과 불명,
 UpbitOrderRejected는 거절). 그래서 형제 타입은 서로를 상속하지 않는다.
 예외 객체에는 서버가 준 값과 요청 한도 정보만 담고, 요청·헤더·토큰은 담지 않는다(INV-07).
+UpbitError 계열은 키워드 인자로만 만들므로 __reduce__로 copy·pickle을 지원한다.
 근거: docs/06-architecture/system-architecture.md 7장.
 """
+
+from typing import Any
 
 
 class AutotraderError(Exception):
@@ -13,6 +16,10 @@ class AutotraderError(Exception):
 
 class InvariantViolation(AutotraderError):
     """불변식 위반. 버그이므로 외부 오류처럼 재시도로 삼키지 않는다."""
+
+
+class StorageError(AutotraderError):
+    """SQLite 오류."""
 
 
 class ExternalError(AutotraderError):
@@ -58,6 +65,18 @@ class UpbitError(ExternalError):
 
     def __str__(self) -> str:
         return self._describe()
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # 기본 Exception.__reduce__는 cls(*args)로 되살리는데 이 계열은 키워드 인자만 받는다.
+        # add_note가 남긴 __notes__ 같은 속성은 생성 인자가 아니므로 상태로 따로 넘긴다.
+        state = vars(self)
+        fields = {k: v for k, v in state.items() if not k.startswith("__")}
+        extra = {k: v for k, v in state.items() if k.startswith("__")}
+        return (_rebuild_upbit_error, (type(self), fields), extra or None)
+
+
+def _rebuild_upbit_error(cls: type[UpbitError], fields: dict[str, Any]) -> UpbitError:
+    return cls(**fields)
 
 
 class UpbitAuthError(UpbitError):

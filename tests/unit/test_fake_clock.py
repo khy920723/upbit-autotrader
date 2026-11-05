@@ -509,7 +509,7 @@ def test_auto_advance_is_off_by_default():
 def test_naive_start_utc_is_rejected():
     # 시간대 없는 시각은 PC 지역 시간으로 해석될 수 있다. 모호하므로 받지 않는다.
     with pytest.raises(ValueError):  # noqa: PT011 (문구는 정하지 않는다)
-        FakeClock(start_utc=datetime(2026, 11, 5, 0, 0, 0))  # noqa: DTZ001 (일부러 naive)
+        FakeClock(start_utc=datetime(2026, 11, 5, 0, 0, 0))
 
 
 def test_monotonic_returns_a_float():

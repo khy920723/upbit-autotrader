@@ -154,3 +154,45 @@ def test_sleep_delegates_to_asyncio_sleep(monkeypatch):
     asyncio.run(asyncio.wait_for(clock_module.SystemClock().sleep(3600.0), timeout=5))
 
     assert calls == [3600.0]
+
+
+# ── AdjustableClock: 거래소 오차를 넣을 수 있는 시계 ─────
+
+
+def test_adjustable_clock_is_a_clock_protocol_with_set_exchange_offset():
+    assert typing.is_protocol(clock_module.AdjustableClock)
+    assert clock_module.Clock in clock_module.AdjustableClock.__mro__
+    assert typing.get_protocol_members(clock_module.AdjustableClock) == CLOCK_MEMBERS | {
+        "set_exchange_offset"
+    }
+    assert not inspect.iscoroutinefunction(clock_module.AdjustableClock.set_exchange_offset)
+
+
+def test_system_clock_satisfies_adjustable_clock():
+    params = inspect.signature(clock_module.SystemClock.set_exchange_offset).parameters
+
+    assert list(params) == ["self", "seconds"]
+    assert isinstance(clock_module.SystemClock(), clock_module.AdjustableClock)
+
+
+def test_fake_clock_satisfies_adjustable_clock():
+    from fakes.clock import FakeClock
+
+    assert isinstance(FakeClock(), clock_module.AdjustableClock)
+
+
+def test_an_object_without_set_exchange_offset_is_not_adjustable():
+    class ReadOnly:
+        def monotonic(self) -> float:
+            return 0.0
+
+        def utc_now(self) -> datetime:
+            return datetime(2026, 11, 5, tzinfo=UTC)
+
+        def exchange_now(self) -> datetime:
+            return datetime(2026, 11, 5, tzinfo=UTC)
+
+        async def sleep(self, seconds: float) -> None:
+            return None
+
+    assert not isinstance(ReadOnly(), clock_module.AdjustableClock)

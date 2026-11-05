@@ -1,0 +1,266 @@
+"""업비트 REST 전송: URL·헤더·서명·요청 한도·오류 매핑을 한곳에서 지킨다.
+
+- 기본 URL `https://api.upbit.com` + `/v1/...`. 끝 슬래시·중복 슬래시 경로는 보내기 전에 ValueError.
+- 자동 재시도 없음: 어떤 실패도 요청은 1회다. 리다이렉트를 따라가지 않는다(3xx는 UpbitRequestError).
+- 헤더는 이름마다 한 번: Accept, User-Agent, Authorization(인증 요청만), Content-Type(POST만).
+  Origin은 보내지 않는다. POST 본문은 JSON만이다.
+- 키는 요청마다 키 제공 함수에서 받는다.
+  비밀(키, JWT, Authorization)은 로그·예외 문구에 넣지 않는다.
+- 응답 JSON의 숫자는 모두 Decimal로 읽는다(INV-14).
+- 요청마다 차단 확인 → 한도 대기 → 차단 재확인 → 전송 → Remaining-Req 반영 순서다.
+근거: docs/05-integration/upbit-api.md 3~6장·9장, ADR-0006 "지킬 것", INV-07·INV-13·INV-14.
+"""
+
+import json
+import logging
+import re
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal
+from email.utils import parsedate_to_datetime
+from typing import Any
+
+import httpx
+
+from autotrader import __version__
+from autotrader.adapters.upbit.auth import (
+    Credentials,
+    Params,
+    body_hash_input,
+    encode_query,
+    hash_input,
+    make_token,
+)
+from autotrader.adapters.upbit.errors import to_error
+from autotrader.adapters.upbit.ratelimit import RateLimiter, group_for
+from autotrader.core.clock import Clock
+from autotrader.core.errors import (
+    NetworkError,
+    RequestTimeout,
+    UpbitAuthError,
+    UpbitBlocked,
+    UpbitRateLimited,
+    UpbitServerError,
+)
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_BASE_URL = "https://api.upbit.com"
+DEFAULT_USER_AGENT = f"upbit-autotrader/{__version__}"
+JSON_CONTENT_TYPE = "application/json; charset=utf-8"
+
+_PATH = re.compile(r"/v1(?:/[A-Za-z0-9_.~-]+)+")
+_LOGGED_BODY_LIMIT = 2000
+
+
+@dataclass(frozen=True, slots=True)
+class UpbitResponse:
+    """성공(2xx) 응답. data는 Decimal 숫자로 읽은 JSON, server_date는 Date 헤더(UTC)."""
+
+    status: int
+    data: Any
+    headers: httpx.Headers
+    server_date: datetime | None
+
+
+def parse_json(content: bytes) -> Any:
+    """업비트 응답 JSON. 소수·정수·NaN 같은 상수까지 모두 Decimal로 읽는다."""
+    return json.loads(content, parse_float=Decimal, parse_int=Decimal, parse_constant=Decimal)
+
+
+def parse_server_date(value: str | None) -> datetime | None:
+    """HTTP Date 헤더를 UTC aware datetime으로. 없거나 읽을 수 없으면 None."""
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _check_path(path: str) -> None:
+    if not isinstance(path, str) or _PATH.fullmatch(path) is None:
+        raise ValueError(f"업비트 경로는 끝·중복 슬래시 없는 /v1/... 형식이어야 한다: {path!r}")
+
+
+def _check_text_pairs(pairs: Params, what: str) -> None:
+    for key, value in pairs:
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise TypeError(f"{what}의 키와 값은 문자열이어야 한다: {key!r}")
+
+
+class UpbitHttp:
+    """업비트 REST 호출 한 곳. 한 이벤트 루프에서만 쓴다."""
+
+    def __init__(
+        self,
+        *,
+        clock: Clock,
+        limiter: RateLimiter,
+        credentials: Callable[[], Credentials | None] | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = 10.0,
+        user_agent: str = DEFAULT_USER_AGENT,
+    ) -> None:
+        if base_url.endswith("/"):
+            raise ValueError("base_url은 끝 슬래시 없이 준다")
+        self._clock = clock
+        self._limiter = limiter
+        self._credentials = credentials
+        self._base_url = base_url
+        # 기본 전송(retries=0)으로 자동 재시도가 없다. 리다이렉트는 따라가지 않는다.
+        self._client = httpx.AsyncClient(
+            transport=transport if transport is not None else httpx.AsyncHTTPTransport(retries=0),
+            timeout=httpx.Timeout(timeout),
+            follow_redirects=False,
+            headers={"Accept": "application/json", "User-Agent": user_agent},
+        )
+
+    def __repr__(self) -> str:
+        return f"UpbitHttp(base_url={self._base_url!r})"
+
+    async def get(self, path: str, params: Params = (), *, auth: bool = False) -> UpbitResponse:
+        """GET. params는 순서를 지킨 (키, 문자열 값) 목록이다. 배열은 ("uuids[]", "a")처럼 반복."""
+        return await self._query_request("GET", path, params, auth=auth)
+
+    async def delete(self, path: str, params: Params, *, auth: bool = True) -> UpbitResponse:
+        """DELETE. 파라미터는 쿼리로만 보낸다(본문 없음)."""
+        return await self._query_request("DELETE", path, params, auth=auth)
+
+    async def post(self, path: str, body: Mapping[str, str], *, auth: bool = True) -> UpbitResponse:
+        """POST. body는 문자열 값의 JSON 객체로, 키 순서대로 보내고 해시한다."""
+        _check_path(path)
+        group = group_for("POST", path)
+        items = list(body.items())
+        _check_text_pairs(items, "본문")
+        content = json.dumps(dict(items), ensure_ascii=False, separators=(",", ":"))
+        return await self._send(
+            "POST",
+            path,
+            group,
+            query="",
+            hashed=body_hash_input(body),
+            content=content.encode("utf-8"),
+            auth=auth,
+        )
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    async def _query_request(
+        self, method: str, path: str, params: Params, *, auth: bool
+    ) -> UpbitResponse:
+        _check_path(path)
+        group = group_for(method, path)
+        pairs = list(params)
+        _check_text_pairs(pairs, "쿼리 파라미터")
+        return await self._send(
+            method,
+            path,
+            group,
+            query=encode_query(pairs),
+            hashed=hash_input(pairs),
+            content=None,
+            auth=auth,
+        )
+
+    def _current_credentials(self, group: str) -> Credentials:
+        creds = self._credentials() if self._credentials is not None else None
+        if creds is None:
+            raise UpbitAuthError(
+                http_status=None,
+                message="업비트 키가 설정되지 않아 보내지 않았다",
+                rate_group=group,
+            )
+        return creds
+
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        group: str,
+        *,
+        query: str,
+        hashed: str,
+        content: bytes | None,
+        auth: bool,
+    ) -> UpbitResponse:
+        creds = self._current_credentials(group) if auth else None
+        self._limiter.check_not_blocked()
+        await self._limiter.acquire(group)
+        # 한도 때문에 기다리는 사이 다른 요청이 418을 받았을 수 있다.
+        self._limiter.check_not_blocked()
+
+        headers: dict[str, str] = {}
+        if content is not None:
+            headers["Content-Type"] = JSON_CONTENT_TYPE
+        if creds is not None:
+            token = make_token(creds, hash_input=hashed or None)
+            headers["Authorization"] = f"Bearer {token}"
+        # 쿼리는 직접 만든 문자열을 그대로 쓴다(값만 인코딩, 배열 이름의 []는 그대로).
+        url = f"{self._base_url}{path}?{query}" if query else f"{self._base_url}{path}"
+        request = self._client.build_request(method, url, headers=headers, content=content)
+        logger.debug("업비트 요청: %s %s (그룹 %s)", method, path, group)
+
+        try:
+            response = await self._client.send(request, follow_redirects=False)
+        except httpx.TimeoutException as exc:
+            if isinstance(exc, httpx.ConnectTimeout):
+                raise NetworkError(f"업비트 연결 시간 초과: {method} {path}") from exc
+            raise RequestTimeout(
+                f"업비트 응답 시간 초과({type(exc).__name__}): {method} {path}"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise NetworkError(f"업비트 연결 오류({type(exc).__name__}): {method} {path}") from exc
+
+        status = response.status_code
+        body = response.content
+        self._limiter.observe(group, response.headers.get("Remaining-Req"))
+        logger.debug("업비트 응답: %s %s → %d", method, path, status)
+
+        if 200 <= status < 300:
+            try:
+                data = parse_json(body)
+            except (ValueError, RecursionError):
+                raise UpbitServerError(
+                    http_status=status,
+                    message="성공 응답의 본문을 JSON으로 읽을 수 없다",
+                    rate_group=group,
+                ) from None
+            self._limiter.on_success_after_block()
+            return UpbitResponse(
+                status=status,
+                data=data,
+                headers=response.headers,
+                server_date=parse_server_date(response.headers.get("Date")),
+            )
+
+        error = to_error(status, body, response.headers, group=group)
+        if isinstance(error, UpbitBlocked):
+            self._limiter.on_blocked(error.retry_after)
+            # 차단 시간 형식을 확인하려고 헤더와 본문 원문을 남긴다(D-078).
+            # 응답 헤더에는 비밀이 없다.
+            logger.warning(
+                "업비트 418 차단: %s %s, 헤더=%s, 본문=%r",
+                method,
+                path,
+                dict(response.headers.items()),
+                error.raw_body[:_LOGGED_BODY_LIMIT],
+            )
+        elif isinstance(error, UpbitRateLimited):
+            self._limiter.on_rate_limited(group)
+            logger.warning("업비트 429: %s %s (그룹 %s)", method, path, group)
+        else:
+            logger.info(
+                "업비트 오류 응답: %s %s → %d %s",
+                method,
+                path,
+                status,
+                error.error_name,
+            )
+        raise error

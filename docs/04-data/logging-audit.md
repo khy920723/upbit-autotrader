@@ -14,6 +14,7 @@
 - API 키, Secret, JWT, `Authorization` 헤더, 텔레그램 토큰이 들어간 URL, 네이버 Client Secret.
 - 로그 기록기에 비밀 가리기 필터를 넣고, 비밀이 섞인 로그 줄이 실제로 가려지는지 테스트한다.
 - 계정 식별 정보(이메일, 계좌 정보)는 받지도 저장하지도 않는다.
+- `GET /v1/api_keys` 응답에 들어 있는 다른 키의 Access Key는 로그와 DB에 남기지 않는다(자기 키의 만료일만 쓴다).
 
 ## 3. 감사 기록 (DB)
 
@@ -43,8 +44,18 @@
 | KILL_STOP, KILL_LIQUIDATE | 긴급 정지 |
 | SETTING_CHANGE | 설정 변경 |
 | RATE_LIMIT_429, RATE_LIMIT_418 | 요청 한도 |
+| ORDER_IMPORTED | 재조정 중 거래소에만 있던 앱 주문(`uat-`)을 들여옴 |
+| SMP_PREVENTED | 자전거래 방지로 주문 수량 일부가 취소됨 |
+| SETTING_EXTERNAL_CHANGE | 설정 파일이 앱 밖에서 바뀐 것을 감지 |
+| SCHEMA_MIGRATED | DB·설정 파일 마이그레이션 적용 |
+| CORE_UNRESPONSIVE | core 스레드 heartbeat 끊김(MSG-E016) |
+| MANUAL_ORDER_DETECTED | 같은 포켓에서 앱이 만들지 않은 주문(`uat-` 접두어 없음, 예약 주문 포함)을 발견 |
+| BALANCE_RECONCILED | 대조로 보유 수량·평균 단가를 거래소 값으로 고침(MSG-W010) |
+| UNMANAGED_HOLDING | 선택하지 않은 코인의 보유분을 처음 발견 |
+| DUST_RECORDED | 팔 수 없는 잔량을 기록 |
+| INTERNAL_ERROR | 불변식 위반, 위험 점검·주문 관리 예외 3회 연속(MSG-E017) |
 
 ## 5. 보관과 공유
 
-- DB는 기간 제한 없이 보관한다(연간 수 MB 예상). 하루 1회 백업하고 7개를 남긴다.
-- 공개 저장소에 이슈를 올릴 때 로그나 DB를 그대로 첨부하지 않는다. 금액, IP, 주문 ID를 가린 진단 묶음을 만드는 기능을 7단계에서 만든다(1단계에서 범위 결정).
+- DB는 기간 제한 없이 보관한다. 시그널 입출력 원문 때문에 연 40~50MB를 예상한다([데이터 모델](data-model.md) 7장). 하루 1회 백업하고 7개를 남긴다.
+- 공개 저장소에 이슈를 올릴 때 로그나 DB를 그대로 첨부하지 않는다. 금액, IP, 주문 ID를 가린 진단 묶음을 만드는 기능을 7단계에서 만든다(범위는 아직 정하지 않았다. 7단계 전에 결정).

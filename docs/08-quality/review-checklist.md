@@ -26,7 +26,8 @@ QA가 PR을 검토할 때 쓰는 기준이다. PR 종류(문서, 인프라, 기�
 | A-10 | 위험 관리 규칙을 우회하는 옵션이나 디버그 플래그를 만들지 않았다. 기본 실행 모드는 paper다 | CLAUDE.md 절대 규칙 |
 | A-11 | 수익을 약속하거나 투자 조언으로 읽힐 문구가 없다. 면책 문구를 지우거나 약하게 바꾸지 않았다 | 프로젝트 개요서 8장, 법·약관 검토 9장 |
 | A-12 | 요구사항, TS, INV가 바뀌었으면 추적표를 함께 고쳤다 | 추적표 7장 |
-| A-13 | 다른 열린 PR과 ID(TS-, D-, RSK-, MSG-, ADR-, INV-)가 겹치지 않는다 | 문서 지도 ID 규칙 |
+| A-13 | 다른 열린 PR과 ID(TS-, D-, RSK-, MSG-, NTF-, ADR-, INV-)가 겹치지 않는다. 겹치면 나중에 병합되는 쪽이 번호를 옮긴다 | 문서 지도 ID 규칙 |
+| A-14 | 초안(draft) PR이 아니고, PR을 만들기 직전에 최신 `origin/main`을 병합해 충돌을 풀었다(자동 병합 규칙). 사용자 결정이 필요한 항목은 결정 로그에 "제안"·"대기"로만 적었다 | CLAUDE.md GitHub 제약 |
 
 ## 2. 문서 PR
 
@@ -57,7 +58,7 @@ QA가 PR을 검토할 때 쓰는 기준이다. PR 종류(문서, 인프라, 기�
 | C-08 | `packaging/autotrader.spec`이 onedir, windowed, UPX 끔이고 결과가 `dist/autotrader/autotrader.exe`다 | CLAUDE.md CI 계약 |
 | C-09 | `--self-test`가 창을 띄우지 않고, 네트워크와 키를 쓰지 않으며, 현재 폴더에 `self-test-report.txt`를 쓰고 성공 0·실패 1로 끝난다 | CLAUDE.md CI 계약, TS-123 |
 | C-10 | CI 명령 이름이 그대로다: `uv run ruff check .`, `QT_QPA_PLATFORM=offscreen uv run pytest -q` | CLAUDE.md CI 계약 |
-| C-11 | pytest 설정(`--strict-markers` 등)을 지키고 새 마커를 등록했다 | 2단계 PR의 pyproject |
+| C-11 | pytest 설정(`--strict-markers` 등)을 지키고 새 마커를 등록했다 | `pyproject.toml` |
 | C-12 | `.gitignore`가 런타임 데이터(`data/`, `logs/`, `*.db`), 비밀 파일, `.hypothesis/`를 막는다 | CLAUDE.md 구조 원칙 |
 | C-13 | 스크립트와 SessionStart 훅이 비밀을 출력하지 않고, 허용된 도메인 밖으로 나가지 않는다 | 보안 정책 4장 |
 | C-14 | Windows 10에서 달라질 수 있는 것(러너 라벨, Qt 플러그인, 한글이 든 사용자 경로)을 고려했다 | 기술 스택 2장 |
@@ -68,7 +69,7 @@ QA가 PR을 검토할 때 쓰는 기준이다. PR 종류(문서, 인프라, 기�
 
 | ID | 확인 항목 | 근거 |
 |---|---|---|
-| D-01 | core가 Qt(PySide6, shiboken6)와 ui·app 계층을 import하지 않는다. Qt 시그널은 app 계층만 쓴다 | CLAUDE.md 구조 원칙, `tests/unit/test_architecture.py`(2단계 PR) |
+| D-01 | core가 Qt(PySide6, shiboken6)와 ui·app 계층을 import하지 않는다. Qt 시그널은 app 계층만 쓴다 | CLAUDE.md 구조 원칙, `tests/unit/test_architecture.py` |
 | D-02 | 외부 연동(거래소, 시세, 뉴스, 시그널, 알림, 시계, 비밀 저장소)은 인터페이스 뒤에 있고 core가 어댑터 구현을 직접 import하지 않는다 | CLAUDE.md 구조 원칙 |
 | D-03 | core가 `time.time`, `time.monotonic`, `datetime.now`, `asyncio.sleep`을 직접 부르지 않고 Clock을 쓴다 | INV-16 |
 | D-04 | 런타임 데이터는 `%LOCALAPPDATA%\upbit-autotrader\` 아래에만 쓴다 | CLAUDE.md 구조 원칙 |
@@ -82,7 +83,7 @@ QA가 PR을 검토할 때 쓰는 기준이다. PR 종류(문서, 인프라, 기�
 | D-07 | 한도, 수수료, `min_total`·`max_total`을 하드코딩하지 않는다(설정과 `/v1/orders/chance`) | 위험 관리 정책서 2장 |
 | D-08 | 상태별 허용 동작 표를 지키고, 보내기 직전에 상태를 다시 확인한다 | 상태 전이 정의서 2장, INV-02 |
 | D-09 | 결과 불명·끝나지 않은 주문이 있는 코인에 새 주문을 만들지 않고, 같은 코인에 매수·매도를 함께 걸지 않는다 | INV-04, INV-05 |
-| D-10 | 손절은 60초마다 점검하고, 일일 주문 수 상한·일일 손실 한도가 손절을 막지 않는다 | 위험 관리 정책서 2장, INV-09 |
+| D-10 | 손절은 60초마다 점검하고, 일일 주문 수 상한·일일 손실 한도가 손절을 막지 않는다. 최소 주문 간격은 거래소가 접수한 주문만 세고, 손절·청산의 429 재시도는 간격을 기다리지 않는다(D-061) | 위험 관리 정책서 2장, INV-09 |
 | D-11 | 모든 거부와 차단을 이유 코드와 함께 기록한다 | 위험 관리 정책서 1장 |
 | D-12 | 한도를 느슨하게 바꾸면 확인(MSG-C006)을 받고 엄격하게 바꾸면 바로 적용한다. live에서 바뀌면 이벤트와 알림을 남긴다 | 위험 관리 정책서 8장 |
 | D-13 | live-validate와 live는 실전 전환 게이트를 지나야만 켜지고, 설정 파일로 건너뛸 수 없다 | 위험 관리 정책서 6장, INV-19 |
@@ -96,9 +97,9 @@ QA가 PR을 검토할 때 쓰는 기준이다. PR 종류(문서, 인프라, 기�
 | D-16 | `Origin` 헤더가 없다. 같은 헤더를 두 번 보내지 않는다(라이브러리 기본 헤더 포함). POST는 JSON 본문과 `Content-Type` 하나, DELETE는 쿼리 파라미터만 | CLAUDE.md, 헤더 중복 공지(2026-07-31) |
 | D-17 | JWT는 HS512, 요청마다 새 nonce(UUID), `query_hash`는 URL 인코딩 전 실제 쿼리 문자열의 SHA512(배열은 키 반복, POST는 JSON 본문을 `key=value&...`로), Secret Key는 Base64 디코딩 없이 쓴다 | CLAUDE.md, 인증 문서 |
 | D-18 | 모든 주문에 `smp_type`을 명시한다(`cancel_maker`). `post_only`를 쓰지 않는다 | CLAUDE.md, SMP 공지(2026-11-09), INV-06 |
-| D-19 | identifier를 DB에 먼저 커밋한 뒤 보낸다. 64자 이하이고 다시 쓰지 않는다. 주문 POST에 HTTP 클라이언트·SDK 자동 재시도가 없다. 타임아웃이면 같은 identifier로 조회해 확인한다 | CLAUDE.md, INV-03 |
+| D-19 | identifier를 DB에 먼저 커밋한 뒤 보낸다. 64자 이하이고 공백·`+`가 없으며 다시 쓰지 않는다. 주문 POST에 HTTP 클라이언트·SDK 자동 재시도가 없다. 타임아웃이면 같은 identifier로 조회해 확인한다 | CLAUDE.md, INV-03 |
 | D-20 | 오류는 `error.name`으로 분기하고 `error.message`로 분기하지 않는다. `out_of_scope`는 401·403 모두 처리한다. 시세 API의 숫자 `name`을 처리한다. 모르는 이름은 HTTP 상태로 분류하고 원문을 기록한다 | CLAUDE.md, REST API 안내 |
-| D-21 | `Remaining-Req`는 `sec`만 쓰고 그룹 이름을 하드코딩하지 않는다(실제 캔들 그룹은 `candles`). 그룹별 한도의 절반 이하다. 429: GET은 다음 초에 같은 요청, 주문 POST는 REJECTED 뒤 새 identifier로 위험 검사부터. 418: SUSPENDED + 알림 | CLAUDE.md, INV-13 |
+| D-21 | `Remaining-Req`는 `sec`만 쓴다. 요청 한도 버킷은 업비트 API 연동 명세 4장의 경로별 표로 고르고, 응답의 group 값이 표와 다르면 경고만 남긴다(캔들 그룹은 `candles`). 그룹별 한도의 절반 이하다. 429: GET은 다음 초에 같은 요청, 주문 POST는 REJECTED 뒤 새 identifier로 위험 검사부터. 418: SUSPENDED + 알림 | CLAUDE.md, INV-13 |
 | D-22 | 종목 경고는 `market_event.warning`과 `caution`의 모든 항목으로 판정한다. 폐기된 `market_warning`, 웹소켓의 `is_trading_suspended`·`market_warning`을 쓰지 않는다 | CLAUDE.md, 가짜 구현 명세 2.8절 |
 | D-23 | 캔들은 요청당 200개 이하, 진행 중 캔들과 빈 구간을 정해진 대로 다룬다. 일봉 경계는 UTC 00:00이다 | CLAUDE.md |
 | D-24 | 키·IP 오류(`no_authorization_ip`, `expired_access_key` 등)는 live 계열에서 HALTED + 알림, paper·signal-only에서 경고다 | 상태 전이 정의서 2장 |
@@ -110,7 +111,7 @@ QA가 PR을 검토할 때 쓰는 기준이다. PR 종류(문서, 인프라, 기�
 | ID | 확인 항목 | 근거 |
 |---|---|---|
 | D-27 | `google-genai`를 정확한 버전으로 쓰고(`from google import genai`), 모델 ID는 설정값이며 2.5 계열이 아니다 | CLAUDE.md Gemini 시그널 주의 |
-| D-28 | 응답을 Pydantic으로 검증하고, 검증 실패·타임아웃·429·거절은 모두 neutral이며 예외가 밖으로 나가지 않는다 | CLAUDE.md, INV-15 |
+| D-28 | 응답을 Pydantic으로 검증하고, 검증 실패·타임아웃·429·거절은 모두 neutral이며 예외가 밖으로 나가지 않는다. 403(`permission_denied`)은 다시 시도하지 않고 LLM 호출을 멈춘다(MSG-E018) | CLAUDE.md, INV-15 |
 | D-29 | 프롬프트에 키, 잔고, 주문 내역, 계정 정보, IP가 없다. 뉴스 제목은 구분된 데이터 블록에 넣고 그 안의 지시를 무시하라고 적었으며 길이를 제한한다. 도구 호출을 쓰지 않는다 | CLAUDE.md, INV-07 |
 | D-30 | 실제 응답 모델명과 입출력 원문을 DB에 기록한다. SDK 자동 재시도에서 429를 뺐고 호출 전체에 시간 상한이 있다 | CLAUDE.md, LLM 시그널 명세 3장 |
 | D-31 | LLM 시그널 성과를 과거 데이터로 백테스트하지 않는다 | CLAUDE.md |
@@ -139,7 +140,7 @@ QA가 PR을 검토할 때 쓰는 기준이다. PR 종류(문서, 인프라, 기�
 | E-08 | 안전 성질 테스트가 공허하지 않다(주문이 실제로 나가는 경우도 시험, INV-09) | 불변식 명세 2.2절 |
 | E-09 | 커버리지: core 줄 80% 이상, 위험 관리·주문 관리 분기 100%(목표). PR 설명에 측정값이 있다 | 테스트 전략 5장 |
 | E-10 | `uv run ruff check .`와 `QT_QPA_PLATFORM=offscreen uv run pytest -q`가 통과하고 ci.yml이 통과한다. 코드·패키징이 바뀌었으면 build-exe.yml도 통과한다 | CLAUDE.md CI 계약, 테스트 전략 5장 |
-| E-11 | `skip`·`xfail`에는 이유가 있고, `xfail_strict`를 끄지 않았다 | 2단계 PR의 pytest 설정 |
+| E-11 | `skip`·`xfail`에는 이유가 있고, `xfail_strict`를 끄지 않았다 | `pyproject.toml`의 pytest 설정 |
 | E-12 | 새 테스트 시나리오를 만들었으면 테스트 시나리오 문서와 추적표에 추가했다 | 추적표 7장 |
 
 ## 6. 검토 절차

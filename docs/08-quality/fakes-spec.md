@@ -14,7 +14,7 @@
 | 와이어 가짜 | HTTP·웹소켓 상대 서버 | 어댑터 단위 테스트 | 업비트 서버처럼 상태 코드, 헤더, JSON 본문을 돌려주는 HTTP 전송 계층(httpx를 쓰면 `httpx.MockTransport`) |
 
 - 어댑터 테스트는 와이어 가짜만, core 테스트는 포트 가짜만 쓴다. 통합 테스트는 실제 어댑터 + 와이어 가짜로 끝에서 끝까지 돌릴 수 있다.
-- 인터페이스 이름은 [시스템 구성도](../06-architecture/system-architecture.md)의 인터페이스 시그니처를 따른다(1단계 설계 PR이 제안한 `QuotationApi`, `ExchangeApi`, `PublicStream`, `PrivateStream`, `Broker`, `SignalProvider`, `NewsSource`, `Notifier`, `Clock`, `SecretStore`). 이름이 바뀌면 이 문서도 고친다.
+- 인터페이스 이름은 [시스템 구성도](../06-architecture/system-architecture.md)의 인터페이스 시그니처를 따른다(6장의 `QuotationApi`, `ExchangeApi`, `PublicStream`, `PrivateStream`, `Broker`, `SignalProvider`, `NewsSource`, `Notifier`, `Clock`, `SecretStore`, 유효(초안)). 이름이 바뀌면 이 문서도 고친다.
 
 ### 1.2 공통 규칙
 
@@ -24,7 +24,7 @@
 4. **가짜 값만 쓴다.** 키와 토큰은 테스트가 실행 중에 만드는 카나리아 값을 쓴다(7장). 저장소와 문서에 실제 형식의 키 문자열을 그대로 적지 않는다.
 5. **주입은 두 가지다.** "N번째 호출에 X" 같은 예약(스크립트)과, 가짜의 상태(잔고, 호가, 주문장)를 바꾸는 방식.
 6. **실제와 다른 동작을 알게 되면** 녹화 응답, 이 문서, 업비트 API 연동 명세를 함께 고친다.
-7. **위치와 import 방식은 구현 세션이 정한다.** 2단계 PR의 pytest 설정은 `--import-mode=importlib`라서 테스트 파일끼리 서로 import할 수 없다. `tests/fakes/` 패키지 + `pythonpath` 설정, 또는 `conftest.py` 픽스처로 제공한다.
+7. **위치와 import 방식은 구현 세션이 정한다.** pytest 설정(`pyproject.toml`)은 `--import-mode=importlib`라서 테스트 파일끼리 서로 import할 수 없다. `tests/fakes/` 패키지 + `pythonpath` 설정, 또는 `conftest.py` 픽스처로 제공한다.
 
 ## 2. FakeExchange (업비트)
 
@@ -81,7 +81,7 @@
 | identifier | 주문 생성에 없음, 64자 초과, 계정에서 이미 쓴 값 | 주문 생성 문서(계정 전체에서 고유, 재사용 불가, 최대 64자) |
 | identifier 선저장 | 요청을 받은 시점에 그 identifier가 앱 DB에 없음(가짜가 테스트의 DB 조회 콜백으로 확인. 선택 검사) | CLAUDE.md, 매매 로직 명세 |
 | 주문 유형별 필수값 | `best`인데 `time_in_force`(ioc·fok)가 없음, `price`(시장가 매수)에 `volume`이 있음, `market`(시장가 매도)에 `price`가 있음 | 주문 생성 문서 |
-| 자동 재시도 | 같은 identifier의 POST /v1/orders가 두 번 옴(타임아웃 뒤 클라이언트가 다시 보냄) | CLAUDE.md, 1단계 설계 PR의 TS-72 |
+| 자동 재시도 | 같은 identifier의 POST /v1/orders가 두 번 옴(타임아웃 뒤 클라이언트가 다시 보냄) | CLAUDE.md, TS-72 |
 | 요청 한도 절반 | 그룹별 1초 창에서 한도의 절반을 넘음(표 아래 목록). 실제 한도까지 넘으면 위반과 함께 429를 흉내 | NFR-06 |
 | 실제 네트워크 없음 | 테스트 중 가짜를 거치지 않고 밖으로 나가는 연결 시도. 테스트 픽스처가 소켓 연결을 막아 실패로 만든다 | CLAUDE.md(클라우드에서 비공개 API 호출 금지) |
 
@@ -116,7 +116,7 @@
 | | `slow(seconds)` | FakeClock 기준으로 늦게 응답한다 | TS-128 |
 | 한도 | `rate_limited(group, times, body)` | 429. 본문 형식이 문서에 없어 세 가지(JSON 오류, 빈 본문, 일반 텍스트)를 고른다 | TS-03, TS-04 |
 | | `blocked(seconds, body)` | 418. 차단 시간을 담는 형식이 문서에 없어 세 가지(본문에 시간, 빈 본문, 일반 텍스트)를 고른다 | TS-05 |
-| | `remaining(group, sec)` | `Remaining-Req`의 `sec` 값을 정한다(0 포함). 그룹 이름을 문서 표기(`candle`)로 바꿔 보내는 옵션 | TS-129 |
+| | `remaining(group, sec)` | `Remaining-Req`의 `sec` 값을 정한다(0 포함). group 값을 표와 다르게(예: 문서 표기 `candle`) 보내는 옵션. 앱은 경로별 표로 버킷을 고르고 다른 group 값은 경고만 남겨야 한다 | TS-129 |
 | 인증·권한 | `auth_error(name)` | 401 `no_authorization_ip`, `expired_access_key`, `jwt_verification`, `invalid_query_payload`, `nonce_used`, `no_authorization_token` | TS-06, TS-07, TS-08 |
 | | `out_of_scope(status)` | `out_of_scope`를 401 또는 403으로 | TS-44 |
 | 주문 거절 | `reject(name)` | 400 `insufficient_funds_bid`, `insufficient_funds_ask`, `under_min_total_bid`, `under_min_total_ask`, `over_krw_funds_bid`, `invalid_parameter`, `validation_error`, `invalid_time_in_force`, `invalid_post_only`, `create_bid_error`, `create_ask_error`, `duplicated_identifier`, `notfoundmarket`, `bad_request`, 403 `market_offline` | TS-11, TS-17, TS-38 |
@@ -173,14 +173,14 @@
 
 | 사실 | 출처 | 다른 문서에 반영할 것 |
 |---|---|---|
-| 캔들 응답의 `Remaining-Req` group은 `candles`다. 요청 수 제한 문서의 표는 `candle`이다. `min`(폐기)이 아직 온다 | 녹화(manifest.json) | 업비트 API 연동 명세 2장 표의 그룹 이름 |
+| 캔들 응답의 `Remaining-Req` group은 `candles`다. 요청 수 제한 문서의 표는 `candle`이다. `min`(폐기)이 아직 온다 | 녹화(manifest.json) | 반영됨(업비트 API 연동 명세 2·4장: 버킷은 경로별 표로 고르고 응답 group은 확인·기록에만 쓴다) |
 | 성공과 오류 응답의 `Content-Type` 표기가 다르다 | 녹화 | 없음(테스트 주의) |
 | 시세 API의 없는 마켓은 404 `{"name": 404, "message": "Code not found"}` | 녹화, 호가 정책 문서 예시 | 없음 |
 | ticker에 있는 마켓과 없는 마켓을 함께 요청하면 있는 마켓 값도 오지 않고 전체가 404다. 선택 코인 하나가 목록에서 빠지면 묶어서 부른 REST 현재가(DEGRADED 손절에 쓰는 값)가 모두 실패할 수 있다 | 녹화(`ticker_error_mixed_markets.json`) | 매매 로직 명세·업비트 API 연동 명세: 현재가를 코인별로 부르거나, 404면 나눠서 다시 부르는 규칙 |
 | 호가 응답은 기본 30단계이고 `level: 0`이 붙는다 | 녹화 | 없음 |
 | REST ticker에는 `market_state`, `delisting_date`가 없다. 웹소켓 ticker에만 있다 | 녹화, ticker 웹소켓 문서 | 없음 |
-| 웹소켓 ticker의 `is_trading_suspended`, `market_warning`은 폐기(Deprecated)다 | ticker 웹소켓 문서 | 1단계 설계 PR의 업비트 API 연동 명세 웹소켓 표에 `trading_suspended`로 적혀 있음 → 이름과 폐기 표시 |
-| 웹소켓 오류 이름은 6개(`INVALID_AUTH`, `WRONG_FORMAT`, `NO_TICKET`, `NO_TYPE`, `NO_CODES`, `INVALID_PARAM`)다. `TOO_MANY_REQUEST`는 받은 문서 35쪽 어디에도 없다 | WebSocket 사용 및 에러 안내(2026-09-23 갱신) | 1단계 설계 PR의 업비트 API 연동 명세 5장 |
+| 웹소켓 ticker의 `is_trading_suspended`, `market_warning`은 폐기(Deprecated)다 | ticker 웹소켓 문서 | 반영됨(업비트 API 연동 명세 2장) |
+| 웹소켓 오류 이름은 6개(`INVALID_AUTH`, `WRONG_FORMAT`, `NO_TICKET`, `NO_TYPE`, `NO_CODES`, `INVALID_PARAM`)다. `TOO_MANY_REQUEST`는 받은 문서 35쪽 어디에도 없다 | WebSocket 사용 및 에러 안내(2026-09-23 갱신) | 업비트 API 연동 명세 5장의 웹소켓 오류 목록에서 빼거나 출처를 적는다 |
 | 취소 API 문서 예시에 `QUERY_PARAMETER_NOT_SUPPORTED`(400, 대문자)와 `bad_request`(400)가 있다. 오류 안내 문서의 목록에는 없다 | 개별 주문 취소, 주문 일괄 취소 문서 | 업비트 API 연동 명세 5장 오류 표 |
 | 418의 차단 시간 형식, 429 본문 형식, 2026-11-16 경로 오류의 응답 형식은 문서에 없다 | 요청 수 제한, REST API 안내, 경로 형식 공지 | 9장 확인 필요 |
 | `query_hash`는 URL 인코딩하지 않은 쿼리 문자열로 만든다. 콤마로 구분하는 값(`pairs=KRW-BTC,KRW-ETH`)은 그대로 쓴다 | 인증 문서(2026-09-22 갱신) | 없음 |
@@ -190,7 +190,7 @@
 ### 3.1 두 층
 
 - **포트 가짜:** `SignalProvider.evaluate()`를 구현한다. 예외를 올리지 않고 `SignalResult`(signal, confidence, reason, status, quota_kind, model_requested, model_responded, request_text, raw_response, latency_ms, tokens_in, tokens_out, tokens_thinking)를 돌려준다. 실패하면 `signal="neutral"`이고 `status`는 `timeout`·`quota`·`invalid`·`refused`·`error` 중 하나다([데이터 모델](../04-data/data-model.md) signals.status).
-- **와이어 가짜:** Gemini 서버 응답을 흉내 낸다. 호출 API가 아직 정해지지 않았으므로(1단계 설계 PR의 D-054: Interactions API 제안, 대기) 두 형식을 모두 정의한다. 고른 쪽만 구현한다.
+- **와이어 가짜:** Gemini 서버 응답을 흉내 낸다. 호출 API가 아직 정해지지 않았으므로(D-054: Interactions API 제안, 대기) 두 형식을 모두 정의한다. 고른 쪽만 구현한다.
 
 ### 3.2 성공 응답 형식
 
@@ -214,7 +214,7 @@
 - `status` 값: `in_progress`, `requires_action`, `completed`, `failed`, `cancelled`, `incomplete`(예: 출력 토큰 상한 도달), `requires_continuation`. `completed`가 아니면 앱은 중립으로 처리한다.
 - 진단 오류가 있으면 `errors: [{code, message}]`(code는 오류 유형 URI)가 붙는다.
 - SDK는 `interaction.output_text`로 텍스트를 준다. 구조화 출력은 요청에 `response_format: {"type": "text", "mime_type": "application/json", "schema": {...}}`를 준다.
-- 기본으로 서버에 저장된다(`store=true`). 앱은 `store=false`로 보낸다(1단계 설계 PR의 LLM 시그널 명세 7장).
+- 기본으로 서버에 저장된다(`store=true`). 앱은 `store=false`로 보낸다(LLM 시그널 명세 7장).
 
 **generateContent**(legacy, 완전 지원):
 
@@ -241,18 +241,18 @@
 |---|---|---|
 | `invalid_request`, `parameter_unknown`, `failed_precondition` | 400 | 중립(error), 버그로 기록 |
 | `authentication` | 401 | 중립(error), 키 문제로 알림 |
-| `permission_denied` | 403 | 중립(error). 무료 등급 확인이 필요한 프로젝트는 `FREE_TIER_VERIFICATION_REQUIRED`가 함께 온다(응답 안의 위치는 문서에 없음). 다시 시도하지 않는다 |
+| `permission_denied` | 403 | 중립(error). 다시 시도하지 않고 LLM 호출을 멈춘다(MSG-E018, NTF-22, 제안). 무료 등급 확인이 필요한 프로젝트는 `FREE_TIER_VERIFICATION_REQUIRED`가 함께 온다(응답 안의 위치는 문서에 없음) |
 | `model_not_found` | 404 | 중립(error). 폐기된 모델 ID일 수 있음 |
 | `rate_limit_exceeded` | 429 | 중립(quota, 분당) |
 | `quota_exceeded` | 429 | 중립(quota, 일일). 초기화 시각까지 호출하지 않음 |
 | `too_many_requests` | 429 | 중립(quota, 분당) |
 | `cancelled` | 499 | 중립(error) |
-| `api_error` | 500 | 1회 다시 시도한 뒤 중립 |
-| `service_unavailable` | 503 | 1회 다시 시도한 뒤 중립 |
+| `api_error` | 500 | SDK가 1회 다시 보낸 뒤 중립. 앱은 더 시도하지 않음(D-055) |
+| `service_unavailable` | 503 | SDK가 1회 다시 보낸 뒤 중립. 앱은 더 시도하지 않음(D-055) |
 | `deadline_exceeded` | 504 | 중립(timeout) |
 | 생성 차단: `safety`, `recitation`, `language`, `prohibited_content`, `spii`, `blocklist`, `content_blocked` | - | 중립(refused). 우회하지 않음 |
 
-**generateContent**: Google API 공통 형식 `{"error": {"code": 429, "message": "...", "status": "RESOURCE_EXHAUSTED", "details": [...]}}`. 문서에 나오는 것은 `429 RESOURCE_EXHAUSTED`, `503 UNAVAILABLE`, `403 PERMISSION_DENIED`다. 분당·일일 구분 필드는 공식 문서에 없다. `details`의 `google.rpc.QuotaFailure.violations[].quotaId`(`PerDay`·`PerMinute`)로 구분하는 방식은 비공식이다(1단계 설계 PR의 LLM 시그널 명세 6장).
+**generateContent**: Google API 공통 형식 `{"error": {"code": 429, "message": "...", "status": "RESOURCE_EXHAUSTED", "details": [...]}}`. 문서에 나오는 것은 `429 RESOURCE_EXHAUSTED`, `503 UNAVAILABLE`, `403 PERMISSION_DENIED`다. 분당·일일 구분 필드는 공식 문서에 없다. `details`의 `google.rpc.QuotaFailure.violations[].quotaId`(`PerDay`·`PerMinute`)로 구분하는 방식은 비공식이다(LLM 시그널 명세 6장).
 
 ### 3.4 주입 기능
 
@@ -272,7 +272,7 @@
 
 ### 3.5 검사
 
-- 받은 요청 원문(`request_text`)과 HTTP 요청 수를 기록한다. 논리 호출 1번에 HTTP 요청이 몇 번 나갔는지 세어 SDK 자동 재시도를 잡는다(429에서 다시 보내면 실패).
+- 받은 요청 원문(`request_text`)과 HTTP 요청 수를 기록한다. 논리 호출 1번에 HTTP 요청이 몇 번 나갔는지 세어 SDK 자동 재시도를 잡는다. 429와 4xx는 1번, 5xx는 최대 2번(SDK 1회 재시도, D-055)이어야 한다.
 - 요청 본문 검사: 모델 ID가 설정값, 도구(`tools`) 없음, 구조화 출력 스키마 있음, (Interactions면) `store=false`, 2.5 계열 모델 아님.
 - 프롬프트 검사: 카나리아 비밀, 잔고, 주문 내역, IP가 없음(7장, TS-126). 뉴스 제목은 데이터 블록 안에만 있고 200자 이하.
 
@@ -328,7 +328,7 @@
 | 4시간봉 | UTC 00·04·08·12·16·20시(KST 09·13·17·21·01·05시) | TS-91, TS-97 |
 | Gemini 일일 한도 초기화 | 태평양 자정. 2026-11-01까지 16:00 KST, 2026-11-02부터 17:00 KST, 2027-03-15부터 16:00 KST(`zoneinfo`의 `America/Los_Angeles`로 계산, 하드코딩 금지) | TS-19 |
 | 키 만료 알림 | `expire_at`(KST) 기준 30·7·1일 전 | TS-50 |
-| 결과 불명 확인 | 1·2·4·8·15·30·45·60초, 5분 알림(1단계 설계 PR의 D-046) | TS-02, TS-67 |
+| 결과 불명 확인 | 1·2·4·8·15·30·45·60초, 5분 알림(D-046) | TS-02, TS-67 |
 | 시세 끊김 | 120초 | TS-41 |
 | 시계 오차 | 5초. `Date` 헤더가 초 단위라 측정값에 1초 안팎의 오차가 있으므로 경계 시험은 4초·6초로 한다 | TS-42 |
 
@@ -392,7 +392,7 @@
 | 2026-11-16 경로 오류의 상태 코드·이름 | 공지에 "오류가 반환될 예정"만 있다 | 적용 뒤 공개 시세 API로 한 번 확인(끝 슬래시 요청 1회. 클라우드 세션 규칙상 끝 슬래시 요청은 하지 않으므로 사용자가 판단) |
 | 주문 검증의 identifier가 실제 주문의 identifier 이력에 들어가는지 | 문서에 없다 | 앱은 모드 글자로 접두어를 나눠 겹치지 않게 한다. 확인은 필요 없을 수 있음 |
 | Gemini 생성 차단 코드가 HTTP 오류로 오는지 `status=failed`로 오는지 | 오류 문서에 "이 코드를 받으면"으로만 나온다 | 4단계 실호출(사용자 PC) |
-| Interactions 응답의 `model`이 실제 응답 모델인지 | 문서에 없다(1단계 설계 PR도 같은 지적) | 4단계 실호출 |
+| Interactions 응답의 `model`이 실제 응답 모델인지 | 문서에 없다(LLM 시그널 명세 6장도 같은 지적) | 4단계 실호출 |
 | 텔레그램 Bot API 원문 | 이 세션에서 core.telegram.org 접근이 막혔다 | 텔레그램 연동 명세(확정)와 검색 요약으로 확인. 7단계 전에 원문 대조 |
 | 네이버 검색 API 원문(인증 실패·호출 한도 초과 오류 형식 포함) | developers.naver.com 접근이 막혔다 | 4단계 전 약관 확인 때 함께 대조 |
 | RSS 피드 실제 형식 | 이 세션에서 받지 않았다 | 4단계 세션이 녹화 |

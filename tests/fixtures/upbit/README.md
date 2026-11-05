@@ -49,7 +49,7 @@ curl -sS -H 'Accept: application/json' 'https://api.upbit.com/v1/ticker?markets=
 ## 관찰한 사실 (테스트와 가짜 구현이 알아야 할 것)
 
 1. **숫자 표기가 섞여 있다.** 같은 응답 안에 `0.01270000`과 `0.0127`, `108328000.00000000`과 `108659000`이 함께 온다. ticker의 `acc_trade_price`는 `15639124215.8082700000000000`처럼 자릿수가 길어 float로 읽으면 값이 달라진다. 테스트는 `json.loads(text, parse_float=Decimal)`로 읽는다.
-2. **`Remaining-Req`의 그룹 이름이 문서와 다르다.** 캔들 응답은 `group=candles`인데 [요청 수 제한 문서](https://docs.upbit.com/kr/reference/rate-limits)의 표는 `candle`이다. 폐기된 `min` 필드(`min=600`)도 아직 온다. 그룹 이름은 표로 하드코딩하지 말고 응답 값을 그대로 쓰고, `sec`만 읽는다.
+2. **`Remaining-Req`의 그룹 이름이 문서와 다르다.** 캔들 응답은 `group=candles`인데 [요청 수 제한 문서](https://docs.upbit.com/kr/reference/rate-limits)의 표는 `candle`이다. 폐기된 `min` 필드(`min=600`)도 아직 온다. 앱은 [업비트 API 연동 명세](../../../docs/05-integration/upbit-api.md) 4장대로 경로별 표로 요청 한도 버킷을 고르고, 응답의 group 값은 표와 맞는지 확인·기록하는 데만 쓴다. 표의 캔들 그룹은 `candles`여야 한다. 남은 수는 `sec`만 읽는다.
 3. **`Content-Type` 표기가 다르다.** 성공 응답은 `application/json;charset=UTF-8`, 오류 응답은 `application/json; charset=utf-8`이다. 문자열을 그대로 비교하지 않는다.
 4. **시세 API 오류의 `error.name`은 숫자다.** 없는 마켓은 `404`, `{"error": {"name": 404, "message": "Code not found"}}`. 거래(Exchange) API의 `error.name`은 문자열이다.
 5. **여러 마켓을 한 번에 요청할 때 하나라도 없으면 전체가 404다.** `KRW-BTC,KRW-NOTEXIST`를 요청하면 KRW-BTC 값도 오지 않는다. 선택한 코인 하나가 거래지원 종료로 목록에서 빠지면, 여러 코인을 묶은 REST 현재가 조회(DEGRADED 때 손절에 쓰는 값)가 모두 실패할 수 있다.

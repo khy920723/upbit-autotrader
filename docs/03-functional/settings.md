@@ -61,7 +61,7 @@
 | `upbit.key_issued_at` | 키 발급일(보조 값). 만료일은 `GET /v1/api_keys`의 `expire_at`을 우선 쓰고, 조회하지 못할 때만 발급일 + 1년으로 계산한다(D-050) | - | 설정 파일 |
 | `gemini.api_key` | Gemini API 키 | - | keyring |
 | `naver.client_id`, `naver.client_secret` | 네이버 검색 API | - | keyring |
-| `discord.webhook_url` | 디스코드 `app-alarm` 채널의 웹후크 주소(선택). 비밀값이라 화면에 다시 보여 주지 않는다 | - | keyring |
+| `discord.webhook_url` | 디스코드 `app-alarm` 채널의 웹후크 주소(선택). 비밀값이라 입력 후 가린다 | - | keyring |
 
 ### 코인
 

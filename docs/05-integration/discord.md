@@ -35,7 +35,7 @@
 | 한도 헤더 | 요청 한도는 바뀔 수 있으므로 숫자를 코드에 박지 말고 응답 헤더(`X-RateLimit-Limit`, `-Remaining`, `-Reset`, `-Reset-After`, `-Bucket`)를 읽으라고 한다. 앱은 `X-RateLimit-Remaining`이 0이면 `X-RateLimit-Reset-After`초 동안 보내지 않는다 | Rate Limits, "Header Format" |
 | 429 | JSON 본문의 `retry_after`(초, 소수)나 `Retry-After` 헤더만큼 기다린 뒤 다시 보낸다. 같은 알림의 재시도는 3회까지다. 기다리는 동안 들어온 알림은 묶는다 | Rate Limits, "Exceeding A Rate Limit" |
 | 전역 한도 | 인증 헤더가 없으면 IP 기준 초당 50회다. 앱은 초당 1건이라 닿지 않는다 | Rate Limits, "Global Rate Limit" |
-| 잘못된 요청 한도 | 401·403·429 응답이 10분에 10,000번을 넘으면 그 IP가 디스코드 API에서 일시적으로 막힌다. 웹후크가 404를 돌려주면 그 웹후크를 다시 쓰지 말라고 한다(반복하면 일시 제한) | Rate Limits, "Invalid Request Limit" |
+| 잘못된 요청 한도 | 401·403·429 응답이 10분에 10,000번을 넘으면 그 IP가 디스코드 API에서 일시적으로 막힌다(`X-RateLimit-Scope: shared`인 429는 세지 않는다). 웹후크가 404를 돌려주면 그 웹후크를 다시 쓰지 말라고 한다(반복하면 일시 제한) | Rate Limits, "Invalid Request Limit" |
 | 오류 형식 | `{"message": "...", "code": 숫자}`. 예: 10015 Unknown webhook, 50027 Invalid webhook token provided, 50006 Cannot send an empty message, 50035 Invalid form body | Opcodes and Status Codes, "JSON" |
 
 - 404(10015)나 401(50027)이면 웹후크가 지워졌거나 주소가 틀린 것이다. 다시 보내지 않고 디스코드 전송을 멈춘 뒤, 앱 화면에 MSG-W012(웹후크 다시 입력)를 띄운다. 새 주소를 저장하면 다시 보낸다.

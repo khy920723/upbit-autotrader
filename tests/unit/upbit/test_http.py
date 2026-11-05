@@ -239,15 +239,23 @@ def header_names(request: httpx.Request) -> Counter:
     return Counter(name.decode("ascii").lower() for name, _value in request.headers.raw)
 
 
-def floats_in(value):
-    if isinstance(value, float):
+def numbers_in(value):
+    """JSON에서 온 숫자 값(참·거짓 제외)을 모두 꺼낸다."""
+    if isinstance(value, bool):
+        return
+    if isinstance(value, int | float | Decimal):
         yield value
     elif isinstance(value, dict):
         for item in value.values():
-            yield from floats_in(item)
+            yield from numbers_in(item)
     elif isinstance(value, list | tuple):
         for item in value:
-            yield from floats_in(item)
+            yield from numbers_in(item)
+
+
+def parse_like_data_model(body: bytes):
+    """데이터 모델 2장: 모든 업비트 응답은 parse_float·parse_int 모두 Decimal로 읽는다."""
+    return json.loads(body, parse_float=Decimal, parse_int=Decimal)
 
 
 CALLS = {
@@ -641,8 +649,10 @@ def test_recorded_quotation_responses_parse_to_decimal_without_floats(entry, cap
 
     assert isinstance(response, UpbitResponse)
     assert response.status == 200
-    assert response.data == json.loads(body, parse_float=Decimal)
-    assert list(floats_in(response.data)) == []
+    assert response.data == parse_like_data_model(body)
+    numbers = list(numbers_in(response.data))
+    assert numbers
+    assert [n for n in numbers if not isinstance(n, Decimal)] == []  # float도 int도 없다
     assert response.server_date == parsedate_to_datetime(entry["headers"]["Date"])
     assert unquote(request.url.query.decode("ascii")) == query
     # 녹화 헤더의 group은 경로 표와 같으므로 경고가 없어야 한다.
@@ -663,10 +673,12 @@ def test_long_acc_trade_price_keeps_every_recorded_digit():
     assert str(btc["acc_trade_price"]) == "15639124215.8082700000000000"
     assert str(btc["change_rate"]) == "0.0030647946"
     assert str(btc["trade_price"]) == "108659000.00000000"
+    assert btc["trade_timestamp"] == Decimal("1793844123736")
+    assert isinstance(btc["trade_timestamp"], Decimal)  # 정수도 Decimal(parse_int)
 
 
 def test_exponent_notation_numbers_become_decimal():
-    body = b'[{"trade_volume": 9.101e-05, "trade_price": 1.5E+3}]'
+    body = b'[{"trade_volume": 9.101e-05, "trade_price": 1.5E+3, "timestamp": 1793844124280}]'
 
     async def scenario():
         async with connect(reply(200, content=body)) as h:
@@ -677,6 +689,8 @@ def test_exponent_notation_numbers_become_decimal():
     assert isinstance(item["trade_volume"], Decimal)
     assert item["trade_volume"] == Decimal("0.00009101")
     assert item["trade_price"] == Decimal("1500")
+    assert isinstance(item["timestamp"], Decimal)
+    assert item["timestamp"] == Decimal("1793844124280")
 
 
 def test_created_order_response_is_returned_with_status_and_string_numbers():

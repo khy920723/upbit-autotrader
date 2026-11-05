@@ -1,0 +1,91 @@
+{
+  "source": "https://docs.upbit.com/kr/reference/list-subscriptions.md",
+  "retrieved_at": "2026-11-05",
+  "doc_updated_at": "2026-10-12T09:51:32.000Z",
+  "endpoints": [
+    "wss://api.upbit.com/websocket/v1",
+    "wss://api.upbit.com/websocket/v1/private"
+  ],
+  "example_title": "Public WebSocket - 응답 예시(문서 소제목은 '구독 요청 예제')",
+  "example": {
+    "method": "LIST_SUBSCRIPTIONS",
+    "result": [
+      {
+        "type": "ticker",
+        "codes": [
+          "KRW-BTC",
+          "KRW-ETH"
+        ]
+      },
+      {
+        "type": "orderbook",
+        "codes": [
+          "KRW-BTC",
+          "KRW-ETH"
+        ],
+        "level": 0
+      }
+    ],
+    "ticket": "unique uuid"
+  },
+  "other_examples": {
+    "private": {
+      "method": "LIST_SUBSCRIPTIONS",
+      "result": [
+        {
+          "type": "myAsset"
+        },
+        {
+          "type": "myOrder",
+          "codes": [
+            "KRW-BTC",
+            "KRW-ETH"
+          ]
+        }
+      ],
+      "ticket": "unique uuid"
+    }
+  },
+  "request_examples": {
+    "default": [
+      {
+        "ticket": "0e66c0ac-7e13-43ef-91fb-2a87c2956c49"
+      },
+      {
+        "method": "LIST_SUBSCRIPTIONS"
+      }
+    ]
+  },
+  "error_examples": [
+    {
+      "title": "Error Response",
+      "body": {
+        "error": {
+          "name": "ERRPR_CODE",
+          "message": "ERROR_MESSAGE"
+        }
+      }
+    }
+  ],
+  "error_names": [
+    "INVALID_AUTH",
+    "WRONG_FORMAT",
+    "NO_TICKET",
+    "NO_TYPE",
+    "NO_CODES",
+    "INVALID_PARAM",
+    "TOO_MANY_REQUEST"
+  ],
+  "rate_limits": [
+    {
+      "group": "websocket-connect",
+      "policy": "초당 최대 5회",
+      "unit": "Public - IP, Private - 포켓"
+    },
+    {
+      "group": "websocket-message",
+      "policy": "초당 최대 5회, 분당 100회",
+      "unit": "커넥션"
+    }
+  ]
+}

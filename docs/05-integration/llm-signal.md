@@ -20,7 +20,7 @@
 - `google-genai`(`from google import genai`, Python 3.11 이상)를 정확한 버전으로 고정한다(2026-10-29 기준 2.34.0).
 - 2026-05~06에 API 스키마가 바뀐 적이 있으므로 버전을 올릴 때는 테스트를 먼저 돌린다.
 - **호출 API(제안, D-054 대기):** 공식 문서는 Interactions API(`client.aio.interactions.create`)를 모든 신규 개발의 기본으로 권하고, `generateContent`는 "legacy이지만 완전 지원"이라고 한다(폐지 일정 공지 없음). Interactions는 2026-06 GA, v1에서 구조화 출력과 thinking이 GA다. 추천: Interactions API, 비동기 경로(`client.aio`)만 쓴다. 출처: aistudio.google.com/llms.txt, /docs/interactions-overview, /docs/migrate-to-interactions.
-- **SDK 자동 재시도(확인 결과):** google-genai 2.34.0에서 Interactions 경로는 재시도가 기본으로 켜져 있다(408·409·429·5xx, 최대 3회 재시도, 0.5→1→2초, `Retry-After`가 오면 상한 없이 그만큼 기다림). `models`(generateContent) 경로는 기본으로 꺼져 있다. 공식 문제 해결 문서의 "Python SDK는 최대 4회 자동 재시도" 설명과 다르다. 앱이 재시도를 직접 정하려고 클라이언트에 `HttpRetryOptions(http_status_codes=[408, 500, 502, 503, 504])`를 줘서 429·409를 SDK 재시도에서 빼고, 호출 전체를 `asyncio.wait_for`로 시간 상한(`llm.timeout_sec`) 안에 묶는다. `attempts=0`으로 끄는 방법은 Interactions 경로에서 1회 재시도가 남을 수 있다(소스 분석, 실행 검증 전). 출처: python-genai v2.34.0 `google/genai/_gaos/google_genai.py`, `_gaos/utils/retries.py`, `types.py`, aistudio.google.com/docs/troubleshooting.
+- **SDK 자동 재시도(확인 결과):** google-genai 2.34.0에서 Interactions 경로는 재시도가 기본으로 켜져 있다(408·409·429·5xx, 최대 3회 재시도, 0.5→1→2초, `Retry-After`가 오면 상한 없이 그만큼 기다림). `models`(generateContent) 경로는 기본으로 꺼져 있다. 공식 문제 해결 문서의 "Python SDK는 최대 4회 자동 재시도" 설명과 다르다. 앱이 재시도를 직접 정하려고 클라이언트에 `HttpRetryOptions(attempts=1, http_status_codes=[500, 502, 503, 504])`를 준다. 그러면 429·408·409는 SDK가 다시 보내지 않고, 5xx만 SDK가 1회 다시 보낸다. 앱은 그 위에 재시도를 더하지 않는다. Interactions 경로는 `attempts`를 "재시도 횟수"로 쓰고(`attempts=N`이면 N회 재시도), `attempts=0`도 1회 재시도가 될 수 있다(소스 분석, 실행 검증 전). 실제 전송 횟수는 가짜 transport 테스트로 확인한다. 호출 전체는 `asyncio.wait_for`로 시간 상한(`llm.timeout_sec`) 안에 묶는다. 출처: python-genai v2.34.0 `google/genai/_gaos/google_genai.py`, `_gaos/utils/retries.py`, `types.py`, aistudio.google.com/docs/troubleshooting.
 - **타임아웃 단위:** 클라이언트 `HttpOptions.timeout`은 밀리초, `interactions.create(timeout=)`는 초다. SDK 기본은 타임아웃 없음이라 반드시 정한다.
 - **예외 계층:** Interactions 경로의 오류(`RateLimitError` 등, `google.genai._interactions`)는 `google.genai.errors.APIError`의 하위 클래스가 아니다. 어댑터 한 곳에서 두 계층을 모두 잡고, 비공개 모듈 경로에 의존하므로 버전을 고정하고 올릴 때 회귀 테스트를 한다.
 - **의존성:** google-genai 2.34.0은 websockets <18, httpx ≥0.28.1, pydantic ≥2.12.5, anyio ≥4.8, google-auth, requests, tenacity를 요구한다.
@@ -71,7 +71,7 @@ class Signal(BaseModel):
 |---|---|
 | 타임아웃(30초) | 중립. 그 주기에는 다시 시도하지 않음 |
 | 429 | 오류 코드로 분당·일일을 구분해 기록한다(아래 "429 구분 방법"). 분당이면 잠시 기다렸다가 다음 코인을 평가하고 이번 코인은 중립. 일일이면 중립 처리하고 한도 초기화 시각(태평양 자정)까지 호출하지 않음(MSG-E006). 구분할 수 없으면 분당으로 본다 |
-| 5xx | 1회 다시 시도한 뒤 중립 |
+| 5xx | SDK가 1회 다시 보낸 뒤(3장 설정) 중립. 앱은 더 시도하지 않음 |
 | 형식 오류·검증 실패 | 중립(MSG-E007) |
 | 안전 정책에 따른 거절 | 중립. 우회를 시도하지 않음 |
 | 3회 연속 실패 | NTF-11 알림 |

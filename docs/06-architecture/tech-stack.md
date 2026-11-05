@@ -1,6 +1,6 @@
 # 기술 스택·버전 정책
 
-상태: 확정 · 2026-11-03 확인 · 관련: [ADR-0001](adr/0001-python-pyside6-pyinstaller.md), [시스템 구성도](system-architecture.md)
+상태: 확정(1단계 제안 반영, 결정 대기 있음: D-038, D-040~D-042) · 2026-11-03 확인, 2026-11-05 갱신 · 관련: [ADR-0001](adr/0001-python-pyside6-pyinstaller.md), [시스템 구성도](system-architecture.md)
 
 ## 1. 스택
 

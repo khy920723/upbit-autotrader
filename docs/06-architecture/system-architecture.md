@@ -106,7 +106,8 @@ asyncio 이벤트 루프를 GUI와 다른 스레드(core 스레드)에서 돌린
 ### 감시와 예외
 
 - core는 5초마다 heartbeat를 보낸다. 앱 계층이 30초 넘게 받지 못하면 화면과 트레이를 빨강으로 바꾸고 MSG-E016을 보이고 로그에 남긴다. 이때 손절도 멈춰 있을 수 있으므로 사용자가 앱을 다시 시작한다(시작 점검이 거래소 기준으로 맞춘다).
-- core 작업의 예외는 작업 단위로 잡아 로그·이벤트로 남기고 다음 주기에 다시 한다. 위험 점검(JOB-02)과 주문 관리에서 3회 연속이면 HALTED로 간다. 나머지 작업은 경고만 한다.
+- core가 멈추면 core의 텔레그램 알림도 나가지 않는다. 그래서 앱 계층에 비상 전송 경로를 하나 둔다(제안, D-060 대기): 작업 스레드에서 텔레그램 `sendMessage`를 동기로 한 번 보내 NTF-21(MSG-E016)을 알린다. core와 상태를 나누지 않고 토큰은 keyring에서 직접 읽는다. "네트워크 호출은 core 스레드에서만" 규칙의 유일한 예외다. 대안은 heartbeat가 2분 넘게 없으면 앱이 스스로 다시 시작하는 것이다(시작 점검이 거래소 기준으로 대조).
+- core 작업의 예외는 작업 단위로 잡아 로그·이벤트로 남기고 다음 주기에 다시 한다. 위험 점검(JOB-02)과 주문 관리에서 3회 연속이면 HALTED로 간다(모든 모드, 이벤트 INTERNAL_ERROR, NTF-03·MSG-E017). 나머지 작업은 경고만 한다. HALTED에서는 손절도 멈추므로 이 규칙은 사용자 결정 대상이다(D-058 대기, [위험 관리 정책서](../03-functional/risk-policy.md) 2장).
 - GUI 쪽 예외는 `sys.excepthook`으로 로그에 남기고 core에 영향을 주지 않는다.
 - Windows에서는 Python 기본 이벤트 루프(Proactor)를 그대로 쓴다.
 
@@ -323,7 +324,7 @@ AutotraderError
 - 업비트 오류는 HTTP 상태가 아니라 `error.name`으로 분류한다(같은 `out_of_scope`가 401·403으로 올 수 있음). 표에 없는 이름은 HTTP 상태로 분류하고 이벤트에 원문 이름을 남긴다.
 - 시세(Quotation) API의 오류는 `error.name`이 숫자이므로 HTTP 상태로 분류한다.
 
-| 오류 | 주문 생성(POST) 중이면 | 다른 호출이면 | 매매 상태 | 알림 |
+| 오류 | live 주문 생성(`POST /v1/orders`) 중이면 | 다른 호출이면(live-validate 주문 검증 포함) | 매매 상태 | 알림 |
 |---|---|---|---|---|
 | NetworkError, RequestTimeout | UNKNOWN(매매 로직 명세 9장) | 백오프 후 다시. 계속되면 SUSPENDED | 통신 불가가 이어지면 SUSPENDED | NTF-04 |
 | UpbitAuthError, UpbitPermissionError | REJECTED | 중단 | live 계열은 HALTED, paper·signal-only는 경고 | NTF-03 |
@@ -335,8 +336,8 @@ AutotraderError
 | UpbitServerError(5xx) | UNKNOWN | 1회 다시, 실패하면 다음 주기 | 유지 | - |
 | SecretStoreError | - | - | 모든 모드에서 HALTED | NTF-03 |
 | ConfigError, SchemaVersionError | - | - | 매매를 시작하지 않음(SCR-07) | - |
-| InvariantViolation | 보내지 않음 | - | HALTED | NTF-03 |
-| 처리하지 못한 예외 | - | 로그·이벤트 후 다음 주기 | JOB-02·주문 관리에서 3회 연속이면 HALTED | NTF-03 |
+| InvariantViolation | 보내지 않음 | - | HALTED(모든 모드, D-058 대기) | NTF-03(MSG-E017) |
+| 처리하지 못한 예외 | - | 로그·이벤트 후 다음 주기 | JOB-02·주문 관리에서 3회 연속이면 HALTED(D-058 대기) | NTF-03(MSG-E017) |
 
 ## 8. 단일 인스턴스와 공인 IP 확인 (제안)
 

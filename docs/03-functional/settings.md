@@ -1,6 +1,6 @@
 # 설정 항목 정의서
 
-상태: 초안(1단계 제안 반영, 사용자 결정 대기: D-042 파일 형식, D-044 실행 모드 저장 위치, D-039 매수 방식) · 관련: [화면 정의서](../02-ux/screen-spec.md), [위험 관리 정책서](risk-policy.md), [보안 정책](../07-security-legal/security-policy.md)
+상태: 초안(1단계 제안 반영, 사용자 결정 대기: D-042 파일 형식, D-044 실행 모드 저장 위치, D-039 매수 방식, D-043 주문 유형, D-021 규칙 조건) · 관련: [화면 정의서](../02-ux/screen-spec.md), [위험 관리 정책서](risk-policy.md), [보안 정책](../07-security-legal/security-policy.md)
 
 ## 1. 저장 위치
 

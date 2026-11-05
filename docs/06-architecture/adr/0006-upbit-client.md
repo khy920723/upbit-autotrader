@@ -5,7 +5,7 @@
 ## 맥락
 
 - 앱이 쓰는 업비트 API는 REST 17개와 웹소켓 2개(공개 ticker, 비공개 myOrder·myAsset·announcement)다([업비트 API 연동 명세](../../05-integration/upbit-api.md) 2장).
-- 주문 안전 규칙이 엄격하다: identifier를 먼저 저장하고 전송, **주문 생성은 자동으로 다시 보내지 않음**, 타임아웃이면 identifier 조회로만 확인, `smp_type` 항상 명시, 같은 헤더 두 번 금지, `Origin` 금지, 경로 슬래시 규칙, `error.name`으로 분기, `Remaining-Req`의 `sec`으로 그룹별 한도의 절반만 사용([매매 로직 명세](../../03-functional/trading-logic.md) 8~9장).
+- 주문 안전 규칙이 엄격하다: identifier를 먼저 저장하고 전송, **주문 생성은 자동으로 다시 보내지 않음**, 타임아웃이면 identifier 조회로만 확인, `smp_type` 항상 명시, 같은 헤더 두 번 금지, `Origin` 금지, 경로 슬래시 규칙, `error.name`으로 분기, `Remaining-Req`의 `sec`으로 그룹별 한도의 절반만 사용([매매 로직 명세](../../03-functional/trading-logic.md) 7~9장, [업비트 API 연동 명세](../../05-integration/upbit-api.md) 3~6장).
 - 런타임 의존성은 정확한 버전으로 고정하고, PyInstaller onedir로 Windows에서 묶는다(ADR-0001, ADR-0004).
 - 클라이언트 후보: 공식 `upbit-sdk`, httpx 기반 자체 클라이언트, ccxt, pyupbit(유지보수 중단으로 제외).
 

@@ -28,18 +28,18 @@
 | | [메시지·문구 정의서](02-ux/messages.md) | 초안 |
 | 03 기능 | [기능 명세서](03-functional/feature-spec.md) | 초안 |
 | | [매매 로직 명세](03-functional/trading-logic.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
-| | [위험 관리 정책서](03-functional/risk-policy.md) | 확정(수치는 초안) |
+| | [위험 관리 정책서](03-functional/risk-policy.md) | 확정(수치는 초안, 1단계 제안 반영 결정 대기 있음) |
 | | [상태 전이 정의서](03-functional/state-machines.md) | 초안 |
 | | [알림 정의서](03-functional/notifications.md) | 초안 |
 | | [설정 항목 정의서](03-functional/settings.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | 04 데이터 | [데이터 모델](04-data/data-model.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [로그·감사 기록 정의서](04-data/logging-audit.md) | 초안 |
 | 05 연동 | [업비트 API 연동 명세](05-integration/upbit-api.md) | 확정(2026-11 기준, 2026-11-05 재확인) |
-| | [LLM 시그널 명세](05-integration/llm-signal.md) | 초안 |
+| | [LLM 시그널 명세](05-integration/llm-signal.md) | 초안(1단계 확인 반영, 결정 대기 있음) |
 | | [뉴스 수집 명세](05-integration/news-collection.md) | 초안 |
 | | [텔레그램 연동 명세](05-integration/telegram.md) | 확정 |
 | 06 아키텍처 | [시스템 구성도](06-architecture/system-architecture.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
-| | [기술 스택·버전 정책](06-architecture/tech-stack.md) | 확정 |
+| | [기술 스택·버전 정책](06-architecture/tech-stack.md) | 확정(1단계 제안 반영, 결정 대기 있음) |
 | | [결정 기록(ADR)](06-architecture/adr/README.md) | 확정 5건, 제안 3건, 대기 1건 |
 | 07 보안·법무 | [보안 정책·위협 모델](07-security-legal/security-policy.md) | 확정 |
 | | [리스크 관리 대장](07-security-legal/risk-register.md) | 초안 |

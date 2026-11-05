@@ -49,6 +49,11 @@
 | SETTING_EXTERNAL_CHANGE | 설정 파일이 앱 밖에서 바뀐 것을 감지 |
 | SCHEMA_MIGRATED | DB·설정 파일 마이그레이션 적용 |
 | CORE_UNRESPONSIVE | core 스레드 heartbeat 끊김(MSG-E016) |
+| MANUAL_ORDER_DETECTED | 같은 포켓에서 앱이 만들지 않은 주문(`uat-` 접두어 없음, 예약 주문 포함)을 발견 |
+| BALANCE_RECONCILED | 대조로 보유 수량·평균 단가를 거래소 값으로 고침(MSG-W010) |
+| UNMANAGED_HOLDING | 선택하지 않은 코인의 보유분을 처음 발견 |
+| DUST_RECORDED | 팔 수 없는 잔량을 기록 |
+| INTERNAL_ERROR | 불변식 위반, 위험 점검·주문 관리 예외 3회 연속(MSG-E017) |
 
 ## 5. 보관과 공유
 

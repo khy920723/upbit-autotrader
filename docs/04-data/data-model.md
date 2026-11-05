@@ -1,6 +1,6 @@
 # 데이터 모델
 
-상태: 초안(1단계 제안, 사용자 결정 대기: D-041 DB 접근 방식, D-044 실행 모드 저장 위치) · 관련: [로그·감사 기록 정의서](logging-audit.md), [상태 전이 정의서](../03-functional/state-machines.md), [매매 로직 명세](../03-functional/trading-logic.md), [시스템 구성도](../06-architecture/system-architecture.md)
+상태: 초안(1단계 제안, 사용자 결정 대기: D-041 DB 접근 방식, D-044 실행 모드 저장 위치, D-049 live-validate 일수) · 관련: [로그·감사 기록 정의서](logging-audit.md), [상태 전이 정의서](../03-functional/state-machines.md), [매매 로직 명세](../03-functional/trading-logic.md), [시스템 구성도](../06-architecture/system-architecture.md)
 
 저장소는 SQLite 파일 하나다: `%LOCALAPPDATA%\upbit-autotrader\data\autotrader.db`(같은 폴더에 `-wal`, `-shm` 파일이 생긴다). 아래 테이블·열·인덱스는 1단계 제안이며 2단계 구현 전에 사용자 확인을 받는다.
 
@@ -99,7 +99,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | `paper_started_at` | 시각 | |
 | `live_validate_started_at` | 시각 | |
 | `clean_shutdown` | 0 또는 1 | 시작할 때 0으로 쓰고 정상 종료 때 1로 쓴다. 0인 채로 시작하면 비정상 종료로 기록 |
-| `upbit_key_expire_at` | 업비트 원문(KST) | `GET /v1/api_keys`로 읽은 만료 일시([업비트 API 연동 명세](../05-integration/upbit-api.md) 1장) |
+| `upbit_key_expire_at` | 시각(UTC) | `GET /v1/api_keys`로 읽은 만료 일시를 UTC로 바꿔 저장([업비트 API 연동 명세](../05-integration/upbit-api.md) 1장). 원문은 이벤트 context에 남긴다 |
 | `upbit_key_expire_checked_at` | 시각 | |
 | `settings_applied_json` | JSON | 마지막으로 적용한 설정(비밀 없음). 설정 파일을 앱 밖에서 고쳤는지 비교한다 |
 
@@ -242,12 +242,12 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | decision_id | INTEGER | FK decisions | 재조정으로 들여온 주문은 NULL |
 | retry_of | TEXT | FK orders(identifier) | 다시 낸 주문이면 이전 주문 |
 | error_name | TEXT | | 업비트 `error.name` |
-| reject_reason | TEXT | | 앱 이유 코드(예: RATE_LIMIT_429, NOT_FOUND_AFTER_UNKNOWN, VALIDATE_ERROR) |
+| reject_reason | TEXT | | 앱 이유 코드([매매 로직 명세](../03-functional/trading-logic.md) 13장 표: EXCHANGE_ERROR, RATE_LIMIT_429, RATE_LIMIT_418, NOT_FOUND_AFTER_UNKNOWN, VALIDATE_TIMEOUT, VALIDATE_ERROR, PAPER_RESTART) |
 | expected_reject | INTEGER | 필수, 기본 0 | live-validate 매도 검증의 `insufficient_funds_ask`처럼 예상된 거절 |
 | created_at | TEXT | 필수 | CREATED 저장 시각 |
 | submitted_at | TEXT | | 전송 직전 시각 |
 | unknown_since | TEXT | | UNKNOWN이 된 시각 |
-| closed_at | TEXT | | 최종 상태(FILLED, CANCELLED, REJECTED)가 된 시각 |
+| closed_at | TEXT | | 최종 상태(FILLED, CANCELLED, REJECTED)가 된 시각. `NOT_FOUND_AFTER_UNKNOWN`으로 닫은 REJECTED가 24시간 안에 다시 열리면 고친다 |
 | updated_at | TEXT | 필수 | |
 
 ### order_events: 주문 상태 변화
@@ -295,6 +295,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | status | TEXT | 필수 | FLAT, ENTERING, HOLDING, EXITING, COOLDOWN, BLOCKED |
 | entries | INTEGER | 필수, 기본 0 | 이번 포지션의 매수 회차 수(ADR-0008) |
 | exit_only | INTEGER | 필수, 기본 0 | live → paper 전환 뒤 남긴 실보유분(손절·청산만 관리) |
+| dust_volume | TEXT | 필수, 기본 `'0'` | 팔 수 없는 잔량(매도 `min_total` 미만). 손절·매수 판단에서 보유로 치지 않고, 다음 매수 체결 때 `volume`에 합친다([매매 로직 명세](../03-functional/trading-logic.md) 10장) |
 | cooldown_until | TEXT | | 재진입 제한 해제 시각. status가 COOLDOWN인데 NULL이면 수동 해제 대기 |
 | blocked_reason | TEXT | | |
 | opened_at | TEXT | | |
@@ -321,7 +322,8 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 |---|---|---|---|
 | date_kst | TEXT | PK(1) | |
 | mode | TEXT | PK(2) | |
-| realized_pnl_krw | INTEGER | 필수, 기본 0 | 그날 매도 체결의 실현 손익 합 |
+| realized_pnl_krw | INTEGER | 필수, 기본 0 | 그날 매도 체결의 실현 손익 합(순, 보고용) |
+| realized_loss_krw | INTEGER | 필수, 기본 0 | 그날 손실이 난 매도 체결의 손실 합(양수). 일일 손실 한도와 같은 기준(보고용. 한도 판단은 fills의 Decimal 값으로 한다) |
 | fees_krw | INTEGER | 필수, 기본 0 | |
 | orders_count | INTEGER | 필수, 기본 0 | 그날 거래소(또는 가상 거래소)로 보낸 주문 수. 거절 포함 |
 | buy_blocked | INTEGER | 필수, 기본 0 | 일일 손실 한도·주문 수 상한 도달 |
@@ -354,7 +356,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | ntf_code | TEXT | 필수 | NTF-01 등 |
 | dedupe_key | TEXT | 필수 | 중복 억제 기준. 예: `NTF-03:no_authorization_ip` |
 | channel | TEXT | 필수 | telegram, ui |
-| status | TEXT | 필수 | sent, failed, suppressed, batched |
+| status | TEXT | 필수 | sent, failed, rate_limited, suppressed, batched |
 | event_id | INTEGER | FK events | |
 | error | TEXT | | 실패 이유(토큰이 들어간 URL은 넣지 않음) |
 

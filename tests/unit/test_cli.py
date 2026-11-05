@@ -1,3 +1,4 @@
+import codecs
 import sys
 
 import pytest
@@ -62,3 +63,29 @@ def test_self_test_that_raises_still_fails_cleanly(tmp_path, monkeypatch):
     assert entry.main(["--self-test"]) == 1
     report = (tmp_path / entry.FALLBACK_REPORT_NAME).read_text(encoding="utf-8-sig")
     assert "RuntimeError: 뜻밖의 오류" in report
+
+
+@pytest.mark.parametrize(
+    "raised", [SystemExit(0), KeyboardInterrupt()], ids=["SystemExit", "Ctrl+C"]
+)
+def test_self_test_that_exits_early_is_still_a_failure(tmp_path, monkeypatch, raised):
+    # SystemExit(0)이 새어 나가면 보고서 없이 0으로 끝나 CI가 통과로 본다.
+    monkeypatch.chdir(tmp_path)
+
+    def stop():
+        raise raised
+
+    monkeypatch.setattr(self_test, "run_self_test", stop)
+
+    assert entry.main(["--self-test"]) == 1
+    report = tmp_path / entry.FALLBACK_REPORT_NAME
+    assert "결과: 실패" in report.read_text(encoding="utf-8-sig")
+
+
+def test_fallback_report_starts_with_a_utf8_bom(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(sys.modules, "autotrader.app.self_test", None)
+
+    entry.main(["--self-test"])
+
+    assert (tmp_path / entry.FALLBACK_REPORT_NAME).read_bytes().startswith(codecs.BOM_UTF8)

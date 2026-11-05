@@ -1,3 +1,4 @@
+import codecs
 import socket
 import ssl
 from pathlib import Path
@@ -136,6 +137,13 @@ def test_unwritable_report_path_gives_exit_code_1(tmp_path):
     assert run_self_test(tmp_path, (Check("a", "첫째", passing()),)) == 1
 
 
+def test_report_starts_with_a_utf8_bom_for_windows_tools(tmp_path):
+    # Windows PowerShell 5.1의 Get-Content는 BOM이 없으면 UTF-8 한글을 깨뜨린다.
+    run_self_test(tmp_path / "report.txt", (Check("a", "첫째", passing()),))
+
+    assert (tmp_path / "report.txt").read_bytes().startswith(codecs.BOM_UTF8)
+
+
 def test_report_header_describes_the_run(tmp_path):
     run_self_test(tmp_path / "report.txt", (Check("a", "첫째", passing()),))
 
@@ -181,14 +189,40 @@ def test_import_check_fails_when_a_subpackage_cannot_be_imported(monkeypatch):
 # --- Qt ----------------------------------------------------------------------------
 
 
-def test_qt_check_builds_the_main_window_without_showing_it(qapp):
+def test_qt_check_builds_the_main_window_without_showing_it(qapp, monkeypatch):
     from PySide6.QtWidgets import QApplication
+
+    from autotrader.ui import main_window
+
+    built = []
+
+    class SpyWindow(main_window.MainWindow):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built.append(type(self).__name__)
+
+    monkeypatch.setattr(main_window, "MainWindow", SpyWindow)
 
     detail = check_qt()
 
+    assert built == ["SpyWindow"]
     assert "Qt 6.12." in detail
     assert "offscreen" in detail
     assert not [w for w in QApplication.topLevelWidgets() if w.isVisible()]
+
+
+def test_qt_check_fails_when_the_main_window_appears(qapp, monkeypatch):
+    from autotrader.ui import main_window
+
+    class ShownWindow(main_window.MainWindow):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.show()
+
+    monkeypatch.setattr(main_window, "MainWindow", ShownWindow)
+
+    with pytest.raises(CheckFailed, match="표시"):
+        check_qt()
 
 
 def test_find_offscreen_plugin_finds_windows_and_linux_file_names(tmp_path):

@@ -37,17 +37,17 @@ UNUSED_QT_MODULES = frozenset(
 )
 
 
-def module_name(path: Path) -> str:
-    parts = list(path.relative_to(PACKAGE_DIR.parent).with_suffix("").parts)
+def module_name(path: Path, package_dir: Path = PACKAGE_DIR) -> str:
+    parts = list(path.relative_to(package_dir.parent).with_suffix("").parts)
     if parts[-1] == "__init__":
         parts.pop()
     return ".".join(parts)
 
 
-def imported_modules(path: Path) -> set[str]:
+def imported_modules(path: Path, package_dir: Path = PACKAGE_DIR) -> set[str]:
     """파일이 import하는 모듈 이름. `from X import Y`는 X와 X.Y를 모두 넣는다."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    own = module_name(path)
+    own = module_name(path, package_dir)
     package = own if path.name == "__init__.py" else own.rpartition(".")[0]
     found: set[str] = set()
     for node in ast.walk(tree):
@@ -71,7 +71,23 @@ def python_files(subpackage: str | None = None) -> list[Path]:
 
 
 def test_imported_modules_resolves_relative_imports(tmp_path):
-    assert "autotrader.config.paths" in imported_modules(PACKAGE_DIR / "app" / "self_test.py")
+    # core에서 `from .. import ui`처럼 상대 import로 바깥 계층을 가져와도 잡아야 한다.
+    package = tmp_path / "autotrader"
+    (package / "core" / "sub").mkdir(parents=True)
+    for folder in (package, package / "core"):
+        (folder / "__init__.py").write_text("", encoding="utf-8")
+    engine = package / "core" / "engine.py"
+    engine.write_text(
+        "from . import rules\nfrom .. import ui\nfrom ..app.application import run_gui\n",
+        encoding="utf-8",
+    )
+    nested = package / "core" / "sub" / "__init__.py"
+    nested.write_text("from ... import app\nfrom .x import y\n", encoding="utf-8")
+
+    assert {"autotrader.core.rules", "autotrader.ui", "autotrader.app.application"} <= (
+        imported_modules(engine, package)
+    )
+    assert {"autotrader.app", "autotrader.core.sub.x"} <= imported_modules(nested, package)
 
 
 @pytest.mark.parametrize("path", python_files("core"), ids=lambda p: p.name)

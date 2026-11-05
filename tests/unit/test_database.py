@@ -68,18 +68,20 @@ def test_initialize_turns_on_wal_mode(tmp_path):
 
 def test_database_from_a_newer_app_is_rejected_and_left_untouched(tmp_path):
     db_path = tmp_path / "autotrader.db"
-    initialize_database(db_path)
+    newer = (SCHEMA_VERSION + 1, "2030-01-01T00:00:00+00:00")
     with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(
-            "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-            (SCHEMA_VERSION + 1, "2030-01-01T00:00:00+00:00"),
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
         )
+        conn.execute("INSERT INTO schema_version (version, applied_at) VALUES (?, ?)", newer)
 
     with pytest.raises(SchemaVersionError, match=str(SCHEMA_VERSION + 1)):
         initialize_database(db_path)
 
-    assert read_schema_version(db_path) == SCHEMA_VERSION + 1
-    assert len(schema_rows(db_path)) == 2
+    assert schema_rows(db_path) == [newer]
+    with closing(sqlite3.connect(db_path)) as conn:
+        (mode,) = conn.execute("PRAGMA journal_mode").fetchone()
+    assert mode == "delete"
 
 
 def test_read_schema_version_of_an_empty_database_is_none(tmp_path):

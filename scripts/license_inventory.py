@@ -6,7 +6,8 @@
     uv run python scripts/license_inventory.py           # 문서가 uv.lock과 맞는지 검사(기본)
     uv run python scripts/license_inventory.py --write   # 패키지·버전·플랫폼 칸을 다시 쓴다
 
---write는 사람이 확인한 라이선스·비고 칸을 그대로 두고, 새 패키지에는 "확인 필요"를 넣는다.
+--write는 사람이 확인한 라이선스·비고 칸을 그대로 두고, 새 패키지에는 "확인 필요"를 넣는다
+(설치된 메타데이터의 License-Expression은 비고에 참고로만 적는다).
 "확인 필요"가 남아 있으면 검사(와 tests/unit/test_license_inventory.py)가 실패한다.
 의존성을 바꾸면(uv lock) 이 스크립트로 표를 갱신하고 라이선스를 직접 확인해 채운다.
 """
@@ -280,8 +281,12 @@ def rewrite(
         for name, (version, platforms) in inventory(lock, table).items():
             old = rows.get(name)
             display = old[0] if old else _display_name(name)
-            license_text = old[2] if old else (installed_license(name) or PENDING)
-            note = old[4] if old else ""
+            if old:
+                license_text, note = old[2], old[4]
+            else:
+                # 메타데이터는 참고로만 비고에 적는다. 라이선스 칸은 사람이 확인해 채운다.
+                hint = installed_license(name)
+                license_text, note = PENDING, f"메타데이터: {hint}" if hint else ""
             lines.append(
                 f"| {display} | {version} | {license_text} | {', '.join(platforms)} | {note} |\n"
             )

@@ -34,11 +34,44 @@ def calls(spec_text) -> dict[str, ast.Call]:
     return found
 
 
-def keyword(call: ast.Call, name: str):
+def keyword_node(call: ast.Call, name: str) -> ast.expr:
     for kw in call.keywords:
         if kw.arg == name:
-            return ast.literal_eval(kw.value)
+            return kw.value
     raise AssertionError(f"{name}= 인자가 없다")
+
+
+def keyword(call: ast.Call, name: str):
+    return ast.literal_eval(keyword_node(call, name))
+
+
+def path_parts(node: ast.expr) -> tuple[str, ...]:
+    """`str(ROOT / "a" / "b")` 같은 경로 식의 문자열 조각을 왼쪽부터 모은다."""
+    if isinstance(node, ast.Call) and node.args:
+        return path_parts(node.args[0])
+    if isinstance(node, ast.BinOp):
+        return path_parts(node.left) + path_parts(node.right)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return (node.value,)
+    return ()
+
+
+def module_statements(spec_text: str) -> list[ast.stmt]:
+    """주석 처리된 줄은 빠진, 실제로 실행되는 최상위 문장들."""
+    return ast.parse(spec_text).body
+
+
+def datas_entries(spec_text: str) -> set[tuple[tuple[str, ...], str]]:
+    """`datas = [...]`의 (경로 조각, 대상 폴더) 집합."""
+    for node in module_statements(spec_text):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "datas" for target in node.targets
+        ):
+            return {
+                (path_parts(element.elts[0]), ast.unparse(element.elts[1]))
+                for element in node.value.elts
+            }
+    raise AssertionError("spec에 datas 목록이 없다")
 
 
 def test_exe_is_a_windowed_autotrader_exe_without_upx(calls):
@@ -83,14 +116,43 @@ def test_entry_script_is_the_launcher_outside_the_package(calls, repo_root):
         ("docs/07-security-legal/dependency-licenses.md", "# 의존성 라이선스 목록"),
     ],
 )
-def test_license_notices_are_bundled(repo_root, spec_text, relative_path, first_line):
+def test_license_notice_files_have_the_expected_text(repo_root, relative_path, first_line):
     path = repo_root / relative_path
 
     first = next(
         line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
     )
     assert first.startswith(first_line)
-    assert path.name in spec_text
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ("LICENSE",),
+        ("docs", "07-security-legal", "dependency-licenses.md"),
+        ("packaging", "licenses", "LGPL-3.0.txt"),
+        ("packaging", "licenses", "GPL-3.0.txt"),
+    ],
+)
+def test_license_texts_are_listed_in_datas(spec_text, parts):
+    assert (parts, "LICENSES") in datas_entries(spec_text)
+
+
+def test_python_notices_are_appended_to_datas(spec_text):
+    loops = [
+        node
+        for node in module_statements(spec_text)
+        if isinstance(node, ast.For) and isinstance(node.iter, ast.Tuple)
+    ]
+    names = {
+        element.value
+        for loop in loops
+        for element in loop.iter.elts
+        if isinstance(element, ast.Constant)
+        and any("datas.append" in ast.unparse(statement) for statement in loop.body)
+    }
+
+    assert {"cpython-3.13.18-license.rst", "hacl-star-MIT.txt"} <= names
 
 
 def test_license_texts_are_version_3(repo_root):
@@ -190,9 +252,10 @@ def test_guard_keeps_lgpl_qt_binaries(gpl_only_pattern, name):
     assert not gpl_only_pattern.search(name)
 
 
-def test_spec_uses_the_custom_qtgui_hook(spec_text, repo_root):
+def test_spec_uses_the_custom_qtgui_hook(calls, repo_root):
     assert (repo_root / "packaging" / "hooks" / "hook-PySide6.QtGui.py").is_file()
-    assert 'hookspath=[str(ROOT / "packaging" / "hooks")]' in spec_text
+    [hook_dir] = keyword_node(calls["Analysis"], "hookspath").elts
+    assert path_parts(hook_dir) == ("packaging", "hooks")
 
 
 @pytest.mark.parametrize(
@@ -216,9 +279,36 @@ def test_custom_hook_drops_virtual_keyboard_and_pdf_plugins(hook_excludes, path,
 
 
 def test_notice_is_copied_next_to_the_exe(spec_text):
-    assert 'shutil.copy2(ROOT / "packaging" / "NOTICE.txt", Path(coll.name) / "NOTICE.txt")' in (
-        spec_text
+    copies = [
+        node.value
+        for node in module_statements(spec_text)
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and ast.unparse(node.value.func) == "shutil.copy2"
+    ]
+
+    assert [(path_parts(c.args[0]), ast.unparse(c.args[1])) for c in copies] == [
+        (("packaging", "NOTICE.txt"), "Path(coll.name) / 'NOTICE.txt'")
+    ]
+
+
+def test_build_checks_that_notice_targets_exist(spec_text):
+    checked = next(
+        node.value
+        for node in module_statements(spec_text)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "missing" for target in node.targets)
     )
+    constants = {c.value for c in ast.walk(checked) if isinstance(c, ast.Constant)}
+
+    assert {
+        "licenses/LICENSE",
+        "licenses/LGPL-3.0.txt",
+        "licenses/GPL-3.0.txt",
+        "licenses/dependency-licenses.md",
+        "PySide6",
+        "shiboken6",
+    } <= constants
 
 
 @pytest.mark.parametrize(
@@ -238,3 +328,73 @@ def test_notice_is_copied_next_to_the_exe(spec_text):
 )
 def test_notice_names_the_lgpl_libraries_texts_and_sources(repo_root, needed):
     assert needed in (repo_root / "packaging" / "NOTICE.txt").read_text(encoding="utf-8")
+
+
+# --- 개발·빌드 전용 패키지 차단 -----------------------------------------------------
+
+
+def spec_function(spec_text: str, name: str):
+    """spec에서 함수 하나만 꺼내 실행한다(spec 전체는 PyInstaller 안에서만 돈다)."""
+    function = next(
+        node
+        for node in ast.parse(spec_text).body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+    namespace = {"re": re}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "spec", "exec"), namespace)
+    return namespace[name]
+
+
+def test_analysis_excludes_build_only_packages(calls):
+    excludes = keyword(calls["Analysis"], "excludes")
+
+    assert {
+        "setuptools",
+        "_distutils_hack",
+        "pkg_resources",
+        "packaging",
+        "typing_extensions",
+    } <= set(excludes)
+
+
+def test_dev_only_guard_flags_modules_of_non_runtime_distributions(spec_text):
+    canonical = spec_function(spec_text, "canonical")
+    foreign_modules = spec_function(spec_text, "foreign_modules")
+    foreign_modules.__globals__["canonical"] = canonical
+    owners = {
+        "keyring": ["keyring"],
+        "jaraco": ["jaraco.classes", "jaraco.context"],
+        "PySide6": ["PySide6_Essentials", "PySide6"],
+        "setuptools": ["setuptools"],
+        "_distutils_hack": ["setuptools"],
+        "packaging": ["packaging"],
+    }
+    runtime = {"keyring", "jaraco-classes", "jaraco-context", "pyside6", "pyside6-essentials"}
+    modules = [
+        "keyring.backends.Windows",
+        "jaraco.context",
+        "PySide6.QtCore",
+        "ssl",
+        "autotrader.app.self_test",
+        "setuptools._vendor.jaraco.text",
+        "_distutils_hack.override",
+        "packaging.version",
+    ]
+
+    assert foreign_modules(modules, owners, runtime) == [
+        "_distutils_hack",
+        "packaging",
+        "setuptools",
+    ]
+
+
+def test_spec_checks_bundled_modules_against_runtime_dependencies(spec_text):
+    guard = next(
+        node
+        for node in module_statements(spec_text)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "dev_only" for target in node.targets)
+    )
+
+    assert ast.unparse(guard.value.func) == "foreign_modules"
+    assert "importlib.metadata.packages_distributions()" in ast.unparse(guard.value)

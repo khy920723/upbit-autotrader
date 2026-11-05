@@ -171,3 +171,20 @@ def test_write_keeps_human_columns_and_adds_new_rows(inventory):
     assert "| winonly | 3.0 | 확인 필요 | Windows |  |" in updated
     assert "| macdep | 5.0 | 확인 필요 | macOS |  |" in updated
     assert inventory.check(updated, FAKE_LOCK, installed_license=no_metadata) != []
+
+
+def test_write_never_fills_new_licenses_from_metadata(inventory):
+    """새 패키지는 사람이 휠의 라이선스 파일을 확인하기 전까지 검사를 통과하면 안 된다."""
+    stale = doc(
+        "| lib | 1.0 | MIT | Windows, Linux, macOS | 직접 의존 |\n"
+        "| sub | 2.0 | BSD-3-Clause | Windows, Linux, macOS | |\n",
+        "| tool | 4.0 | GPL-2.0-or-later | Windows, Linux, macOS | 빌드 도구 |\n"
+        "| macdep | 5.0 | MIT | macOS | |\n",
+    )
+
+    updated = inventory.rewrite(stale, FAKE_LOCK, installed_license=lambda name: "MIT")
+
+    assert "| winonly | 3.0 | 확인 필요 | Windows | 메타데이터: MIT |" in updated
+    assert "runtime: winonly 라이선스를 확인해 적어야 한다" in inventory.check(
+        updated, FAKE_LOCK, installed_license=lambda name: "MIT"
+    )

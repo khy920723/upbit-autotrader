@@ -45,10 +45,20 @@ def report_text(cwd: Path) -> str:
     return (cwd / REPORT).read_text(encoding="utf-8-sig")
 
 
+def describe(result: subprocess.CompletedProcess[str], cwd: Path) -> str:
+    """실패 메시지. 프로세스가 보고서를 쓰기 전에 죽어도 종료 코드와 stderr를 보여 준다."""
+    path = cwd / REPORT
+    report = path.read_text(encoding="utf-8-sig") if path.exists() else "<보고서 없음>"
+    return (
+        f"returncode={result.returncode}\n--- report ---\n{report}"
+        f"\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+    )
+
+
 def test_module_entry_point_passes(tmp_path, clean_env):
     result = run(["-m", "autotrader", "--self-test"], tmp_path, clean_env)
 
-    assert result.returncode == 0, report_text(tmp_path) + result.stderr
+    assert result.returncode == 0, describe(result, tmp_path)
     assert "결과: 통과 (6/6)" in report_text(tmp_path)
 
 
@@ -57,7 +67,7 @@ def test_pyinstaller_launcher_script_passes(tmp_path, clean_env, repo_root):
 
     result = run([str(launcher), "--self-test"], tmp_path, clean_env)
 
-    assert result.returncode == 0, report_text(tmp_path) + result.stderr
+    assert result.returncode == 0, describe(result, tmp_path)
     assert "결과: 통과 (6/6)" in report_text(tmp_path)
 
 
@@ -69,7 +79,7 @@ def test_failing_check_gives_exit_code_1(tmp_path, clean_env):
 
     result = run(["-m", "autotrader", "--self-test"], tmp_path, clean_env)
 
-    assert result.returncode == 1
+    assert result.returncode == 1, describe(result, tmp_path)
     report = report_text(tmp_path)
     assert "[실패] 설정 경로" in report
     assert "결과: 실패 (5/6)" in report

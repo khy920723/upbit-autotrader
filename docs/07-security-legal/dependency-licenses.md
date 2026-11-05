@@ -8,14 +8,14 @@
 
 - Windows 배포 번들(`dist/autotrader/`)에 들어가는 구성 요소는 모두 MIT 앱과 함께 배포할 수 있다. 조건이 붙는 것은 Qt·PySide6(LGPL-3.0)다(5.1).
 - PySide6 메타 패키지는 Essentials 외에 Addons·WebEngine·Pdf까지 설치한다. 그중 일부 Qt 모듈은 오픈소스로는 GPL-3.0으로만 제공된다. 앱은 이 모듈을 쓰지 않고, 빌드가 GPL 전용 바이너리를 막는다(5.3).
-- 개발·빌드 전용 패키지는 배포하지 않는다. 다만 PyInstaller의 부트로더와 런타임 훅은 exe에 들어가며, 예외 조항과 Apache-2.0으로 배포할 수 있다(5장).
+- 개발·빌드 전용 패키지는 배포하지 않는다. 빌드가 번들 모듈을 런타임 의존성과 대조해 확인한다(4장). 다만 PyInstaller의 부트로더와 런타임 훅은 exe에 들어가며, 예외 조항과 Apache-2.0으로 배포할 수 있다(5장).
 
 ## 2. 갱신 방법
 
 | 언제 | 할 일 |
 |---|---|
 | 의존성을 바꿨을 때(`uv lock`) | `uv run python scripts/license_inventory.py --write`로 3·4장 표의 패키지·버전·플랫폼을 다시 쓴다. 라이선스·비고 칸은 유지된다 |
-| 새 패키지가 "확인 필요"로 들어오면 | 휠 안의 라이선스 파일과 PyPI 정보를 확인해 SPDX 식으로 적고, 번들 포함 여부를 비고에 적는다 |
+| 새 패키지가 "확인 필요"로 들어오면 | 휠 안의 라이선스 파일과 PyPI 정보를 확인해 SPDX 식으로 적고, 번들 포함 여부를 비고에 적는다. 비고에 적힌 "메타데이터: …"는 참고값이라 그대로 믿지 않는다 |
 | 확인 | `uv run python scripts/license_inventory.py`(검사만). `tests/unit/test_license_inventory.py`도 같은 검사를 한다 |
 
 - 검사 내용: 표와 `uv.lock`의 패키지·버전·설치 플랫폼이 같은지, 런타임 라이선스가 배포 가능한 것만으로 되어 있는지(OR는 하나 이상, AND는 모두), 설치된 패키지 메타데이터에 `License-Expression`이 있으면 표와 같은지.
@@ -51,6 +51,9 @@
 ## 4. 개발·빌드 전용
 
 배포하지 않는다. 테스트·린트·빌드에만 쓴다.
+
+- PyInstaller는 jaraco 네임스페이스 패키지를 처리하면서 setuptools(벤더링한 jaraco)를 끌어오고, 그 의존성인 packaging·typing_extensions까지 번들에 넣는다. 앱은 이것들을 쓰지 않으므로 spec의 `excludes`로 뺐다(Linux 빌드 기준 번들 모듈 531개 → 247개).
+- spec은 번들의 Python 모듈이 런타임 의존성(3장) 밖의 배포판에 속하면 빌드를 멈춘다. `excludes`를 빼고 빌드하면 `_distutils_hack, packaging, setuptools, typing_extensions`에서 멈추는 것을 확인했다.
 
 <!-- license-inventory:dev:start -->
 | 패키지 | 버전 | 라이선스 | 설치 플랫폼 | 비고 |

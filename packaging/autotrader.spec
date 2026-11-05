@@ -43,6 +43,43 @@ def runtime_distributions():
     return [re.split(r"[\s;\[<>=!~]", requirement, maxsplit=1)[0] for requirement in requirements]
 
 
+def canonical(name):
+    """배포판 이름 정규화(PEP 503)."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def runtime_closure():
+    """런타임 의존성과 그 의존성 중 이 플랫폼에 설치되는 것의 정규화 이름."""
+    from packaging.requirements import Requirement  # 빌드 환경에만 있으면 된다(PyInstaller 의존성)
+
+    todo = list(runtime_distributions())
+    seen = set()
+    while todo:
+        name = canonical(todo.pop())
+        if name in seen:
+            continue
+        seen.add(name)
+        for text in importlib.metadata.distribution(name).requires or []:
+            requirement = Requirement(text)
+            if requirement.marker is None or requirement.marker.evaluate({"extra": ""}):
+                todo.append(requirement.name)
+    return seen
+
+
+def foreign_modules(module_names, owners, allowed):
+    """번들 모듈 중 allowed 밖의 배포판(개발·빌드 전용)이 설치한 최상위 모듈.
+
+    표준 라이브러리 모듈은 owners(packages_distributions)에 없으므로 걸리지 않는다.
+    """
+    found = set()
+    for module_name in module_names:
+        top = module_name.split(".")[0]
+        distributions = {canonical(d) for d in owners.get(top, [])}
+        if distributions and not distributions & allowed:
+            found.add(top)
+    return sorted(found)
+
+
 def license_files(distribution):
     dist = importlib.metadata.distribution(distribution)
     names = ("LICENSE", "LICENCE", "COPYING", "NOTICE")
@@ -86,7 +123,10 @@ a = Analysis(
     hookspath=[str(ROOT / "packaging" / "hooks")],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # PyInstaller의 jaraco 네임스페이스 처리가 setuptools(벤더링한 jaraco)를 끌어와
+    # 개발·빌드 전용 패키지가 번들에 들어간다. 앱은 쓰지 않는다
+    # (typing_extensions는 jaraco가 타입 검사 때만 import한다).
+    excludes=["setuptools", "_distutils_hack", "pkg_resources", "packaging", "typing_extensions"],
     noarchive=False,
     optimize=0,
 )
@@ -98,6 +138,15 @@ gpl_only = sorted(
 )
 if gpl_only:
     raise SystemExit("GPL 전용 Qt 바이너리가 번들에 들어갔습니다:\n  " + "\n  ".join(gpl_only))
+
+# 라이선스 목록은 개발·빌드 전용 패키지를 "배포하지 않음"으로 적는다. 번들 모듈로 이를 확인한다.
+dev_only = foreign_modules(
+    (module_name for module_name, _source, _kind in a.pure),
+    importlib.metadata.packages_distributions(),
+    runtime_closure() | {"upbit-autotrader"},
+)
+if dev_only:
+    raise SystemExit("개발·빌드 전용 패키지가 번들에 들어갔습니다: " + ", ".join(dev_only))
 
 pyz = PYZ(a.pure)
 
@@ -131,3 +180,20 @@ coll = COLLECT(
 # LGPL-3.0 4(a): 사본마다 Qt를 LGPL로 쓴다는 고지를 눈에 띄게 둔다.
 # COLLECT가 폴더를 만든 뒤에 복사한다.
 shutil.copy2(ROOT / "packaging" / "NOTICE.txt", Path(coll.name) / "NOTICE.txt")
+
+# NOTICE.txt가 가리키는 파일이 실제로 들어갔는지 확인한다.
+contents = Path(coll.name) / (exe.contents_directory or ".")
+missing = [
+    relative
+    for relative in (
+        "licenses/LICENSE",
+        "licenses/LGPL-3.0.txt",
+        "licenses/GPL-3.0.txt",
+        "licenses/dependency-licenses.md",
+        "PySide6",
+        "shiboken6",
+    )
+    if not (contents / relative).exists()
+]
+if missing:
+    raise SystemExit("NOTICE.txt가 가리키는 파일이 번들에 없습니다: " + ", ".join(missing))

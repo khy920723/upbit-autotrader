@@ -94,8 +94,9 @@
 | 의무 | 이 앱의 방법 |
 |---|---|
 | 사용자가 라이브러리를 바꿀 수 있어야 함 | onedir 빌드라 Qt DLL이 `_internal/PySide6/`에 따로 있다. onefile로 바꾸거나 정적 링크하지 않는다 |
-| 라이선스 원문 동봉(LGPL-3.0 4절: GPL과 LGPL 사본) | `licenses/LGPL-3.0.txt`, `licenses/GPL-3.0.txt` |
-| 사용 고지 | 정보 화면(SCR-11, 6단계)에 "PySide6·Qt 6.12를 LGPL-3.0으로 사용" 표시 |
+| 사본마다 눈에 띄는 고지(4a): 라이브러리를 쓰고 LGPL이 적용된다는 사실 | exe 옆 `NOTICE.txt` |
+| GPL과 LGPL 사본 동봉(4b) | `licenses/LGPL-3.0.txt`, `licenses/GPL-3.0.txt` |
+| 실행 중 저작권을 보여 주면 라이브러리 고지와 라이선스 사본 위치도 함께(4c) | 정보 화면(SCR-11, 6단계) |
 | 소스 제공 | Qt·PySide6를 고치지 않는다. 공식 소스 위치를 안내한다(5.2) |
 
 ### 5.2 Qt·PySide6 소스 위치
@@ -108,7 +109,9 @@
 | Qt 6.12.0 전체(모듈 묶음) | https://github.com/qt/qt5/tree/v6.12.0 |
 | Qt Base(QtCore·QtGui·QtWidgets) | https://github.com/qt/qtbase/tree/v6.12.0 |
 
-- 위 주소는 Qt 프로젝트의 GitHub 미러이고, 2026-11-05에 태그가 있는 것을 확인했다. 공식 배포처(download.qt.io)의 소스 압축 파일은 이 세션의 네트워크 제한으로 확인하지 못했다.
+- PyPI의 PySide6 6.12.0 메타데이터는 공식 저장소를 https://code.qt.io/cgit/pyside/pyside-setup.git/ 로 적는다. PyPI에는 소스 배포본(sdist)이 없다.
+- 위 GitHub 주소는 Qt 프로젝트의 미러이고, 2026-11-05에 태그가 있는 것을 확인했다. 공식 배포처(download.qt.io)의 소스 압축 파일은 이 세션의 네트워크 제한으로 확인하지 못했다.
+- GPLv3 6(d)(LGPL-3.0에 포함): 소스를 다른 서버에 두고 안내해도 되지만, 필요한 기간 동안 받을 수 있게 할 책임은 배포자에게 남는다. 공개 릴리스 때 소스 압축 파일을 Release에 함께 올릴지 정한다(7장).
 
 ### 5.3 GPL 전용 Qt 모듈
 
@@ -123,16 +126,19 @@ Qt 6.12에서 오픈소스로는 GPL-3.0(또는 상용)으로만 제공되는 �
 | 빌드 수집 | Essentials 휠의 `platforminputcontexts/qtvirtualkeyboardplugin`(Virtual Keyboard)은 import하지 않아도 PyInstaller의 QtGui 훅이 모은다. 의존 라이브러리(Qt6VirtualKeyboard)가 Addons에 있어 메타 패키지를 쓰면 해결되기 때문이다. `packaging/hooks/hook-PySide6.QtGui.py`가 이 플러그인과 PDF 이미지 플러그인(qpdf)을 빼고 모은다 |
 | 빌드 검사 | `packaging/autotrader.spec`은 GPL 전용 Qt 바이너리 이름이 번들 목록에 남아 있으면 빌드를 멈춘다 |
 
-- 2단계 Linux 빌드로 확인: 훅이 없으면 `libqtvirtualkeyboardplugin.so`, `libQt6VirtualKeyboard.so.6`, `libQt6VirtualKeyboardQml.so.6`이 들어갔고 빌드 검사가 멈췄다. 훅을 넣은 뒤에는 이 파일과 함께 끌려오던 Qt6Qml·Qt6Quick·Qt6Pdf도 빠졌다(190MB, 6/6 self-test 통과).
+- 2단계 Linux 빌드로 확인: 훅이 없으면 `libqtvirtualkeyboardplugin.so`, `libQt6VirtualKeyboard.so.6`, `libQt6VirtualKeyboardQml.so.6`이 들어갔고 빌드 검사가 멈췄다. 훅을 넣은 뒤에는 이 파일과 함께 끌려오던 Qt6Qml·Qt6Quick·Qt6Pdf도 빠졌다(190MB, 6/6 self-test 통과). Windows 빌드(build-exe, 2026-11-05)도 빌드 검사를 통과했다.
+- Windows용 Essentials 휠에는 이 밖에도 GPL 전용 파일이 있다: `Qt6Lottie*.dll`, `Qt6QmlCompiler.dll`, `Qt6QuickTimeline*.dll`, `plugins/vectorimageformats/qlottievectorimage.dll`, `plugins/qmltooling/qmldbg_quick3dprofiler.dll`, `qml/QtQuick/VirtualKeyboard/`의 `qtvkb*plugin.dll`. PyInstaller는 QML·Quick 모듈을 import할 때 이것들을 모은다. QML을 쓰게 되면 빌드 검사 결과를 다시 확인한다.
+- `Qt6Quick3DSpatialAudio.dll`은 Qt Multimedia 소속(LGPL-3.0)이라 빌드 검사에서 뺐다. 다만 GPL 전용인 Quick 3D에 의존하므로 함께 들어오면 그쪽이 걸린다.
 - Windows의 한국어 입력(IME)은 플랫폼 플러그인(qwindows)이 처리하므로 입력 플러그인을 빼도 된다.
 - 대시보드에 차트가 필요하면 QPainter로 그리거나 LGPL 이하 라이브러리를 쓴다(Charts·Graphs 금지).
 
 ## 6. 번들 안 위치
 
-`dist/autotrader/_internal/` 아래에 있다.
+`NOTICE.txt`는 exe 옆(`dist/autotrader/`)에, 나머지는 `dist/autotrader/_internal/` 아래에 있다.
 
 | 경로 | 내용 |
 |---|---|
+| `NOTICE.txt`(exe 옆) | Qt·PySide6를 LGPL-3.0으로 쓴다는 고지, 라이선스 사본·소스 위치, 아래 파일 안내 |
 | `licenses/LICENSE` | 이 앱(MIT) |
 | `licenses/dependency-licenses.md` | 이 문서 |
 | `licenses/LGPL-3.0.txt`, `licenses/GPL-3.0.txt` | Qt·PySide6 |
@@ -146,8 +152,9 @@ Qt 6.12에서 오픈소스로는 GPL-3.0(또는 상용)으로만 제공되는 �
 |---|---|
 | Qt 라이브러리 안의 서드파티 코드(HarfBuzz, FreeType, libpng, libjpeg, PCRE2 등) 고지. Qt 문서는 실제로 배포하는 구성 요소만 고지하면 된다고 한다. 번들에 든 DLL·플러그인 기준으로 정리한다 | 릴리스(8단계) 전 |
 | 정보 화면(SCR-11)에서 이 고지들을 보여 주기 | 6단계 |
-| Windows 빌드의 Python이 python.org 빌드가 아니면 `LICENSE.txt` 위치가 다를 수 있다. 빌드 로그에 "Python LICENSE.txt를 찾지 못해" 경고가 없는지 본다 | Windows 빌드마다 |
-| PySide6 메타 패키지 대신 PySide6-Essentials만 의존하는 안: 내려받는 휠이 약 259MB에서 84MB로 줄고 GPL 전용 바이너리가 설치되지 않는다 | 사용자 결정 |
+| 공개 릴리스 때 Qt·PySide6 소스 압축 파일을 Release에 함께 올릴지(5.2, GPLv3 6(d)) | 릴리스(8단계) 전 |
+| Windows 빌드의 Python이 python.org 빌드가 아니면 `LICENSE.txt` 위치가 다를 수 있다. 빌드 로그에 "Python LICENSE.txt를 찾지 못해" 경고가 없는지 본다(2026-11-05 빌드는 python.org 3.13.17이라 경고 없음) | Windows 빌드마다 |
+| PySide6 메타 패키지 대신 PySide6-Essentials만 의존하는 안: 내려받는 Windows 휠이 약 259MB에서 84MB로 준다. 가상 키보드 라이브러리(Addons)가 없어 PyInstaller가 그 플러그인을 스스로 뺀다. Essentials에도 GPL 전용 파일이 있으므로 훅과 빌드 검사는 그대로 둔다 | 사용자 결정 |
 
 ## 8. 근거 (2026-11-05 확인)
 
@@ -156,5 +163,9 @@ Qt 6.12에서 오픈소스로는 GPL-3.0(또는 상용)으로만 제공되는 �
 | 패키지 라이선스 | 설치된 휠의 `*.dist-info` 메타데이터·라이선스 파일. Windows·macOS 전용 패키지(pywin32-ctypes, pefile, colorama, macholib)는 PyPI의 휠을 받아 라이선스 파일 확인 |
 | Qt 모듈별 라이선스 | Qt 6.12 Licensing 페이지(doc.qt.io/qt-6/licensing.html)의 원본 `qtdoc` v6.12.0 `doc/src/legal/licenses.qdoc`, 각 모듈 저장소 v6.12.0의 문서·`licenseRule.json` |
 | Essentials 휠의 가상 키보드 플러그인 | PySide6_Essentials 6.12.0 휠의 RECORD, 2단계 Linux 빌드 결과 |
+| Windows용 Essentials 휠의 파일 목록 | PyPI에서 `pyside6_essentials-6.12.0-cp310-abi3-win_amd64.whl`을 받아 확인 |
+| `Qt6Quick3DSpatialAudio` 라이선스 | qtmultimedia v6.12.0 `licenseRule.json`(`src/spatialaudioquick3d/`) |
+| LGPL-3.0 4절, GPLv3 6절 | `packaging/licenses/`의 원문(qtbase v6.12.0 `LICENSES/`) |
+| PySide6 공식 저장소 | PyPI의 PySide6 6.12.0 메타데이터(project_urls) |
 | PyInstaller | 6.22.3 휠의 `COPYING.txt`, pyinstaller-hooks-contrib 2026.9의 `LICENSE` |
 | CPython | docs.python.org/3.13/license.html의 원본 `Doc/license.rst`(v3.13.18), Windows `LICENSE.txt` 구성(`PCbuild/regen.targets`) |

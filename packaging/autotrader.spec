@@ -3,7 +3,8 @@
 #   - 결과: dist/autotrader/autotrader.exe
 # 실행(저장소 루트에서): uv run pyinstaller packaging/autotrader.spec --noconfirm --clean
 #
-# 라이선스 고지는 dist/autotrader/_internal/licenses/ 아래에 넣는다:
+# exe 옆에 NOTICE.txt(LGPL-3.0 4(a)의 눈에 띄는 고지)를 두고,
+# 라이선스 원문과 목록은 dist/autotrader/_internal/licenses/ 아래에 넣는다:
 #   이 앱의 LICENSE(MIT), 의존성 라이선스 목록, LGPL-3.0·GPL-3.0 원문(PySide6·Qt),
 #   PyInstaller(부트로더·런타임 훅)와 Python 런타임(및 Python에 포함된 외부 소프트웨어)의 라이선스.
 # 런타임 패키지 각자의 라이선스 파일은 *.dist-info 폴더째 들어간다.
@@ -11,6 +12,7 @@
 
 import importlib.metadata
 import re
+import shutil
 import sys
 import sysconfig
 import tomllib
@@ -25,9 +27,10 @@ LICENSES = "licenses"
 # 오픈소스로는 GPL-3.0(또는 상용)으로만 제공되는 Qt 모듈의 바이너리 이름. 하나라도 번들에 들어가면
 # 배포 전체가 GPL 조건을 따라야 하므로 빌드를 멈춘다. Qt 6.12 Licensing 페이지의 목록에
 # 모듈 페이지 기준 GPL 전용인 Charts, Data Visualization을 더했다.
+# Qt6Quick3DSpatialAudio는 Qt Multimedia 소속(LGPL-3.0)이라 뺀다(GPL 전용인 Quick 3D에 의존한다).
 GPL_ONLY_QT_BINARY = re.compile(
     r"canvaspainter|coap|qt6graphs|graphswidgets|grpc|httpserver|lottie|mqtt|networkauth"
-    r"|qmlcompiler|quick3d|quicktimeline|virtualkeyboard|qtvkb|waylandcompositor"
+    r"|qmlcompiler|quick3d(?!spatialaudio)|quicktimeline|virtualkeyboard|qtvkb|waylandcompositor"
     r"|qt6charts|chartsqml|datavisualization",
     re.IGNORECASE,
 )
@@ -124,3 +127,7 @@ coll = COLLECT(
     upx_exclude=[],
     name="autotrader",
 )
+
+# LGPL-3.0 4(a): 사본마다 Qt를 LGPL로 쓴다는 고지를 눈에 띄게 둔다.
+# COLLECT가 폴더를 만든 뒤에 복사한다.
+shutil.copy2(ROOT / "packaging" / "NOTICE.txt", Path(coll.name) / "NOTICE.txt")

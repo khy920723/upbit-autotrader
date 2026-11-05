@@ -145,6 +145,9 @@ def hook_excludes(repo_root):
         "Qt6NetworkAuth.dll",
         "Qt6Quick3D.dll",
         "Qt6Quick3DPhysics.dll",
+        "Qt6Quick3DRuntimeRender.dll",
+        "qmldbg_quick3dprofiler.dll",
+        "qlottievectorimage.dll",
         "Qt6QuickTimeline.dll",
         "Qt6CanvasPainter.dll",
         "Qt6Lottie.dll",
@@ -172,6 +175,8 @@ def test_guard_flags_gpl_only_qt_binaries(gpl_only_pattern, name):
         "Qt6QuickControls2.dll",
         "Qt6OpenGL.dll",
         "Qt6Pdf.dll",
+        "Qt6SpatialAudio.dll",
+        "Qt6Quick3DSpatialAudio.dll",
         "libQt6WaylandClient.so.6",
         "qwindows.dll",
         "qoffscreen.dll",
@@ -205,3 +210,31 @@ def test_spec_uses_the_custom_qtgui_hook(spec_text, repo_root):
 )
 def test_custom_hook_drops_virtual_keyboard_and_pdf_plugins(hook_excludes, path, excluded):
     assert hook_excludes(path) is excluded
+
+
+# --- LGPL-3.0 4(a): exe 옆의 고지 ----------------------------------------------------
+
+
+def test_notice_is_copied_next_to_the_exe(spec_text):
+    assert 'shutil.copy2(ROOT / "packaging" / "NOTICE.txt", Path(coll.name) / "NOTICE.txt")' in (
+        spec_text
+    )
+
+
+@pytest.mark.parametrize(
+    "needed",
+    [
+        "GNU LGPL",
+        "6.12.0",
+        r"_internal\PySide6",
+        r"_internal\shiboken6",
+        r"_internal\licenses\LICENSE",
+        r"_internal\licenses\LGPL-3.0.txt",
+        r"_internal\licenses\GPL-3.0.txt",
+        r"_internal\licenses\dependency-licenses.md",
+        "https://code.qt.io/cgit/pyside/pyside-setup.git/",
+        "https://github.com/qt/qt5/tree/v6.12.0",
+    ],
+)
+def test_notice_names_the_lgpl_libraries_texts_and_sources(repo_root, needed):
+    assert needed in (repo_root / "packaging" / "NOTICE.txt").read_text(encoding="utf-8")

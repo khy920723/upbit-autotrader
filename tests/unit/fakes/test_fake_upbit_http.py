@@ -7,26 +7,48 @@
 이 테스트가 정하는 가짜의 계약(fakes-spec 2장을 구체화한 것, 구현은 tests/fakes/upbit_http.py):
 
 - 생성: `FakeUpbitServer(clock, credentials, *, forbid_batch_cancel, omit_optional_fields,
-  random_message, seed, identifier_saved, order_test_reserves_identifier)`. 키워드는 모두 선택.
+  random_message, seed, identifier_saved, order_test_reserves_identifier,
+  forbid_encoded_brackets)`. 키워드는 모두 선택.
 - 위반: `FakeProtocolViolation`(AssertionError 하위)을 던지고 같은 위반을 `violations`에 남긴다.
-  위반마다 규칙 이름 `.rule`이 있다: path, origin, duplicate_header, post_body, delete_body, auth,
-  jwt_alg, nonce, query_hash, smp_type, identifier, identifier_not_saved, order_params, auto_retry,
-  rate_limit_half, rate_limit, batch_cancel.
+  위반마다 규칙 이름 `.rule`이 있다: path, origin, duplicate_header, query_encoding, query_params,
+  post_body, delete_body, auth, jwt_alg, nonce, query_hash, smp_type, identifier,
+  identifier_not_saved, order_params, auto_retry, rate_limit_half, rate_limit, rate_limit_pause,
+  blocked_request, batch_cancel. `server.assert_clean()`은 위반이 있으면 목록을 보여 주며
+  AssertionError를 던진다. 공용 픽스처 `make_fake_upbit`·`fake_upbit`(tests/conftest.py)는 정리
+  단계에서 만든 서버마다 assert_clean()을 부른다.
+- 같은 identifier의 POST /v1/orders 두 번째는 전송 계층에서 늘 위반이다. 앞 시도가 응답을 못
+  받았으면(timeout·연결 끊김·5xx 주입) auto_retry, 받았으면(201·4xx·429·418·인증 오류) identifier.
+- 쿼리: 경로마다 허용 키가 정해져 있다(모르는 키·`[]` 없는 배열 키는 query_params). 인코딩하지
+  않은 `+`·공백, 배열 키의 `%5B%5D`(forbid_encoded_brackets=False로 끈다)는 query_encoding.
+  identifier(본문·쿼리)에 공백·`+`가 있으면 identifier.
+- 주문 값은 문자열(`type(v) is str`)이고 price·volume은 `^\d+(\.\d+)?$`, volume은 소수 8자리까지.
+  smp_type은 cancel_maker만(다른 문서 값은 앱 정책 위반, D-047). nonce는 하이픈 있는 UUID 문자열.
 - 요청 한도 창: FakeClock monotonic의 고정 창 `[floor(t / s) * s, +s)`(1초 창이면 1000.0, 1001.0).
   절반을 넘으면 위반(예외). 실제 한도를 넘으면 위반을 남기고 429로 응답한다(예외 없음).
-  위반한 요청도 창에 센다. `Remaining-Req`의 `sec`는 그 창에서 실제 한도까지 남은 수다.
+  위반한 요청도 창에 센다. `Remaining-Req`의 `sec`는 그 창에서 실제 한도까지 남은 수다
+  (429 응답은 늘 0).
+- 멈춤: 429 응답이나 `sec=0` 응답 뒤에는 그 그룹의 다음 정수 초 경계까지, 418 응답 뒤에는 모든
+  그룹이 차단 만기까지(`Retry-After`가 없으면 만기와 418 뒤 300초 중 이른 때까지, D-078) 요청을
+  보내면 위반(rate_limit_pause, blocked_request). 멈춤이 끝난 뒤 보낸 확인 요청은 위반이 아니다
+  (아직 차단 중이면 다시 418을 받고 멈춤이 다시 걸린다).
+- 검사 → 응답 순서: 경로·헤더·쿼리·멈춤·한도·본문·인증·주문 검사를 먼저 하고, 그다음에 주입된
+  응답(실제 한도 429, 418, 429, 인증 오류)이나 정상 응답을 준다.
 - 통신 주입(timeout_before_send, timeout_after_accept, connection_reset, server_error)과 reject의
   대상은 다음 POST /v1/orders 1건이다. auth_error·out_of_scope·unknown_error는 다음 인증 요청 1건.
 - 예약(fill)이 없는 주문은 받는 즉시 가짜 호가로 체결을 끝낸다(곧바로 조회하면 끝 상태).
+  POST 응답과 DELETE 응답은 그 순간의 모습(wait, POST는 체결 0)이다. 이미 있는 주문의
+  identifier로 fill()을 부르면 그 자리에서 체결을 더한다(대기 중인 지정가만).
+- 주문 객체에서 값이 없는 price·volume·remaining_volume은 키를 뺀다(문서 예시와 같다).
 - `requests` 항목: `.method`, `.path`(원래 경로), `.query`(보낸 그대로의 인코딩된 문자열),
   `.headers`((이름, 값) 쌍 목록, 같은 이름 여러 개를 그대로), `.body`(bytes),
-  `.monotonic`(FakeClock 시각).
+  `.monotonic`(FakeClock 시각). repr은 Authorization 값을 가린다.
   `requests_per_window(group, seconds)`는 {창 시작 monotonic: 요청 수}.
 - 시각: `Date` 헤더와 `created_at`은 거래소 시각(가짜를 만든 때부터 monotonic 경과만큼 흐르고
   server_time_offset을 더한 값)이다. PC 시계(FakeClock.set_pc_offset)를 따르지 않는다.
 """
 
 import asyncio
+import decimal
 import hashlib
 import json
 import re
@@ -248,6 +270,7 @@ class Wire:
         alg: str = "HS512",
         secret: str | None = None,
         access_key: str | None = None,
+        extra: dict[str, str] | None = None,
     ) -> str:
         payload: dict[str, str] = {
             "access_key": access_key or self.creds.access_key,
@@ -257,6 +280,7 @@ class Wire:
         if digest is not None:
             payload["query_hash"] = digest
             payload["query_hash_alg"] = "SHA512"
+        payload.update(extra or {})
         return jwt.encode(payload, secret or self.creds.secret_key, algorithm=alg)
 
     @staticmethod
@@ -310,6 +334,22 @@ class Wire:
         raw = content if content is not None else json.dumps(body).encode("utf-8")
         return await self.client.post(BASE + path, content=raw, headers=sent)
 
+    async def raw(
+        self,
+        method: str,
+        url: str,
+        *,
+        hash_text: str | None = None,
+        content: bytes | None = None,
+        headers: Headers = (),
+        auth: bool = True,
+    ) -> httpx.Response:
+        """URL을 손대지 않고 보낸다(인코딩·키 모양을 테스트가 정할 때). hash_text로 서명한다."""
+        sent = list(headers)
+        if auth:
+            sent.append(self.bearer(self.token(hash_text)))
+        return await self.client.request(method, url, headers=sent, content=content)
+
     async def order(self, body: dict[str, str], **kwargs: Any) -> httpx.Response:
         return await self.post("/v1/orders", body, **kwargs)
 
@@ -346,7 +386,7 @@ class Env:
 
         asyncio.run(main())
         if clean:
-            assert self.server.violations == []
+            self.server.assert_clean()
 
 
 @pytest.fixture
@@ -586,6 +626,14 @@ def test_create_order_returns_201_and_an_order_object(env):
         assert data["smp_type"] == "cancel_maker"
         assert data["time_in_force"] == "fok"
         assert "trades" not in data
+        # 최유리 매수는 총액만 보낸다. 값이 없는 volume·remaining_volume은 키가 없다.
+        assert "volume" not in data
+        assert "remaining_volume" not in data
+        # 응답은 접수 순간의 모습(wait, 체결 0)이다. 조회하면 끝 상태다.
+        assert data["state"] == "wait"
+        assert data["executed_volume"] == "0"
+        assert data["trades_count"] == 0
+        assert (await w.final("uat-test-1"))["state"] == "done"
 
     env.run(scenario)
 
@@ -701,6 +749,8 @@ def test_cancel_moves_an_open_order_to_closed(env):
         assert cancelled.status_code == 200
         assert_order_object(json.loads(cancelled.text))
         assert json.loads(cancelled.text)["identifier"] == "uat-test-1"
+        # 취소 응답은 취소 접수 순간의 모습(wait)이다. 조회하면 cancel.
+        assert json.loads(cancelled.text)["state"] == "wait"
 
         assert (await w.final("uat-test-1"))["state"] == "cancel"
         assert json.loads((await w.get("/v1/orders/open", [("market", "KRW-BTC")])).text) == []
@@ -1152,15 +1202,37 @@ def test_smp_type_with_post_only_is_a_violation(env):
     assert rules(env.server) == ["smp_type"]
 
 
-@pytest.mark.parametrize("smp_type", ["cancel_maker", "cancel_taker", "reduce"])
-def test_documented_smp_types_are_accepted(env, smp_type):
+def test_cancel_maker_is_accepted(env):
     async def scenario(w):
-        resp = await w.order({**market_buy("uat-test-1"), "smp_type": smp_type})
+        resp = await w.order(market_buy("uat-test-1"))
 
         assert resp.status_code == 201
-        assert json.loads(resp.text)["smp_type"] == smp_type
+        assert json.loads(resp.text)["smp_type"] == "cancel_maker"
 
     env.run(scenario)
+
+
+@pytest.mark.parametrize("smp_type", ["cancel_taker", "reduce", "none"])
+def test_other_documented_smp_types_break_the_app_policy(env, smp_type):
+    # 문서상 유효한 값이지만 앱은 cancel_maker만 쓴다(D-047, 매매 로직 명세 6장).
+    async def scenario(w):
+        with pytest.raises(FakeProtocolViolation) as info:
+            await w.order({**market_buy("uat-test-1"), "smp_type": smp_type})
+        assert info.value.rule == "smp_type"
+        assert "앱 정책 위반(D-047)" in str(info.value)
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["smp_type"]
+
+
+def test_undocumented_smp_type_is_a_violation(env):
+    async def scenario(w):
+        with pytest.raises(FakeProtocolViolation) as info:
+            await w.order({**market_buy("uat-test-1"), "smp_type": "always"})
+        assert info.value.rule == "smp_type"
+        assert "문서에 없는" in str(info.value)
+
+    env.run(scenario, clean=False)
 
 
 def test_order_without_identifier_is_a_violation(env):
@@ -1260,16 +1332,15 @@ def test_order_type_required_values(env, fields):
     assert rules(env.server) == ["order_params"]
 
 
-def test_best_with_post_only_is_a_violation(env):
-    # post_only는 지정가 전용이다. smp_type을 늘 보내야 하므로 smp_type 규칙에도 걸릴 수 있다.
+def test_best_with_post_only_is_an_order_params_violation(env):
+    # post_only는 지정가 전용이다. 주문 유형 검사가 post_only·smp_type 조합 검사보다 먼저다.
     body = {**best_fok_buy("uat-test-1", "10000"), "time_in_force": "post_only"}
 
     async def scenario(w):
-        with pytest.raises(FakeProtocolViolation) as info:
-            await w.order(body)
-        assert info.value.rule in {"order_params", "smp_type"}
+        await expect_violation("order_params", w.order(body))
 
     env.run(scenario, clean=False)
+    assert rules(env.server) == ["order_params"]
 
 
 VALID_ORDER_FIELDS = {
@@ -1470,7 +1541,7 @@ def test_fill_model_on_the_fake_orderbook(env, body, state, executed, prices):
         # 수수료: 체결 금액 × 수수료율(문서 예시 0.0005, 매수·매도 같음)
         assert Decimal(order["paid_fee"]) == funds * fee_rate
         if state == "done":
-            assert Decimal(order["remaining_volume"] or 0) == 0
+            assert Decimal(order.get("remaining_volume", "0")) == 0
 
     env.run(scenario)
 
@@ -1602,7 +1673,9 @@ def test_rate_limited_answers_429_for_that_group_only(env, body):
     async def scenario(w):
         first = await w.public("/v1/ticker?markets=KRW-BTC")
         other_group = await w.public("/v1/orderbook?markets=KRW-BTC")
+        env.clock.advance(1)  # 429 뒤에는 그 그룹을 다음 초 경계까지 멈춘다.
         second = await w.public("/v1/ticker?markets=KRW-BTC")
+        env.clock.advance(1)
         third = await w.public("/v1/ticker?markets=KRW-BTC")
 
         assert [first.status_code, second.status_code, third.status_code] == [429, 429, 200]
@@ -1626,12 +1699,10 @@ def test_blocked_answers_418_until_the_time_passes(env, body, retry_after):
 
     async def scenario(w):
         first = await w.public("/v1/ticker?markets=KRW-BTC")
-        env.clock.advance(29)
-        still = await w.public("/v1/ticker?markets=KRW-BTC")
-        env.clock.advance(1.5)
+        env.clock.advance(30.5)
         after = await w.public("/v1/ticker?markets=KRW-BTC")
 
-        assert [first.status_code, still.status_code, after.status_code] == [418, 418, 200]
+        assert [first.status_code, after.status_code] == [418, 200]
         if retry_after:
             assert first.headers["Retry-After"] == "30"
         else:

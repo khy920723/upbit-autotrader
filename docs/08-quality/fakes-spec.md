@@ -47,7 +47,7 @@
 | 대기 목록 | GET /v1/orders/open?market=&states[]=&page=&limit= | 200, 배열 | `default` | `wait`, `watch` |
 | 종료 목록 | GET /v1/orders/closed?market=&states[]=&start_time=&end_time=&limit= | 200, 배열 | `default` | 조회 구간은 최대 7일. 넘겼을 때의 응답은 문서에 없으므로 가짜는 400 `invalid_parameter`를 기본으로 하고 바꿀 수 있게 한다 |
 | 개별 취소 | DELETE /v1/order?uuid= 또는 identifier= | 200, 주문 객체 | `default` | 본문이 있으면 400 `QUERY_PARAMETER_NOT_SUPPORTED` |
-| 일괄 취소 | DELETE /v1/orders/open?pairs=... | 200, `{success: {count, orders: [{uuid, market}]}, failed: {count, orders}}` | `order-cancel-all` | 2초에 1회. 앱은 사용자 주문까지 취소되는 이 API를 쓰지 않는다(D-069 대기). 가짜는 호출을 위반으로 기록하는 선택 검사를 둔다 |
+| 일괄 취소 | DELETE /v1/orders/open?pairs=... | 200, `{success: {count, orders: [{uuid, market}]}, failed: {count, orders}}` | `order-cancel-all` | 2초에 1회. 앱은 사용자 주문까지 취소되는 이 API를 쓰지 않는다(D-069). 가짜는 호출을 위반으로 기록하는 선택 검사를 둔다 |
 | 키 목록 | GET /v1/api_keys | 200, `[{access_key, expire_at}]` | `default` | `expire_at`은 KST(`+09:00`) |
 | 공개 웹소켓 | wss://api.upbit.com/websocket/v1 | ticker 등 | - | 2.5절 |
 | 비공개 웹소켓 | wss://api.upbit.com/websocket/v1/private | myOrder, myAsset, announcement | - | JWT 필요 |
@@ -115,7 +115,7 @@
 | | `server_error(status=500, created: bool)` | 5xx. 주문이 만들어졌는지 고를 수 있다 | TS-66 |
 | | `slow(seconds)` | FakeClock 기준으로 늦게 응답한다 | TS-142 |
 | 한도 | `rate_limited(group, times, body)` | 429. 본문 형식이 문서에 없어 세 가지(JSON 오류, 빈 본문, 일반 텍스트)를 고른다 | TS-03, TS-04 |
-| | `blocked(seconds, body)` | 418. 차단 시간을 담는 형식이 문서에 없어 세 가지(본문에 시간, 빈 본문, 일반 텍스트)를 고른다. `Retry-After` 헤더가 있는 경우와 없는 경우도 고른다(D-078 대기) | TS-05 |
+| | `blocked(seconds, body)` | 418. 차단 시간을 담는 형식이 문서에 없어 세 가지(본문에 시간, 빈 본문, 일반 텍스트)를 고른다. `Retry-After` 헤더가 있는 경우와 없는 경우도 고른다(D-078) | TS-05 |
 | | `remaining(group, sec)` | `Remaining-Req`의 `sec` 값을 정한다(0 포함). group 값을 표와 다르게(예: 문서 표기 `candle`) 보내는 옵션. 앱은 경로별 표로 버킷을 고르고 다른 group 값은 경고만 남겨야 한다 | TS-143 |
 | 인증·권한 | `auth_error(name)` | 401 `no_authorization_ip`, `expired_access_key`, `jwt_verification`, `invalid_query_payload`, `nonce_used`, `no_authorization_token` | TS-06, TS-07, TS-08 |
 | | `out_of_scope(status)` | `out_of_scope`를 401 또는 403으로 | TS-44 |

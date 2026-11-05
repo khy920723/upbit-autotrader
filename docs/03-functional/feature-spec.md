@@ -33,7 +33,7 @@
 
 - `/v1/market/all?is_details=true`로 KRW 마켓만 저장한다.
 - `market_event.warning`(유의)과 `market_event.caution`의 각 항목(주의)을 저장한다. 시세 웹소켓의 `market_state`, `delisting_date`와 공지 웹소켓 `announcement`(category trade)도 반영한다.
-- 공지 데이터에는 종목 코드나 공지 종류 필드가 없고 제목·카테고리·본문(요청할 때만, 크면 null)만 있다. 실시간 전용이라 놓친 공지는 다시 오지 않고, 받지 못할 수도 있다(2026-11-05 확인, [업비트 API 연동 명세](../05-integration/upbit-api.md) 2장). 그래서 공지는 기록·알림과 보조 판단에만 쓰고, 매수 차단의 기준은 위의 구조화된 값이다. 공지 글자로 신규 매수를 막는 규칙은 제안 상태다(D-079 대기, 업비트 API 연동 명세 9장).
+- 공지 데이터에는 종목 코드나 공지 종류 필드가 없고 제목·카테고리·본문(요청할 때만, 크면 null)만 있다. 실시간 전용이라 놓친 공지는 다시 오지 않고, 받지 못할 수도 있다(2026-11-05 확인, [업비트 API 연동 명세](../05-integration/upbit-api.md) 2장). 그래서 공지는 기록·알림과 보조 판단에만 쓰고, 매수 차단의 기준은 위의 구조화된 값이다. 공지 글자로 판단해 그 코인의 신규 매수만 막고 경고하며, 공지만으로는 매도하지 않는다(D-079, 업비트 API 연동 명세 9장).
 - 갱신 시점: 실행할 때, 3시간마다, 웹소켓 재연결이나 잠자기 복귀 직후.
 
 ### FR-06 시세와 지표
@@ -112,7 +112,7 @@
 | JOB-11 | DB 백업 | 하루 1회 | SQLite 백업, 7개 보관 | 경고 로그 |
 | JOB-12 | 공지 수신 | 상시 | 비공개 웹소켓 announcement(키 필요) | 재연결 후 market/all 재확인 |
 | JOB-13 | 인정일 갱신 | 매일 09:00 KST | 전날이 페이퍼 인정일인지, live-validate 인정 일인지(D-049) 계산 | - |
-| JOB-14 | 키·IP 상태 점검 | 10분(live 계열. paper에 exit_only 실보유분이 있으면 paper에서도, D-068 대기) | GET /v1/accounts 1회로 허용 IP와 키 유효성 확인 | no_authorization_ip·키 오류면 HALTED + NTF-03. paper의 exit_only는 그 주문만 멈추고 NTF-23 |
+| JOB-14 | 키·IP 상태 점검 | 10분(live 계열. paper에 exit_only 실보유분이 있으면 paper에서도, D-068) | GET /v1/accounts 1회로 허용 IP와 키 유효성 확인 | no_authorization_ip·키 오류면 HALTED + NTF-03. paper의 exit_only는 그 주문만 멈추고 NTF-23 |
 
 - 하루의 기준은 업비트 일봉 경계인 09:00 KST다.
 - 주기는 PC 시계가 아니라 monotonic 시간으로 재고, 날짜 경계는 거래소 서버 시각으로 판단한다.

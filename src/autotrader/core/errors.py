@@ -142,7 +142,8 @@ class UpbitRequestError(UpbitError):
 # - 서버 오류 메시지 {"error": {"name", "message"}}(StreamError 하위): NetworkError가 아니다.
 #   TOO_MANY_REQUEST는 기다린 뒤 1번, INVALID_AUTH는 새 JWT로 1번 다시 연결하고,
 #   나머지(형식 오류·모르는 이름)는 다시 요청하지 않는다.
-# UpbitError 계열(REST)과 섞지 않는다. 생성자는 키워드 인자만 받고 요청·헤더·토큰을 담지 않는다(INV-07).
+# UpbitError 계열(REST)과 섞지 않는다.
+# 생성자는 키워드 인자만 받고 요청·헤더·토큰을 담지 않는다(INV-07).
 
 
 class _KeywordOnlyError(Exception):
@@ -170,7 +171,10 @@ class StreamClosed(_KeywordOnlyError, NetworkError):
 
 
 class StreamConnectFailed(_KeywordOnlyError, NetworkError):
-    """연결 수립 실패(거절, 타임아웃, 핸드셰이크 HTTP 오류). HTTP 응답이 없으면 http_status는 None."""
+    """연결 수립 실패(거절, 타임아웃, 핸드셰이크 HTTP 오류).
+
+    HTTP 응답이 없으면 http_status는 None.
+    """
 
     def __init__(self, *, http_status: int | None, reason: str = "") -> None:
         self.http_status = http_status

@@ -161,7 +161,8 @@ class _SilenceWatch:
                 if self._clock.monotonic() - idle_since >= self._silence_timeout:
                     return _SILENT
         finally:
-            # 무수신이나 바깥 취소로 나가면 받던 태스크를 취소한다(이터레이터 안으로 취소가 들어간다).
+            # 무수신이나 바깥 취소로 나가면 받던 태스크를 취소한다
+            # (이터레이터 안으로 취소가 들어간다).
             await _cancel_and_wait(receiving)
 
     async def close(self) -> None:
@@ -187,7 +188,10 @@ class StreamSupervisor:
         backoff: Sequence[float] = DEFAULT_BACKOFF,
         stable_after: float = 60.0,
     ) -> None:
-        """open_stream은 부를 때마다 새 연결의 이터레이터를 준다(예: PublicStream.ticker를 감싼 함수)."""
+        """open_stream은 부를 때마다 새 연결의 이터레이터를 준다.
+
+        예: `lambda: public_stream.ticker(markets)`.
+        """
         if stream not in _STREAM_NAMES:
             raise ValueError(f"stream은 public·private 중 하나다: {stream!r}")
         if not backoff or any(delay < 0 for delay in backoff):

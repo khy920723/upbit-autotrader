@@ -35,7 +35,10 @@ TICKER_BOUNDARY = "A-Za-z0-9"
 한글·괄호·하이픈·공백에 붙은 티커는 맞는다."""
 
 BUYABLE_MARKET_STATES = frozenset({"ACTIVE"})
-"""매수를 허용하는 market_state(대소문자 그대로). 그 밖(DELISTED, PREVIEW, 없음, 모르는 값)은 막는다."""
+"""매수를 허용하는 market_state(대소문자 그대로).
+
+그 밖(DELISTED, PREVIEW, 없음, 모르는 값)은 막는다.
+"""
 
 
 def _normalize(text: str) -> str:
@@ -83,7 +86,10 @@ class CoinName:
 
 
 def _parts(event: AnnouncementEvent) -> tuple[str, ...]:
-    """정규화한 제목과 본문(있으면). 따로 두어 제목 끝과 본문 앞이 붙어 낱말·티커가 생기지 않게 한다."""
+    """정규화한 제목과 본문(있으면).
+
+    따로 두어 제목 끝과 본문 앞이 붙어 낱말·티커가 생기지 않게 한다.
+    """
     if event.body is None:
         return (_normalize(event.title),)
     return (_normalize(event.title), _normalize(event.body))
@@ -93,8 +99,7 @@ def _mentions(parts: tuple[str, ...], coin: CoinName) -> bool:
     ticker = _normalize(coin.ticker)
     korean_name = _normalize(coin.korean_name)
     return any(
-        _mentions_ticker(part, ticker) or _mentions_korean_name(part, korean_name)
-        for part in parts
+        _mentions_ticker(part, ticker) or _mentions_korean_name(part, korean_name) for part in parts
     )
 
 

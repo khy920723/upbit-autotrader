@@ -286,7 +286,8 @@ class UpbitCredentials:
 
 # ── 웹소켓 이벤트(3단계 3b) ───────────────────────────────
 # 근거: 공식 문서 websocket-ticker·myorder·myasset·announcement(2026-11-05 확인),
-# docs/06-architecture/system-architecture.md 6장. 정한 필드는 tests/unit/test_core_stream_models.py.
+# docs/06-architecture/system-architecture.md 6장.
+# 정한 필드는 tests/unit/test_core_stream_models.py.
 
 StreamName = Literal["public", "private"]
 """스트림 이름. public은 시세(ticker), private는 내 주문·자산·공지."""

@@ -7,6 +7,10 @@
   바탕은 tests/fixtures/upbit/docs_examples/(공식 문서 예시)다.
 - 엄격 검사(2.3절): 어긴 요청은 `FakeProtocolViolation`(AssertionError 하위, `.rule`)을 던지고
   `violations`에도 남긴다. 실제 한도를 넘은 요청만 예외 없이 위반을 남기고 429로 답한다.
+  테스트 끝에는 `assert_clean()`(공용 픽스처 `make_fake_upbit`·`fake_upbit`가 정리 단계에서 부른다).
+- 순서: 경로·헤더·쿼리 → 멈춤(429·sec=0·418 뒤) → 요청 한도 → 본문 → 인증 → 주문 검사를 먼저
+  하고, 그다음에 주입된 응답(실제 한도 429, 418, 429, 인증 오류)이나 정상 응답을 준다.
+  같은 identifier의 POST /v1/orders 두 번째는 이보다 먼저, 전송 계층에서 잡는다.
 - 서명은 앱 코드를 쓰지 않고 여기서 따로 검증한다(PyJWT 디코드 + SHA512 재계산).
   그래야 앱 서명 버그를 가짜가 잡는다.
 - 서버 시각(Date 헤더, created_at) = `clock.true_utc_now()` + server_time_offset.
@@ -20,13 +24,12 @@ import json
 import math
 import random
 import re
-import uuid
 import warnings
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from email.utils import format_datetime
 from pathlib import Path
 from typing import Any, NoReturn
@@ -38,7 +41,7 @@ from jwt.warnings import InsecureKeyLengthWarning
 
 from autotrader.core.models import UpbitCredentials
 from fakes.clock import FakeClock
-from fakes.upbit_json import RawNumber, dumps, fmt_decimal, loads_raw, to_decimal
+from fakes.upbit_json import dumps, fmt_decimal, loads_raw, to_decimal
 from fakes.upbit_orders import (
     CLOSED_STATES,
     OPEN_STATES,
@@ -70,22 +73,31 @@ REAL_LIMITS: dict[str, tuple[int, int]] = {
     "order-test": (1, 8),
     "order-cancel-all": (2, 1),
 }
-HALF_LIMITS: dict[str, tuple[int, int]] = {
-    "market": (1, 5),
-    "candles": (1, 5),
-    "ticker": (1, 5),
-    "orderbook": (1, 5),
-    "trade": (1, 5),
-    "default": (1, 15),
-    "order": (1, 6),
-    "order-test": (1, 4),
-    "order-cancel-all": (4, 1),
-}
+
+
+def _half(seconds: int, count: int) -> tuple[int, int]:
+    """한도의 절반. 1회짜리 창(일괄 취소 2초에 1회)은 창을 두 배로(4초에 1회)."""
+    return (seconds, count // 2) if count % 2 == 0 else (seconds * 2, count)
+
+
+HALF_LIMITS: dict[str, tuple[int, int]] = {g: _half(*limit) for g, limit in REAL_LIMITS.items()}
 QUOTATION_GROUPS = frozenset({"market", "candles", "ticker", "orderbook", "trade"})
 # Remaining-Req의 min(폐기된 값). 녹화는 시세 그룹 600이다. 앱은 읽지 않는다.
 MIN_FIELD = {"default": 1800, "order": 720, "order-test": 480, "order-cancel-all": 30}
 
-SMP_TYPES = frozenset({"cancel_maker", "cancel_taker", "reduce"})
+# 418 뒤 Retry-After가 없을 때 앱이 확인 조회 전에 기다리는 시간(D-078, 5분).
+UNKNOWN_BLOCK_WAIT = 300
+
+APP_SMP_TYPE = "cancel_maker"  # 앱 정책(D-047)
+DOCUMENTED_SMP_TYPES = frozenset({"cancel_maker", "cancel_taker", "reduce", "none"})
+NUMBER_TEXT = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+VOLUME_DECIMALS = 8
+UUID_TEXT = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
+)
+ENCODED_BRACKET = re.compile(r"%5[bd]", re.IGNORECASE)
+SEC_FIELD = re.compile(r"sec=(\d+)")
+IDENTIFIER_KEYS = frozenset({"identifier", "identifiers[]"})
 ORDER_KEYS = frozenset(
     {"market", "side", "volume", "price", "ord_type", "identifier", "time_in_force", "smp_type"}
 )
@@ -140,9 +152,12 @@ class FakeProtocolViolation(AssertionError):
         self.detail = detail
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class RecordedRequest:
-    """전송 계층에서 받은 요청 그대로(위반·주입 실패 요청 포함)."""
+    """전송 계층에서 받은 요청 그대로(위반·주입 실패 요청 포함).
+
+    repr은 Authorization 값을 가린다(필드 `headers`에는 그대로 있다).
+    """
 
     method: str
     path: str  # 원래 경로(쿼리 제외, 인코딩 그대로)
@@ -152,6 +167,17 @@ class RecordedRequest:
     monotonic: float  # FakeClock 시각
     group: str | None  # 요청 한도 그룹(경로를 모르면 None)
 
+    def __repr__(self) -> str:
+        headers = tuple(
+            (name, "<가림>" if name.lower() == "authorization" else value)
+            for name, value in self.headers
+        )
+        return (
+            f"RecordedRequest(method={self.method!r}, path={self.path!r}, query={self.query!r}, "
+            f"headers={headers!r}, body={self.body!r}, monotonic={self.monotonic!r}, "
+            f"group={self.group!r})"
+        )
+
 
 @dataclass(frozen=True)
 class _Route:
@@ -159,6 +185,7 @@ class _Route:
     group: str
     auth: bool
     unit: str | None = None
+    keys: frozenset[str] = frozenset()  # 허용 쿼리 키(배열은 `[]`까지)
 
 
 @dataclass
@@ -168,6 +195,7 @@ class _Ctx:
     params: list[tuple[str, str]]
     body: dict[str, Any] | None
     remaining: str | None
+    identifier: str | None = None
 
 
 @dataclass(frozen=True)
@@ -180,18 +208,42 @@ class _OrderInjection:
     name: str = ""
 
 
+def _keys(*names: str) -> frozenset[str]:
+    return frozenset(names)
+
+
+# 허용 쿼리 키는 각 API 문서의 요청 파라미터다. 모르는 키(오타, `[]` 없는 배열 키)는 위반.
+_MINUTE_CANDLE_KEYS = _keys("market", "to", "count")
+_ORDER_ID_KEYS = _keys("uuid", "identifier")
 _GET_ROUTES = {
-    "/v1/market/all": _Route("market_all", "market", False),
-    "/v1/candles/days": _Route("candles", "candles", False, "d1"),
-    "/v1/ticker": _Route("ticker", "ticker", False),
-    "/v1/orderbook": _Route("orderbook", "orderbook", False),
-    "/v1/orderbook/instruments": _Route("instruments", "orderbook", False),
+    "/v1/market/all": _Route("market_all", "market", False, keys=_keys("is_details")),
+    "/v1/candles/days": _Route(
+        "candles", "candles", False, "d1", _MINUTE_CANDLE_KEYS | {"converting_price_unit"}
+    ),
+    "/v1/ticker": _Route("ticker", "ticker", False, keys=_keys("markets")),
+    "/v1/orderbook": _Route("orderbook", "orderbook", False, keys=_keys("markets", "level")),
+    "/v1/orderbook/instruments": _Route("instruments", "orderbook", False, keys=_keys("markets")),
     "/v1/accounts": _Route("accounts", "default", True),
-    "/v1/orders/chance": _Route("chance", "default", True),
-    "/v1/order": _Route("get_order", "default", True),
-    "/v1/orders/uuids": _Route("orders_by_ids", "default", True),
-    "/v1/orders/open": _Route("open_orders", "default", True),
-    "/v1/orders/closed": _Route("closed_orders", "default", True),
+    "/v1/orders/chance": _Route("chance", "default", True, keys=_keys("market")),
+    "/v1/order": _Route("get_order", "default", True, keys=_ORDER_ID_KEYS),
+    "/v1/orders/uuids": _Route(
+        "orders_by_ids",
+        "default",
+        True,
+        keys=_keys("market", "uuids[]", "identifiers[]", "order_by"),
+    ),
+    "/v1/orders/open": _Route(
+        "open_orders",
+        "default",
+        True,
+        keys=_keys("market", "state", "states[]", "page", "limit", "order_by"),
+    ),
+    "/v1/orders/closed": _Route(
+        "closed_orders",
+        "default",
+        True,
+        keys=_keys("market", "state", "states[]", "start_time", "end_time", "limit", "order_by"),
+    ),
     "/v1/api_keys": _Route("api_keys", "default", True),
 }
 _POST_ROUTES = {
@@ -199,8 +251,15 @@ _POST_ROUTES = {
     "/v1/orders/test": _Route("test_order", "order-test", True),
 }
 _DELETE_ROUTES = {
-    "/v1/order": _Route("cancel_order", "default", True),
-    "/v1/orders/open": _Route("batch_cancel", "order-cancel-all", True),
+    "/v1/order": _Route("cancel_order", "default", True, keys=_ORDER_ID_KEYS),
+    "/v1/orders/open": _Route(
+        "batch_cancel",
+        "order-cancel-all",
+        True,
+        keys=_keys(
+            "quote_currencies", "cancel_side", "count", "order_by", "pairs", "excluded_pairs"
+        ),
+    ),
 }
 _MINUTE_CANDLES = re.compile(r"/v1/candles/minutes/(\d+)")
 
@@ -210,11 +269,9 @@ def _route_for(method: str, path: str) -> _Route | None:
         match = _MINUTE_CANDLES.fullmatch(path)
         if match:
             minutes = int(match[1])
-            return (
-                _Route("candles", "candles", False, f"m{minutes}")
-                if (minutes in CANDLE_MINUTES)
-                else None
-            )
+            if minutes not in CANDLE_MINUTES:
+                return None
+            return _Route("candles", "candles", False, f"m{minutes}", _MINUTE_CANDLE_KEYS)
         return _GET_ROUTES.get(path)
     if method == "POST":
         return _POST_ROUTES.get(path)
@@ -280,7 +337,10 @@ class FakeUpbitServer:
         seed: int | None = None,
         identifier_saved: Callable[[str], bool] | None = None,
         order_test_reserves_identifier: bool = False,
+        forbid_encoded_brackets: bool = True,
     ) -> None:
+        """forbid_encoded_brackets: 배열 키의 `[]`를 `%5B%5D`로 보내면 위반으로 본다(앱은 REST
+        안내대로 인코딩하지 않는다, 업비트 API 연동 명세 3장). 실제 서버 동작은 확인 전이다."""
         self._clock = clock
         self._creds = credentials
         self._forbid_batch_cancel = forbid_batch_cancel
@@ -288,6 +348,7 @@ class FakeUpbitServer:
         self._random_message = random_message
         self._identifier_saved = identifier_saved
         self._order_test_reserves = order_test_reserves_identifier
+        self._forbid_encoded_brackets = forbid_encoded_brackets
         self._message_rng = random.Random(seed if seed is not None else 0)
         self._new_uuid = seeded_uuid_factory(random.Random(f"uuid:{seed}"))
         self._server_offset = 0.0
@@ -326,7 +387,7 @@ class FakeUpbitServer:
         # 주문 상태
         self._orders: dict[str, FakeOrder] = {}
         self._by_identifier: dict[str, FakeOrder] = {}
-        self._attempts: dict[str, str] = {}  # identifier → accepted·rejected·unsent·no_response
+        self._attempts: dict[str, str] = {}  # identifier → answered·unsent·no_response
         self._reserved: set[str] = set()  # 주문 검증이 남긴 identifier(옵션)
         self._fill_plans: dict[str, FillPlan] = {}
         self._hidden: dict[str, int] = {}
@@ -341,7 +402,28 @@ class FakeUpbitServer:
         self._remaining: dict[str, list[Any]] = {}
         self._nonces: set[str] = set()
 
+        # 멈춤 검사: 이 시각(monotonic) 전에 온 요청은 위반
+        self._pause_until: dict[str, float] = {}  # 그룹별(429, sec=0 뒤)
+        self._block_pause_until: float | None = None  # 모든 그룹(418 뒤)
+
     # ── 검사 API ─────────────────────────────────────────
+
+    @property
+    def clock(self) -> FakeClock:
+        return self._clock
+
+    @property
+    def credentials(self) -> UpbitCredentials:
+        """이 가짜가 서명을 검증하는 가짜 키(카나리아)."""
+        return self._creds
+
+    def assert_clean(self) -> None:
+        """엄격 검사 위반이 0건이 아니면 위반 목록을 보여 주며 AssertionError."""
+        if self.violations:
+            lines = "\n".join(f"- {violation}" for violation in self.violations)
+            raise AssertionError(
+                f"FakeUpbitServer 엄격 검사 위반 {len(self.violations)}건:\n{lines}"
+            )
 
     def orders_received(self, identifier: str) -> int:
         """그 identifier로 받은 POST /v1/orders 수(전송 계층 기준)."""
@@ -437,8 +519,26 @@ class FakeUpbitServer:
         trades: int = 1,
         state: str | None = None,
     ) -> None:
-        """그 identifier 주문의 체결을 예약한다. ratio<1이면 기본 끝 상태는 cancel."""
-        self._fill_plans[identifier] = FillPlan(Decimal(ratio), price, trades, state)
+        """그 identifier 주문의 체결을 정한다. ratio는 주문 전체 대비 누적 체결 비율(0~1).
+
+        - 아직 없는 주문: 받을 때 쓸 예약이다. ratio<1이면 기본 끝 상태는 cancel. 가격을 주지
+          않았는데 그때 호가가 비어 있으면 그 POST 처리에서 ValueError(시장·방향을 아직 모른다).
+        - 이미 있는 주문: 그 자리에서 체결을 더한다(대기 중인 지정가). 기본 끝 상태는 ratio ≥ 1이면
+          done, 아니면 그대로(wait). 끝난 주문이거나 가격을 정할 수 없으면 여기서 ValueError.
+        """
+        plan = FillPlan(to_decimal(ratio), price, trades, state)
+        if not 0 <= plan.ratio <= 1:
+            raise ValueError(f"ratio는 0~1이다: {ratio}")
+        order = self._by_identifier.get(identifier)
+        if order is None:
+            self._fill_plans[identifier] = plan
+            return
+        if not order.is_open:
+            raise ValueError(f"이미 끝난 주문({order.state})에는 체결을 더할 수 없다: {identifier}")
+        fills, new_state = plan_fills(
+            order, plan, self._best_price(order), partial_state=order.state
+        )
+        apply_fills(order, fills, new_state, now=self._server_now(), new_uuid=self._new_uuid)
 
     # ── 주입: 시장 정보 ──────────────────────────────────
 
@@ -526,6 +626,7 @@ class FakeUpbitServer:
             normalized = normalized.rstrip("/")
         route = _route_for(request.method, unquote(normalized))
         body = request.content
+        now = self._clock.monotonic()
         self.requests.append(
             RecordedRequest(
                 method=request.method,
@@ -535,15 +636,26 @@ class FakeUpbitServer:
                     (k.decode("latin-1"), v.decode("latin-1")) for k, v in request.headers.raw
                 ),
                 body=body,
-                monotonic=self._clock.monotonic(),
+                monotonic=now,
                 group=route.group if route else None,
             )
         )
         if route is not None and route.name == "create_order":
-            identifier = self._peek_identifier(body)
-            if identifier is not None:
-                self._received[identifier] += 1
-        return self._process(request, raw_path, route)
+            self._count_attempt(self._peek_identifier(body))
+        response = self._process(request, raw_path, route)
+        self._after_response(route, now, response)
+        return response
+
+    def _count_attempt(self, identifier: str | None) -> None:
+        """같은 identifier의 POST /v1/orders 두 번째는 앞 시도 결과와 상관없이 위반(INV-03)."""
+        if identifier is None:
+            return
+        self._received[identifier] += 1
+        if self._received[identifier] <= 1:
+            return
+        if self._attempts.get(identifier) in ("unsent", "no_response"):
+            self._violate("auto_retry", "응답을 못 받은 주문을 같은 identifier로 다시 보냈다")
+        self._violate("identifier", "이미 보낸 identifier를 다시 보냈다")
 
     @staticmethod
     def _peek_identifier(body: bytes) -> str | None:
@@ -571,21 +683,41 @@ class FakeUpbitServer:
         duplicated = sorted(name for name, count in Counter(names).items() if count > 1)
         if duplicated:
             self._violate("duplicate_header", f"같은 이름 헤더가 여러 개: {duplicated}")
+        params = self._check_query(route, url.query.decode("ascii"))
 
         group = route.group
         now = self._clock.monotonic()
+        self._check_pause(group, now)
         real_seconds, real_max = REAL_LIMITS[group]
         real_count = self._window_count(group, real_seconds, now)
-        ctx = _Ctx(request, route, [], None, self._remaining_header(group, real_max - real_count))
-        if real_count > real_max:
+        over_real = real_count > real_max
+        if not over_real:
+            half_seconds, half_max = HALF_LIMITS[group]
+            if self._window_count(group, half_seconds, now) > half_max:
+                self._violate(
+                    "rate_limit_half", f"{group} 그룹 한도의 절반({half_max}/{half_seconds}초) 초과"
+                )
+        remaining = self._remaining_header(group, real_max - real_count)
+        ctx = _Ctx(request, route, params, None, remaining)
+
+        if request.method == "POST":
+            ctx.body = self._check_post_body(request)
+        elif request.method == "DELETE" and request.content:
+            self._violate("delete_body", "DELETE 요청에 본문이 있다")
+        if route.auth:
+            self._check_auth(request, ctx)
+        if route.name in ("create_order", "test_order"):
+            assert ctx.body is not None
+            real = route.name == "create_order"
+            ctx.identifier = self._check_order(ctx.body, real=real)
+            if real:
+                assert ctx.identifier is not None
+                self._attempts[ctx.identifier] = "answered"
+
+        # 검사를 모두 통과한 뒤에 주입된 응답을 준다.
+        if over_real:
             self._note("rate_limit", f"{group} 그룹 실제 한도({real_max}/{real_seconds}초) 초과")
             return self._too_many(ctx, "json")
-        half_seconds, half_max = HALF_LIMITS[group]
-        if self._window_count(group, half_seconds, now) > half_max:
-            self._violate(
-                "rate_limit_half", f"{group} 그룹 한도의 절반({half_max}/{half_seconds}초) 초과"
-            )
-
         if self._blocked is not None:
             until, kind, retry_after = self._blocked
             if now < until:
@@ -593,21 +725,57 @@ class FakeUpbitServer:
         queued = self._rate_limited.get(group)
         if queued:
             return self._too_many(ctx, queued.pop(0))
-
-        ctx.params = _parse_query(url.query.decode("ascii"))
-        if request.method == "POST":
-            ctx.body = self._check_post_body(request)
-        elif request.method == "DELETE" and request.content:
-            self._violate("delete_body", "DELETE 요청에 본문이 있다")
-
-        if route.auth:
-            self._check_auth(request, ctx)
-            if self._auth_injections:
-                status, name = self._auth_injections.pop(0)
-                return self._error(ctx, status, name)
+        if route.auth and self._auth_injections:
+            status, name = self._auth_injections.pop(0)
+            return self._error(ctx, status, name)
 
         handler: Callable[[_Ctx], httpx.Response] = getattr(self, f"_on_{route.name}")
         return handler(ctx)
+
+    def _check_query(self, route: _Route, query: str) -> list[tuple[str, str]]:
+        """보낸 그대로의 쿼리 문자열을 검사하고 (키, 값) 순서대로 디코딩한다."""
+        if "+" in query or " " in query:
+            self._violate(
+                "query_encoding", "쿼리에 인코딩하지 않은 `+`나 공백이 있다(값은 퍼센트 인코딩)"
+            )
+        if self._forbid_encoded_brackets:
+            raw_keys = [part.partition("=")[0] for part in query.split("&")]
+            if any(ENCODED_BRACKET.search(key) for key in raw_keys):
+                self._violate(
+                    "query_encoding",
+                    "배열 키의 `[]`를 `%5B%5D`로 인코딩했다(REST 안내: 그대로 둔다)",
+                )
+        params = _parse_query(query)
+        unknown = sorted({key for key, _ in params} - route.keys)
+        if unknown:
+            self._violate("query_params", f"{route.name}에 쓸 수 없는 쿼리 키: {unknown}")
+        for key, value in params:
+            if key in IDENTIFIER_KEYS and (" " in value or "+" in value):
+                self._violate("identifier", "identifier에 공백이나 `+`가 있다")
+        return params
+
+    def _check_pause(self, group: str, now: float) -> None:
+        if self._block_pause_until is not None and now < self._block_pause_until:
+            self._violate("blocked_request", "418 차단이 끝나기 전에 요청을 보냈다")
+        until = self._pause_until.get(group)
+        if until is not None and now < until:
+            self._violate(
+                "rate_limit_pause", f"{group} 그룹: 429·sec=0 응답 뒤 다음 초 경계 전에 다시 보냈다"
+            )
+
+    def _after_response(self, route: _Route | None, now: float, response: httpx.Response) -> None:
+        """응답에 따라 멈춰야 할 때를 적는다(INV-13, TS-03·05·143)."""
+        if route is None:
+            return
+        if response.status_code == 418:
+            assert self._blocked is not None
+            until, _, retry_after = self._blocked
+            # Retry-After가 없으면 앱은 5분 뒤 확인 조회 1회를 보낸다(D-078). 그 확인은 허용한다.
+            self._block_pause_until = until if retry_after else min(until, now + UNKNOWN_BLOCK_WAIT)
+            return
+        match = SEC_FIELD.search(response.headers.get("Remaining-Req", ""))
+        if response.status_code == 429 or (match is not None and int(match[1]) == 0):
+            self._pause_until[route.group] = math.floor(now) + 1
 
     def _window_count(self, group: str, seconds: int, now: float) -> int:
         start = math.floor(now / seconds) * seconds
@@ -687,10 +855,8 @@ class FakeUpbitServer:
         nonce = payload.get("nonce")
         if not isinstance(nonce, str):
             self._violate("nonce", "nonce가 없다")
-        try:
-            uuid.UUID(nonce)
-        except ValueError:
-            self._violate("nonce", "nonce가 UUID가 아니다")
+        if not UUID_TEXT.fullmatch(nonce):
+            self._violate("nonce", "nonce가 하이픈 있는 표준 UUID 문자열이 아니다")
         if nonce in self._nonces:
             self._violate("nonce", "이미 쓴 nonce다")
         self._nonces.add(nonce)
@@ -758,6 +924,8 @@ class FakeUpbitServer:
         return self._response(status, content, ERROR_CONTENT_TYPE, ctx.remaining)
 
     def _too_many(self, ctx: _Ctx, kind: str) -> httpx.Response:
+        if ctx.remaining is not None:
+            ctx.remaining = SEC_FIELD.sub("sec=0", ctx.remaining)  # 429는 그 창에 남은 수가 없다
         if kind == "empty":
             return self._response(429, b"", None, ctx.remaining)
         if kind == "text":
@@ -945,42 +1113,47 @@ class FakeUpbitServer:
     # ── 거래 API: 주문 생성·검증 ─────────────────────────
 
     def _check_order(self, body: dict[str, Any], *, real: bool) -> str | None:
+        unknown = sorted(set(body) - ORDER_KEYS)
+        if unknown:
+            self._violate("order_params", f"주문에 모르는 필드: {unknown}")
+        for key, value in body.items():
+            if type(value) is not str:  # JSON 숫자(RawNumber)·bool·null 거부
+                self._violate("order_params", f"{key} 값은 JSON 문자열이어야 한다")
+
         smp_type = body.get("smp_type")
         if smp_type is None:
             self._violate("smp_type", "smp_type이 없다(2026-11-09부터 생략하면 cancel_maker)")
-        if smp_type not in SMP_TYPES:
+        if smp_type != APP_SMP_TYPE:
+            if smp_type in DOCUMENTED_SMP_TYPES:
+                self._violate(
+                    "smp_type", f"앱 정책 위반(D-047): smp_type은 cancel_maker만 쓴다: {smp_type!r}"
+                )
             self._violate("smp_type", f"문서에 없는 smp_type: {smp_type!r}")
-        if body.get("time_in_force") == "post_only":
-            self._violate("smp_type", "post_only와 smp_type을 함께 썼다")
 
         identifier = body.get("identifier")
         if real or identifier is not None:
-            if not isinstance(identifier, str) or not identifier:
+            if not identifier:
                 self._violate("identifier", "identifier가 없다")
             if len(identifier) > 64:
                 self._violate("identifier", "identifier가 64자를 넘는다")
+            if " " in identifier or "+" in identifier:
+                self._violate("identifier", "identifier에 공백이나 `+`가 있다")
         if real:
-            assert isinstance(identifier, str)
-            previous = self._attempts.get(identifier)
-            if previous in ("unsent", "no_response"):
-                self._violate("auto_retry", "응답을 못 받은 주문을 같은 identifier로 다시 보냈다")
-            if previous is not None or identifier in self._reserved:
-                self._violate("identifier", "이미 쓴 identifier를 다시 썼다")
+            assert identifier is not None
+            if identifier in self._reserved:
+                self._violate("identifier", "주문 검증에 쓴 identifier를 다시 썼다")
             if self._identifier_saved is not None and not self._identifier_saved(identifier):
                 self._violate("identifier_not_saved", "identifier를 DB에 저장하기 전에 보냈다")
         self._check_order_params(body)
+        if body.get("time_in_force") == "post_only":
+            # post_only는 cancel_maker·cancel_taker·reduce와 함께 쓸 수 없다(매매 로직 명세 6장).
+            self._violate("smp_type", "post_only와 smp_type을 함께 썼다")
         return identifier
 
-    def _check_order_params(self, body: dict[str, Any]) -> None:
+    def _check_order_params(self, body: dict[str, str]) -> None:
         def bad(detail: str) -> NoReturn:
             self._violate("order_params", detail)
 
-        unknown = sorted(set(body) - ORDER_KEYS)
-        if unknown:
-            bad(f"주문에 모르는 필드: {unknown}")
-        for key, value in body.items():
-            if not isinstance(value, str):
-                bad(f"{key} 값은 문자열이어야 한다")
         market, side, ord_type = body.get("market"), body.get("side"), body.get("ord_type")
         has_price, has_volume = "price" in body, "volume" in body
         tif = body.get("time_in_force")
@@ -990,12 +1163,13 @@ class FakeUpbitServer:
             bad(f"side가 bid·ask가 아니다: {side!r}")
         for key in ("price", "volume"):
             if key in body:
-                try:
-                    number = Decimal(body[key])
-                except InvalidOperation:
-                    bad(f"{key}가 숫자가 아니다")
-                if not number.is_finite() or number <= 0:
+                text = body[key]
+                if not NUMBER_TEXT.fullmatch(text):
+                    bad(f"{key}는 지수·부호·공백 없는 숫자 문자열이어야 한다: {text!r}")
+                if Decimal(text) <= 0:
                     bad(f"{key}는 0보다 커야 한다")
+        if has_volume and len(body["volume"].partition(".")[2]) > VOLUME_DECIMALS:
+            bad(f"volume은 소수 {VOLUME_DECIMALS}자리까지다")
         if tif is not None and tif not in ("ioc", "fok", "post_only"):
             bad(f"time_in_force가 ioc·fok·post_only가 아니다: {tif!r}")
 
@@ -1027,8 +1201,8 @@ class FakeUpbitServer:
             market=body["market"],
             side=body["side"],
             ord_type=body["ord_type"],
-            price_text=None if price is None else _plain(price),
-            volume_text=None if volume is None else _plain(volume),
+            price_text=price,
+            volume_text=volume,
             time_in_force=body.get("time_in_force"),
             smp_type=body.get("smp_type"),
             fee_rate=self._fee_rate(body["market"], body["side"]),
@@ -1036,15 +1210,18 @@ class FakeUpbitServer:
             seq=self._seq,
         )
 
+    def _best_price(self, order: FakeOrder) -> Decimal | None:
+        asks, bids = self._levels(order.market)
+        top = asks if order.side == "bid" else bids
+        return top[0].price if top else None
+
     def _create_order(self, body: dict[str, Any], identifier: str) -> FakeOrder:
         order = self._new_order(body, identifier)
-        asks, bids = self._levels(order.market)
         plan = self._fill_plans.pop(identifier, None)
         if plan is not None:
-            top = asks if order.side == "bid" else bids
-            fills, state = plan_fills(order, plan, top[0].price if top else None)
+            fills, state = plan_fills(order, plan, self._best_price(order))
         else:
-            fills, state = match_book(order, asks, bids)
+            fills, state = match_book(order, *self._levels(order.market))
         apply_fills(order, fills, state, now=order.created_at, new_uuid=self._new_uuid)
         self._orders[order.uuid] = order
         self._by_identifier[identifier] = order
@@ -1052,10 +1229,9 @@ class FakeUpbitServer:
 
     def _on_create_order(self, ctx: _Ctx) -> httpx.Response:
         assert ctx.body is not None
-        identifier = self._check_order(ctx.body, real=True)
+        identifier = ctx.identifier
         assert identifier is not None
         if not self._known(ctx.body["market"]):
-            self._attempts[identifier] = "rejected"
             return self._not_found_market(ctx, ctx.body["market"])
         injection = self._order_injections.pop(0) if self._order_injections else None
         kind = injection.kind if injection else None
@@ -1065,18 +1241,16 @@ class FakeUpbitServer:
             self._attempts[identifier] = "unsent"
             raise httpx.ConnectTimeout("가짜: 요청이 서버에 닿지 않았다", request=request)
         if injection is not None and kind == "reject":
-            self._attempts[identifier] = "rejected"
             return self._error(ctx, injection.status, injection.name)
 
         create = injection.created if injection is not None else True
         order = self._create_order(ctx.body, identifier) if create else None
         if injection is None:
-            self._attempts[identifier] = "accepted"
             assert order is not None
             data = order.snapshot(at_creation=True, omit_optional=self._omit_optional)
             return self._ok(ctx, data, status=201)
 
-        self._attempts[identifier] = "no_response"
+        self._attempts[identifier] = "no_response"  # 5xx도 결과를 모르는 응답이다(UNKNOWN)
         if kind == "timeout_after_accept":
             raise httpx.ReadTimeout("가짜: 주문은 받았지만 응답이 오지 않는다", request=request)
         if kind == "connection_reset":
@@ -1085,7 +1259,7 @@ class FakeUpbitServer:
 
     def _on_test_order(self, ctx: _Ctx) -> httpx.Response:
         assert ctx.body is not None
-        identifier = self._check_order(ctx.body, real=False)
+        identifier = ctx.identifier
         if not self._known(ctx.body["market"]):
             return self._not_found_market(ctx, ctx.body["market"])
         if self._order_test_reserves and identifier is not None:
@@ -1263,4 +1437,4 @@ class FakeUpbitServer:
         )
 
 
-__all__ = ["FakeProtocolViolation", "FakeUpbitServer", "RawNumber", "RecordedRequest"]
+__all__ = ["FakeProtocolViolation", "FakeUpbitServer", "RecordedRequest"]

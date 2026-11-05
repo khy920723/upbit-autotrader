@@ -14,6 +14,7 @@ error.message는 바뀔 수 있으므로 분류에 쓰지 않는다.
 import json
 from collections.abc import Mapping
 from decimal import Decimal
+from types import MappingProxyType
 
 from autotrader.adapters.upbit.ratelimit import parse_remaining_req
 from autotrader.core.errors import (
@@ -29,31 +30,33 @@ from autotrader.core.errors import (
     UpbitServerError,
 )
 
-# 업비트 API 연동 명세 5장의 이름표(거래 API, 문자열 이름).
-NAME_TYPES: Mapping[str, type[UpbitError]] = {
-    "no_authorization_ip": UpbitAuthError,
-    "expired_access_key": UpbitAuthError,
-    "jwt_verification": UpbitAuthError,
-    "invalid_query_payload": UpbitAuthError,
-    "nonce_used": UpbitAuthError,
-    "no_authorization_token": UpbitAuthError,
-    "out_of_scope": UpbitPermissionError,
-    "insufficient_funds_bid": UpbitOrderRejected,
-    "insufficient_funds_ask": UpbitOrderRejected,
-    "under_min_total_bid": UpbitOrderRejected,
-    "under_min_total_ask": UpbitOrderRejected,
-    "over_krw_funds_bid": UpbitOrderRejected,
-    "invalid_parameter": UpbitOrderRejected,
-    "validation_error": UpbitOrderRejected,
-    "invalid_time_in_force": UpbitOrderRejected,
-    "invalid_post_only": UpbitOrderRejected,
-    "create_bid_error": UpbitOrderRejected,
-    "create_ask_error": UpbitOrderRejected,
-    "duplicated_identifier": UpbitOrderRejected,
-    "notfoundmarket": UpbitOrderRejected,
-    "market_offline": UpbitMarketOffline,
-    "order_not_found": UpbitNotFound,
-}
+# 업비트 API 연동 명세 5장의 이름표(거래 API, 문자열 이름). 읽기 전용이다.
+NAME_TYPES: Mapping[str, type[UpbitError]] = MappingProxyType(
+    {
+        "no_authorization_ip": UpbitAuthError,
+        "expired_access_key": UpbitAuthError,
+        "jwt_verification": UpbitAuthError,
+        "invalid_query_payload": UpbitAuthError,
+        "nonce_used": UpbitAuthError,
+        "no_authorization_token": UpbitAuthError,
+        "out_of_scope": UpbitPermissionError,
+        "insufficient_funds_bid": UpbitOrderRejected,
+        "insufficient_funds_ask": UpbitOrderRejected,
+        "under_min_total_bid": UpbitOrderRejected,
+        "under_min_total_ask": UpbitOrderRejected,
+        "over_krw_funds_bid": UpbitOrderRejected,
+        "invalid_parameter": UpbitOrderRejected,
+        "validation_error": UpbitOrderRejected,
+        "invalid_time_in_force": UpbitOrderRejected,
+        "invalid_post_only": UpbitOrderRejected,
+        "create_bid_error": UpbitOrderRejected,
+        "create_ask_error": UpbitOrderRejected,
+        "duplicated_identifier": UpbitOrderRejected,
+        "notfoundmarket": UpbitOrderRejected,
+        "market_offline": UpbitMarketOffline,
+        "order_not_found": UpbitNotFound,
+    }
+)
 
 
 def header_value(headers: Mapping[str, str], name: str) -> str | None:

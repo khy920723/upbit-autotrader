@@ -28,7 +28,7 @@ from urllib.parse import parse_qsl, unquote
 
 import httpx
 import pytest
-from fakes.canary import find_canaries, make_upbit_credentials
+from fakes.canary import find_canaries, find_secret_shapes, make_upbit_credentials
 from fakes.clock import FakeClock
 
 import autotrader
@@ -50,7 +50,7 @@ from autotrader.core.errors import (
 # adapters.upbit는 아직 없어서 ruff가 서드파티로 분류한다. 구현 전후로 정렬이 바뀌지 않게 따로 둔다.
 from autotrader.adapters.upbit.auth import Credentials, encode_query, hash_input
 from autotrader.adapters.upbit.http import UpbitHttp, UpbitResponse
-from autotrader.adapters.upbit.ratelimit import RateLimiter
+from autotrader.adapters.upbit.ratelimit import RateLimiter, requires_auth
 
 START = 1000.0  # FakeClock의 monotonic 시작값
 TOLERANCE = 0.05
@@ -535,12 +535,94 @@ def test_private_request_without_credentials_fails_before_sending(credentials):
     assert "authorization" not in header_names(public)
 
 
+# --- 경로 표의 인증 필요 여부(T2 리뷰 반영 결정) -------------------------------------------
+
+AUTH_TABLE = [
+    ("GET", "/v1/market/all", False),
+    ("GET", "/v1/candles/minutes/240", False),
+    ("GET", "/v1/candles/days", False),
+    ("GET", "/v1/ticker", False),
+    ("GET", "/v1/orderbook", False),
+    ("GET", "/v1/orderbook/instruments", False),
+    ("GET", "/v1/accounts", True),
+    ("GET", "/v1/orders/chance", True),
+    ("POST", "/v1/orders", True),
+    ("POST", "/v1/orders/test", True),
+    ("GET", "/v1/order", True),
+    ("GET", "/v1/orders/uuids", True),
+    ("GET", "/v1/orders/open", True),
+    ("GET", "/v1/orders/closed", True),
+    ("DELETE", "/v1/order", True),
+    ("GET", "/v1/api_keys", True),
+]
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "auth"), AUTH_TABLE, ids=[f"{m} {p}" for m, p, _ in AUTH_TABLE]
+)
+def test_path_table_says_which_paths_need_a_signature(method, path, auth):
+    assert requires_auth(method, path) is auth
+
+
+def call_with_auth(http: UpbitHttp, method: str, path: str, **auth):
+    if method == "POST":
+        return http.post(path, ORDER_BODY, **auth)
+    if method == "DELETE":
+        return http.delete(path, [("identifier", "uat-test-1")], **auth)
+    return http.get(path, [("market", "KRW-BTC")], **auth)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "auth"), AUTH_TABLE, ids=[f"{m} {p}" for m, p, _ in AUTH_TABLE]
+)
+def test_omitted_auth_follows_the_path_table(method, path, auth):
+    async def scenario():
+        async with connect(reply(201 if method == "POST" else 200)) as h:
+            await call_with_auth(h.http, method, path)
+            [request] = h.wire.requests
+            return request, h.creds
+
+    request, creds = run(scenario)
+
+    if auth:
+        assert verify_jwt(bearer_token(request), creds)["access_key"] == creds.access_key
+    else:
+        assert "authorization" not in header_names(request)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "auth"), AUTH_TABLE, ids=[f"{m} {p}" for m, p, _ in AUTH_TABLE]
+)
+def test_explicit_auth_must_agree_with_the_path_table(method, path, auth):
+    async def scenario():
+        async with connect(reply(201 if method == "POST" else 200)) as h:
+            await call_with_auth(h.http, method, path, auth=auth)  # 같으면 보낸다
+            with pytest.raises(ValueError):  # noqa: PT011
+                await call_with_auth(h.http, method, path, auth=not auth)
+            return len(h.wire.requests)
+
+    assert run(scenario) == 1  # 다르면 보내기 전에 막는다
+
+
+def test_batch_cancel_cannot_be_sent_by_the_http_layer():
+    # D-069: 일괄 취소(DELETE /v1/orders/open)는 경로 표에 없어 보내기 전에 ValueError다.
+    async def scenario():
+        async with connect() as h:
+            for params in ([("cancel_side", "all")], [("pairs", "KRW-BTC")], []):
+                for auth in ({}, {"auth": True}):
+                    with pytest.raises(ValueError):  # noqa: PT011
+                        await h.http.delete("/v1/orders/open", params, **auth)
+            return h.wire.requests
+
+    assert run(scenario) == []
+
+
 # --- 자동 재시도 없음(TS-72), 리다이렉트, 타임아웃 -------------------------------------------
 
 FAILURES = [
     ("read_timeout", fail_with(httpx.ReadTimeout), RequestTimeout),
     ("write_timeout", fail_with(httpx.WriteTimeout), RequestTimeout),
-    ("pool_timeout", fail_with(httpx.PoolTimeout), RequestTimeout),
+    ("pool_timeout", fail_with(httpx.PoolTimeout), NetworkError),
     ("connect_timeout", fail_with(httpx.ConnectTimeout), NetworkError),
     ("connect_error", fail_with(httpx.ConnectError), NetworkError),
     ("read_error", fail_with(httpx.ReadError), NetworkError),
@@ -597,6 +679,35 @@ def test_connection_failures_are_network_errors_but_not_timeouts(exc_type):
     assert not isinstance(run(scenario), RequestTimeout)
 
 
+@pytest.mark.parametrize(
+    ("exc_type", "expected"),
+    [
+        (httpx.ConnectTimeout, NetworkError),  # 연결을 못 얻었다
+        (httpx.PoolTimeout, NetworkError),  # 연결 풀에서 자리를 못 얻었다
+        (httpx.ReadTimeout, RequestTimeout),
+        (httpx.WriteTimeout, RequestTimeout),
+        (httpx.ConnectError, NetworkError),
+        (httpx.ReadError, NetworkError),
+        (httpx.RemoteProtocolError, NetworkError),
+    ],
+    ids=lambda value: value.__name__,
+)
+def test_transport_failures_map_to_exactly_one_error_type(exc_type, expected):
+    # RequestTimeout은 NetworkError의 하위 타입이라 pytest.raises(NetworkError)로는 구분이 안 된다.
+    async def scenario():
+        async with connect(fail_with(exc_type)) as h:
+            with pytest.raises(NetworkError) as caught:
+                await h.http.post("/v1/orders", ORDER_BODY)
+            return caught.value
+
+    error = run(scenario)
+
+    assert type(error) is expected
+    if expected is NetworkError:
+        assert not isinstance(error, RequestTimeout)
+    assert isinstance(error.__cause__, exc_type)
+
+
 @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
 @pytest.mark.parametrize(
     "location",
@@ -626,6 +737,40 @@ def test_timeout_setting_reaches_the_transport(options, expected):
     request = run(scenario)
 
     assert request.extensions["timeout"]["read"] == expected
+
+
+def test_default_transport_does_not_retry():
+    # 실제 전송(네트워크는 쓰지 않는다): httpx·httpcore 기본 재시도 0을 그대로 쓴다.
+    async def scenario():
+        clock = FakeClock()
+        http = UpbitHttp(clock=clock, limiter=RateLimiter(clock))
+        try:
+            transport = http._client._transport
+            return type(transport), transport._pool._retries
+        finally:
+            await http.aclose()
+
+    transport_type, retries = run(scenario)
+
+    assert transport_type is httpx.AsyncHTTPTransport
+    assert retries == 0
+
+
+def test_cookies_from_the_server_are_never_sent_back():
+    cookie = {"Set-Cookie": "session=abc123; Path=/; Domain=api.upbit.com; Secure"}
+
+    async def scenario():
+        async with connect(reply(headers=cookie), reply()) as h:
+            await h.http.get("/v1/ticker", [("markets", "KRW-BTC")])
+            await h.http.get("/v1/accounts")
+            await h.http.get("/v1/ticker", [("markets", "KRW-BTC")])
+            return h.wire.requests
+
+    requests = run(scenario)
+
+    assert len(requests) == 3
+    for request in requests:
+        assert "cookie" not in header_names(request)
 
 
 # --- 응답: Decimal, Date ---------------------------------------------------------------------
@@ -1139,6 +1284,70 @@ def test_success_status_with_an_unreadable_body_is_a_server_error(content):
 
 
 @pytest.mark.parametrize(
+    "content",
+    [b"[NaN]", b'{"price": Infinity}', b'[{"volume": -Infinity}]', b'{"a": [1, NaN]}'],
+    ids=["nan", "infinity", "minus_infinity", "nested_nan"],
+)
+def test_success_status_with_nan_or_infinity_is_a_server_error(content):
+    # JSON 표준 밖의 상수는 금액·수량으로 쓸 수 없다. 본문을 믿을 수 없으므로 결과 불명.
+    async def scenario():
+        async with connect(reply(201, content=content)) as h:
+            with pytest.raises(UpbitServerError) as caught:
+                await h.http.post("/v1/orders", ORDER_BODY)
+            return caught.value
+
+    error = run(scenario)
+
+    assert error.http_status == 201
+    assert error.rate_group == "order"
+
+
+BAD_TEXT = ["a b", "a\tb", "a\nb", "a\rb", "\x00", "uat\x7f", "\u3000", "a\u200bb", "\x85"]
+
+
+@pytest.mark.parametrize("bad", BAD_TEXT, ids=[repr(text) for text in BAD_TEXT])
+@pytest.mark.parametrize(
+    "where", ["get_value", "get_key", "delete_value", "post_value", "post_key"]
+)
+def test_whitespace_or_control_characters_are_rejected_before_sending(where, bad):
+    calls = {
+        "get_value": lambda http: http.get("/v1/orders/closed", [("market", f"KRW-{bad}")]),
+        "get_key": lambda http: http.get("/v1/orders/closed", [(f"mar{bad}ket", "KRW-BTC")]),
+        "delete_value": lambda http: http.delete("/v1/order", [("identifier", f"uat-{bad}")]),
+        "post_value": lambda http: http.post("/v1/orders", {**ORDER_BODY, "identifier": bad}),
+        "post_key": lambda http: http.post("/v1/orders", {**ORDER_BODY, f"x{bad}": "1"}),
+    }
+
+    async def scenario():
+        async with connect() as h:
+            with pytest.raises(ValueError):  # noqa: PT011
+                await calls[where](h.http)
+            return h.wire.requests
+
+    assert run(scenario) == []
+
+
+def test_hangul_values_are_sent_encoded_and_hashed_raw():
+    params = [("market", "KRW-BTC"), ("identifier", "uat-한글-1")]
+
+    async def scenario():
+        async with connect() as h:
+            await h.http.get("/v1/order", params)
+            return h.wire.requests[0], h.creds
+
+    request, creds = run(scenario)
+    sent = request.url.query.decode("ascii")
+    parsed = parse_qsl(sent, keep_blank_values=True)
+
+    assert parsed == params
+    assert "&".join(f"{k}={v}" for k, v in parsed) == hash_input(params)
+    assert (
+        verify_jwt(bearer_token(request), creds)["query_hash"]
+        == hashlib.sha512(hash_input(params).encode("utf-8")).hexdigest()
+    )
+
+
+@pytest.mark.parametrize(
     "call",
     [
         lambda http: http.post("/v1/orders", {"market": "KRW-BTC", "volume": Decimal("0.1")}),
@@ -1156,3 +1365,227 @@ def test_parameter_values_must_already_be_strings(call):
             return h.wire.requests
 
     assert run(scenario) == []
+
+
+# --- traceback 지역 변수(T2 리뷰 반영 결정) --------------------------------------------------
+
+LOCALS_FAILURES = [
+    ("read_timeout", fail_with(httpx.ReadTimeout)),
+    ("connect_timeout", fail_with(httpx.ConnectTimeout)),
+    ("connect_error", fail_with(httpx.ConnectError)),
+    ("read_error", fail_with(httpx.ReadError)),
+    ("http_401", error_reply(401, "jwt_verification")),
+    ("http_400", error_reply(400, "insufficient_funds_bid")),
+    ("http_500", reply(500, content=b"oops")),
+    ("http_418", reply(418, content=b"blocked", remaining=None)),
+    ("http_429", reply(429, content=b"", remaining=None)),
+    ("ok_but_unreadable", reply(201, content=b"<html>")),
+]
+LOCALS_CALLS = {
+    "private_get": lambda http: http.get("/v1/orders/open", OPEN_ORDERS_PARAMS),
+    "post": lambda http: http.post("/v1/orders", ORDER_BODY),
+    "delete": lambda http: http.delete("/v1/order", [("identifier", "uat-test-1")]),
+}
+
+
+@pytest.mark.parametrize("call", sorted(LOCALS_CALLS))
+@pytest.mark.parametrize(
+    "failure", [f for _, f in LOCALS_FAILURES], ids=[n for n, _ in LOCALS_FAILURES]
+)
+def test_traceback_locals_of_failed_requests_hold_no_secrets(call, failure):
+    # 예외가 지나는 프레임에 토큰·Authorization 헤더가 남지 않아야 capture_locals로도 새지 않는다.
+    async def scenario():
+        async with connect(failure) as h:
+            with pytest.raises(AutotraderError) as caught:
+                await LOCALS_CALLS[call](h.http)
+            # 이 테스트 프레임도 traceback에 들어간다. 토큰을 담기 전에 지역 변수를 찍는다.
+            captured = traceback.TracebackException.from_exception(
+                caught.value, capture_locals=True
+            )
+            text = "".join(captured.format())
+            return text, [bearer_token(request) for request in h.wire.requests], h.creds
+
+    text, tokens, creds = run(scenario)
+
+    assert len(tokens) == 1
+    assert find_canaries(text, [creds.access_key, creds.secret_key]) == []
+    assert tokens[0] not in text
+    assert find_secret_shapes(text) == []
+
+
+# --- 418 만기 뒤 반개방(T2 리뷰 반영 결정) ---------------------------------------------------
+
+
+class GatedWire:
+    """요청을 기록하고, 응답 공장을 차례로 쓰되 gate가 열릴 때까지 응답을 붙잡는다."""
+
+    def __init__(self, clock: FakeClock, replies):
+        self.clock = clock
+        self.replies = list(replies)
+        self.requests: list[httpx.Request] = []
+        self.sent_at: list[float] = []
+        self.gate = asyncio.Event()
+        self.gate.set()
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        self.sent_at.append(self.clock.monotonic())
+        make = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        await self.gate.wait()
+        return make(request)
+
+
+@contextlib.asynccontextmanager
+async def gated(*replies):
+    clock = FakeClock()
+    limiter = RateLimiter(clock)
+    wire = GatedWire(clock, replies)
+    creds = make_upbit_credentials()
+    http = UpbitHttp(
+        clock=clock,
+        limiter=limiter,
+        credentials=lambda: creds,
+        transport=httpx.MockTransport(wire),
+        user_agent=UA,
+    )
+    try:
+        yield http, wire, clock, limiter
+    finally:
+        await http.aclose()
+
+
+BLOCKED = reply(418, content=b"", remaining=None)
+FIVE_CALLS = [
+    lambda http: http.get("/v1/ticker", [("markets", "KRW-BTC")]),
+    lambda http: http.get("/v1/accounts"),
+    lambda http: http.get("/v1/orderbook", [("markets", "KRW-BTC")]),
+    lambda http: http.post("/v1/orders", ORDER_BODY),
+    lambda http: http.delete("/v1/order", [("identifier", "uat-test-1")]),
+]
+
+
+async def block_once(http: UpbitHttp, clock: FakeClock) -> None:
+    """첫 요청이 418(5분)을 받게 하고 만기 순간까지 시각을 옮긴다."""
+    with pytest.raises(UpbitBlocked):
+        await http.get("/v1/ticker", [("markets", "KRW-BTC")])
+    await advance(clock, 300.0)
+
+
+def test_only_one_probe_goes_out_when_the_block_expires():
+    async def scenario():
+        async with gated(BLOCKED, reply(201)) as (http, wire, clock, limiter):
+            await block_once(http, clock)
+            wire.gate.clear()
+            tasks = [asyncio.create_task(call(http)) for call in FIVE_CALLS]
+            await settle()
+            on_wire = len(wire.requests)
+            rejected = [t.exception() for t in tasks if t.done()]
+            wire.gate.set()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # 확인 요청이 성공했으니 이제 모두 나간다.
+            for call in FIVE_CALLS:
+                await call(http)
+            limiter.on_blocked(None)  # 성공으로 단계가 처음으로 돌아갔다
+            reset_wait = limiter.blocked_until() - clock.monotonic()
+            return on_wire, rejected, results, len(wire.requests), wire.sent_at, reset_wait
+
+    on_wire, rejected, results, total, sent_at, reset_wait = run(scenario)
+
+    assert on_wire == 2  # 첫 418 + 만기 시각의 확인 요청 1건
+    assert len(rejected) == 4
+    assert all(isinstance(error, UpbitBlocked) for error in rejected)
+    assert sum(isinstance(result, UpbitResponse) for result in results) == 1
+    assert sent_at[1] == START + 300.0
+    assert total == 2 + 5
+    assert reset_wait == pytest.approx(300.0)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        error_reply(500, "server_error"),
+        error_reply(400, "invalid_parameter"),
+        reply(429, content=b"", remaining=None),
+        fail_with(httpx.ReadTimeout),
+        fail_with(httpx.ConnectError),
+        reply(200, content=b"<html>"),
+    ],
+    ids=["http_500", "http_400", "http_429", "read_timeout", "connect_error", "unreadable"],
+)
+def test_a_probe_with_another_outcome_only_frees_the_probe_slot(outcome):
+    async def scenario():
+        async with gated(BLOCKED, outcome, BLOCKED) as (http, wire, clock, limiter):
+            await block_once(http, clock)
+            with contextlib.suppress(Exception):
+                await http.get("/v1/orderbook", [("markets", "KRW-BTC")])  # 확인 요청
+            await advance(clock, 2.0)  # 429 멈춤도 지나게
+            with pytest.raises(UpbitBlocked):
+                await http.get("/v1/orderbook", [("markets", "KRW-BTC")])  # 다시 확인 → 418
+            now = clock.monotonic()
+            return len(wire.requests), limiter.blocked_until() - now
+
+    sent, next_wait = run(scenario)
+
+    assert sent == 3  # 확인 자리가 풀려 다음 요청이 다시 확인 요청으로 나갔다
+    assert next_wait == pytest.approx(600.0)  # 성공이 아니었으니 단계는 그대로 올라간다
+
+
+def test_a_cancelled_probe_frees_the_probe_slot():
+    async def scenario():
+        async with gated(BLOCKED, reply(), reply()) as (http, wire, clock, limiter):
+            await block_once(http, clock)
+            wire.gate.clear()
+            probe = asyncio.create_task(http.get("/v1/ticker", [("markets", "KRW-BTC")]))
+            await settle()
+            with pytest.raises(UpbitBlocked):
+                await http.get("/v1/ticker", [("markets", "KRW-BTC")])
+            probe.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await probe
+            limiter.check_not_blocked()  # 취소로 확인 자리가 풀렸다
+            wire.gate.set()
+            await http.get("/v1/ticker", [("markets", "KRW-BTC")])  # 새 확인 요청
+            return len(wire.requests)
+
+    assert run(scenario) == 3
+
+
+def test_a_success_during_the_block_does_not_reset_the_step():
+    # 차단 전에 나간 요청의 2xx가 차단 중에 도착해도 단계를 처음으로 돌리지 않는다.
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        release = asyncio.Event()
+        count = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal count
+            count += 1
+            if count == 1:
+                await release.wait()
+                return httpx.Response(200, content=b"[]")
+            return httpx.Response(418, content=b"")
+
+        http = UpbitHttp(
+            clock=clock,
+            limiter=limiter,
+            credentials=make_upbit_credentials,
+            transport=httpx.MockTransport(handler),
+            user_agent=UA,
+        )
+        try:
+            slow = asyncio.create_task(http.get("/v1/ticker", [("markets", "KRW-BTC")]))
+            await settle()
+            with pytest.raises(UpbitBlocked):
+                await http.get("/v1/accounts")  # 418 → 5분
+            await advance(clock, 10.0)
+            release.set()
+            await slow  # 차단 중 도착한 2xx
+            await advance(clock, 290.5)
+            with pytest.raises(UpbitBlocked):
+                await http.get("/v1/ticker", [("markets", "KRW-BTC")])  # 확인 요청도 418
+            return limiter.blocked_until() - clock.monotonic()
+        finally:
+            await http.aclose()
+
+    assert run(scenario) == pytest.approx(600.0)

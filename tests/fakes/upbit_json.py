@@ -6,8 +6,21 @@ float로 읽고 다시 쓰면 표기와 값이 바뀌므로 숫자 토큰을 `Ra
 """
 
 import json
-from decimal import Decimal
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+)
 from typing import Any
+
+# 가짜의 금액·수량 계산은 이 지역 Context로 한다(테스트가 전역 Context를 바꿔도 값이 같다).
+# 정밀도는 업비트 값(가격 최대 수십억 × 소수 8자리 수량 × 수수료율)을 반올림 없이 담을 만큼 둔다.
+DECIMAL_CONTEXT = Context(
+    prec=60, rounding=ROUND_HALF_EVEN, traps=[InvalidOperation, DivisionByZero, Overflow]
+)
 
 
 class RawNumber(str):
@@ -36,7 +49,7 @@ def fmt_decimal(value: Decimal) -> str:
         raise ValueError("유한한 값만 쓴다")
     if value == 0:
         return "0"
-    return format(value.normalize(), "f")
+    return format(value.normalize(DECIMAL_CONTEXT), "f")
 
 
 def dumps(value: Any) -> str:

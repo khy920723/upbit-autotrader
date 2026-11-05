@@ -50,14 +50,16 @@ def _build_http(
     )
 
 
-def _build_api(kind: str, http: Any) -> Any:
+def _build_api(kind: str, http: Any, credentials: UpbitCredentials | None) -> Any:
     if kind == "quotation":
         from autotrader.adapters.upbit.quotation import UpbitQuotationApi
 
         return UpbitQuotationApi(http)
     from autotrader.adapters.upbit.exchange import UpbitExchangeApi
 
-    return UpbitExchangeApi(http)
+    # list_api_keys가 자기 키를 찾을 때 쓰는 키 제공 함수(UpbitHttp에 준 것과 같은 키).
+    provider = None if credentials is None else (lambda: credentials)
+    return UpbitExchangeApi(http, credentials=provider)
 
 
 @dataclass
@@ -80,7 +82,7 @@ class ApiEnv:
             keys = self.creds if self.kind == "exchange" else None
             http = _build_http(self.clock, keys, transport)
             try:
-                return await scenario(_build_api(self.kind, http))
+                return await scenario(_build_api(self.kind, http, keys))
             finally:
                 await http.aclose()
 

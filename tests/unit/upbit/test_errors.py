@@ -32,7 +32,7 @@ from autotrader.core.errors import (
 
 # isort: split
 # adapters.upbit는 아직 없어서 ruff가 서드파티로 분류한다. 구현 전후로 정렬이 바뀌지 않게 따로 둔다.
-from autotrader.adapters.upbit.errors import to_error
+from autotrader.adapters.upbit.errors import NAME_TYPES, to_error
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "upbit"
 MANIFEST = {
@@ -470,3 +470,24 @@ def test_retry_after_whole_seconds_are_read_as_float():
     error = to_error(418, b"", headers(**{"Retry-After": "3600"}), group="ticker")
 
     assert error.retry_after == 3600.0
+
+
+# --- T2 리뷰 반영 ----------------------------------------------------------------------------
+
+
+def test_name_table_is_read_only():
+    with pytest.raises(TypeError):
+        NAME_TYPES["new_name"] = UpbitRequestError  # type: ignore[index]
+
+    assert NAME_TYPES["no_authorization_ip"] is UpbitAuthError
+
+
+@pytest.mark.parametrize("digits", [7, 4301, 100_000])
+def test_overlong_remaining_sec_is_ignored_and_never_raises(digits):
+    # int 변환 상한(4300자리)을 넘는 sec 값도 예외 없이 None이다(어떤 입력에도 예외 없음).
+    remaining = headers("group=default; min=1800; sec=" + "9" * digits)
+
+    error = to_error(400, error_body("invalid_parameter"), remaining, group="default")
+
+    assert category(error) is UpbitOrderRejected
+    assert error.remaining_sec is None

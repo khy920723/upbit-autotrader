@@ -21,7 +21,8 @@
 - 쿼리: 경로마다 허용 키가 정해져 있다(모르는 키·`[]` 없는 배열 키는 query_params). 인코딩하지
   않은 `+`·공백, 배열 키의 `%5B%5D`(forbid_encoded_brackets=False로 끈다)는 query_encoding.
   identifier(본문·쿼리)에 공백·`+`가 있으면 identifier.
-- 주문 값은 문자열(`type(v) is str`)이고 price·volume은 `^\d+(\.\d+)?$`, volume은 소수 8자리까지.
+- 주문 값은 문자열(`type(v) is str`)이고 price·volume은 부호·지수·공백·밑줄 없는
+  십진 숫자 문자열(`10000`, `0.001`), volume은 소수 8자리까지.
   smp_type은 cancel_maker만(다른 문서 값은 앱 정책 위반, D-047). nonce는 하이픈 있는 UUID 문자열.
 - 요청 한도 창: FakeClock monotonic의 고정 창 `[floor(t / s) * s, +s)`(1초 창이면 1000.0, 1001.0).
   절반을 넘으면 위반(예외). 실제 한도를 넘으면 위반을 남기고 429로 응답한다(예외 없음).
@@ -93,7 +94,6 @@ ORDER_FIELDS = {
     "state",
     "market",
     "created_at",
-    "remaining_volume",
     "executed_volume",
     "reserved_fee",
     "remaining_fee",
@@ -234,7 +234,8 @@ def without(body: dict[str, str], *keys: str) -> dict[str, str]:
 
 
 def assert_order_object(obj: dict[str, Any]) -> None:
-    """fakes-spec 2.2절 주문 객체. 거래 API 숫자는 문자열이다."""
+    """fakes-spec 2.2절 주문 객체. 거래 API 숫자는 문자열이다(값이 없는 price·volume·
+    remaining_volume은 키가 없다)."""
     assert obj.keys() >= ORDER_FIELDS, ORDER_FIELDS - obj.keys()
     for field in STRING_NUMBER_FIELDS:
         assert isinstance(obj[field], str), field
@@ -743,7 +744,7 @@ def test_cancel_moves_an_open_order_to_closed(env):
 
     async def scenario(w):
         await w.order(limit_buy("uat-test-1"))
-        await w.order(market_buy("uat-test-2"))
+        await w.order(best_fok_buy("uat-test-2", "10000"))
 
         cancelled = await w.cancel("uat-test-1")
         assert cancelled.status_code == 200
@@ -1612,7 +1613,7 @@ def test_timeout_after_accept_creates_and_fills_the_order(env):
 
     async def scenario(w):
         with pytest.raises(httpx.TimeoutException):
-            await w.order(market_buy("uat-test-1"))
+            await w.order(best_fok_buy("uat-test-1", "10000"))
 
         order = await w.final("uat-test-1")
         assert order["state"] == "done"
@@ -2181,3 +2182,692 @@ def test_jwt_payloads_are_recorded_in_order(env):
     for payload in (first, second):
         uuid.UUID(payload["nonce"])
         assert env.creds.secret_key not in json.dumps(payload)
+
+
+# ── 리뷰 반영: 체결 모형의 끝 상태(H1) ───────────────────
+
+# 나누어떨어지지 않는 호가: 10,000원 ÷ 150,123,000원 = 0.0000666120...(8자리 내림 0.00006661)
+ODD_BOOK = [
+    {
+        "ask_price": Decimal("150123000"),
+        "ask_size": Decimal("1"),
+        "bid_price": Decimal("150122000"),
+        "bid_size": Decimal("1"),
+    },
+    {
+        "ask_price": Decimal("150124000"),
+        "ask_size": Decimal("1"),
+        "bid_price": Decimal("150121000"),
+        "bid_size": Decimal("1"),
+    },
+]
+ODD_VOLUME = Decimal("0.00006661")
+ODD_FUNDS = Decimal("9999.69303")  # 150,123,000 × 0.00006661 (남은 0.30697원은 1e-8개도 못 산다)
+
+
+@pytest.mark.parametrize("depth", [1, 2], ids=["one-level", "two-levels"])
+def test_market_buy_with_dust_left_ends_cancel_regardless_of_depth(env, depth):
+    # 시장가 매수에 최소 수량(1e-8)도 못 사는 잔돈이 남으면 체결분이 있어도 cancel(TS-64).
+    env.server.orderbook("KRW-BTC", ODD_BOOK[:depth])
+
+    async def scenario(w):
+        await w.order(market_buy("uat-test-1", "10000"))
+        order = await w.final("uat-test-1")
+
+        assert order["state"] == "cancel"
+        assert order["trades_count"] == 1
+        assert trade_totals(order) == (ODD_VOLUME, ODD_FUNDS)
+        assert Decimal(order["paid_fee"]) == ODD_FUNDS * Decimal("0.0005")
+        assert Decimal(order["locked"]) == 0
+
+    env.run(scenario)
+
+
+def test_best_fok_buy_that_passes_the_check_is_done_even_with_dust(env):
+    # 최유리 FOK는 사전 검사(최우선 호가 잔량 × 가격 ≥ 총액)를 통과하면 done(fakes-spec 2.4).
+    env.server.orderbook("KRW-BTC", ODD_BOOK)
+
+    async def scenario(w):
+        await w.order(best_fok_buy("uat-test-1", "10000"))
+        order = await w.final("uat-test-1")
+
+        assert order["state"] == "done"
+        assert trade_totals(order) == (ODD_VOLUME, ODD_FUNDS)
+        assert [Decimal(t["price"]) for t in order["trades"]] == [Decimal("150123000")]
+
+    env.run(scenario)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [market_buy("uat-test-1", "1"), best_fok_buy("uat-test-1", "1")],
+    ids=["market-buy", "best-fok"],
+)
+def test_an_order_with_no_fill_never_ends_done(env, body):
+    # 1원으로는 1e-8개도 못 산다. 체결이 0건이면 done이 아니라 cancel이다.
+    env.server.orderbook("KRW-BTC", ODD_BOOK)
+
+    async def scenario(w):
+        await w.order(body)
+        order = await w.final("uat-test-1")
+
+        assert order["state"] == "cancel"
+        assert order["trades_count"] == 0
+        assert Decimal(order["executed_volume"]) == 0
+
+    env.run(scenario)
+
+
+def test_fill_amounts_do_not_depend_on_the_global_decimal_context(env):
+    # 체결·수수료 계산은 가짜의 지역 Context로 한다(전역 정밀도가 6이어도 값이 같다).
+    env.server.orderbook("KRW-BTC", ODD_BOOK)
+    seen: dict[str, Any] = {}
+
+    async def scenario(w):
+        await w.order(market_buy("uat-test-1", "10000"))
+        seen.update(await w.final("uat-test-1"))
+
+    with decimal.localcontext() as ctx:
+        ctx.prec = 6
+        env.run(scenario)
+
+    assert seen["trades"][0]["funds"] == "9999.69303"
+    assert seen["paid_fee"] == "4.999846515"
+
+
+# ── 리뷰 반영: identifier 재전송(H2) ─────────────────────
+
+ANSWERED_INJECTIONS: dict[str, Callable[[FakeUpbitServer], None]] = {
+    "429": lambda s: s.rate_limited("order"),
+    "418": lambda s: s.blocked(5),
+    "401": lambda s: s.auth_error("jwt_verification"),
+    "reject": lambda s: s.reject("insufficient_funds_bid"),
+}
+
+
+@pytest.mark.parametrize("inject", ANSWERED_INJECTIONS.values(), ids=ANSWERED_INJECTIONS.keys())
+def test_resending_an_identifier_that_got_an_answer_is_an_identifier_violation(env, inject):
+    inject(env.server)
+
+    async def scenario(w):
+        first = await w.order(market_buy("uat-test-1"))
+        assert first.status_code in {400, 401, 418, 429}
+        env.clock.advance(10)
+
+        await expect_violation("identifier", w.order(market_buy("uat-test-1")))
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["identifier"]
+    assert env.server.orders_received("uat-test-1") == 2
+
+
+def test_resending_after_a_5xx_is_an_auto_retry(env):
+    # 5xx는 주문 결과를 모르는 응답이다(UNKNOWN). 같은 identifier를 다시 보내면 자동 재시도다.
+    env.server.server_error(status=500, created=False)
+
+    async def scenario(w):
+        assert (await w.order(market_buy("uat-test-1"))).status_code == 500
+        await expect_violation("auto_retry", w.order(market_buy("uat-test-1")))
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["auto_retry"]
+
+
+def test_resending_after_a_violation_is_still_caught(env):
+    async def scenario(w):
+        await expect_violation("smp_type", w.order(without(market_buy("uat-test-1"), "smp_type")))
+        await expect_violation("identifier", w.order(market_buy("uat-test-1")))
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["smp_type", "identifier"]
+
+
+@pytest.mark.parametrize(
+    "inject",
+    [
+        lambda s: s.rate_limited("order"),
+        lambda s: s.blocked(5),
+        lambda s: s.auth_error("jwt_verification"),
+    ],
+    ids=["429", "418", "401"],
+)
+def test_order_checks_run_before_injected_answers(env, inject):
+    inject(env.server)
+
+    async def scenario(w):
+        await expect_violation("smp_type", w.order(without(market_buy("uat-test-1"), "smp_type")))
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["smp_type"]
+
+
+# ── 리뷰 반영: 주문 값 형식(H3) ──────────────────────────
+
+
+def test_json_number_values_are_a_violation(env):
+    content = (
+        b'{"market": "KRW-BTC", "side": "bid", "ord_type": "price", "price": 10000, '
+        b'"identifier": "uat-test-1", "smp_type": "cancel_maker"}'
+    )
+    text = "market=KRW-BTC&side=bid&ord_type=price&price=10000&identifier=uat-test-1"
+    text += "&smp_type=cancel_maker"
+
+    async def scenario(w):
+        await expect_violation(
+            "order_params", w.order(market_buy("uat-test-1"), content=content, token=w.token(text))
+        )
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["order_params"]
+
+
+@pytest.mark.parametrize(
+    "price",
+    ["1e4", "5E+3", " 10000", "10000 ", "10_000", "+10000", "-10000", "1.", ".5", "0x10", "NaN"],
+)
+def test_price_must_be_plain_digits(env, price):
+    async def scenario(w):
+        await expect_violation("order_params", w.order(market_buy("uat-test-1", price)))
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["order_params"]
+
+
+def test_volume_allows_at_most_eight_decimals(env):
+    async def scenario(w):
+        assert (await w.order(market_sell("uat-test-1", "0.00000001"))).status_code == 201
+        await expect_violation("order_params", w.order(market_sell("uat-test-2", "0.000000001")))
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["order_params"]
+
+
+def test_decimal_price_is_accepted(env):
+    async def scenario(w):
+        resp = await w.order(limit_buy("uat-test-1", price="1000.5", volume="1"))
+
+        assert resp.status_code == 201
+        assert json.loads(resp.text)["price"] == "1000.5"
+
+    env.run(scenario)
+
+
+# ── 리뷰 반영: 멈춤 검사(M1)·429의 sec(M5) ──────────────
+
+TICKER = "/v1/ticker?markets=KRW-BTC"
+ORDERBOOK = "/v1/orderbook?markets=KRW-BTC"
+
+
+def test_injected_429_says_sec_zero(env):
+    env.server.rate_limited("default")
+
+    async def scenario(w):
+        resp = await w.get("/v1/accounts")
+
+        assert resp.status_code == 429
+        assert remaining(resp) == ("default", 0)
+
+    env.run(scenario)
+
+
+def test_same_group_before_the_next_second_after_429_is_a_violation(env):
+    env.server.rate_limited("ticker")
+
+    async def scenario(w):
+        env.clock.advance(0.3)
+        assert (await w.public(TICKER)).status_code == 429
+        assert (await w.public(ORDERBOOK)).status_code == 200  # 다른 그룹은 멈추지 않는다
+        env.clock.advance(0.6)
+        await expect_violation("rate_limit_pause", w.public(TICKER))
+        env.clock.advance(0.1)  # 1001.0: 다음 초 경계
+        assert (await w.public(TICKER)).status_code == 200
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["rate_limit_pause"]
+
+
+def test_same_group_before_the_next_second_after_sec_zero_is_a_violation(env):
+    env.server.remaining("default", sec=0, times=1)
+
+    async def scenario(w):
+        env.clock.advance(0.5)
+        assert remaining(await w.get("/v1/accounts")) == ("default", 0)
+        assert (await w.public(TICKER)).status_code == 200
+        await expect_violation("rate_limit_pause", w.get("/v1/api_keys"))
+        env.clock.advance(0.5)
+        assert (await w.get("/v1/api_keys")).status_code == 200
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["rate_limit_pause"]
+
+
+def test_any_request_before_the_told_block_end_is_a_violation(env):
+    env.server.blocked(30)
+
+    async def scenario(w):
+        # 418을 받기 전에는 차단을 모르므로 위반이 아니다.
+        assert (await w.public(TICKER)).status_code == 418
+        env.clock.advance(29)
+        await expect_violation("blocked_request", w.get("/v1/accounts"))
+        env.clock.advance(1)
+        assert (await w.get("/v1/accounts")).status_code == 200
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["blocked_request"]
+
+
+def test_block_without_retry_after_allows_one_probe_after_five_minutes(env):
+    # Retry-After가 없으면 앱은 5분 뒤 조회 1회로 확인한다(D-078). 그 확인은 위반이 아니다.
+    env.server.blocked(600, body="empty", retry_after=False)
+
+    async def scenario(w):
+        assert (await w.public(TICKER)).status_code == 418
+        env.clock.advance(299)
+        await expect_violation("blocked_request", w.public(TICKER))
+        env.clock.advance(1)
+        assert (await w.public(TICKER)).status_code == 418  # 확인 1건: 아직 차단 중
+        await expect_violation("blocked_request", w.public(ORDERBOOK))
+        env.clock.advance(300)
+        assert (await w.public(TICKER)).status_code == 200
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["blocked_request", "blocked_request"]
+
+
+def test_short_block_without_retry_after_ends_at_the_block_end(env):
+    env.server.blocked(30, body="text", retry_after=False)
+
+    async def scenario(w):
+        assert (await w.public(TICKER)).status_code == 418
+        env.clock.advance(30)
+        assert (await w.public(TICKER)).status_code == 200
+
+    env.run(scenario)
+
+
+# ── 리뷰 반영: 쿼리 형식(M2·L1·L2) ──────────────────────
+
+
+def test_unencoded_plus_in_query_is_a_violation(env):
+    text = "market=KRW-BTC&start_time=2026-10-29T10:00:00+09:00"
+
+    async def scenario(w):
+        await expect_violation(
+            "query_encoding", w.raw("GET", f"{BASE}/v1/orders/closed?{text}", hash_text=text)
+        )
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["query_encoding"]
+
+
+@pytest.mark.parametrize("identifier", ["uat a", "uat+a"])
+def test_identifier_with_space_or_plus_in_query_is_a_violation(env, identifier):
+    async def scenario(w):
+        await expect_violation("identifier", w.lookup(identifier))
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["identifier"]
+
+
+@pytest.mark.parametrize("identifier", ["uat a", "uat+a"])
+def test_identifier_with_space_or_plus_in_order_body_is_a_violation(env, identifier):
+    async def scenario(w):
+        await expect_violation("identifier", w.order(market_buy(identifier)))
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["identifier"]
+
+
+@pytest.mark.parametrize(
+    ("path", "params"),
+    [
+        ("/v1/orders/open", [("market", "KRW-BTC"), ("foo", "bar")]),
+        ("/v1/orders/open", [("states", "wait"), ("states", "watch")]),
+        ("/v1/orders/uuids", [("identifier", "uat-test-1")]),
+        ("/v1/accounts", [("market", "KRW-BTC")]),
+    ],
+    ids=["unknown-key", "array-without-brackets", "scalar-for-array", "accounts-takes-none"],
+)
+def test_unknown_query_keys_are_a_violation(env, path, params):
+    async def scenario(w):
+        await expect_violation("query_params", w.get(path, params))
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["query_params"]
+
+
+def test_unknown_public_query_key_is_a_violation(env):
+    async def scenario(w):
+        await expect_violation("query_params", w.public("/v1/ticker?market=KRW-BTC"))
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["query_params"]
+
+
+def test_post_with_a_query_string_is_a_violation(env):
+    body = market_buy("uat-test-1")
+
+    async def scenario(w):
+        await expect_violation(
+            "query_params",
+            w.raw(
+                "POST",
+                f"{BASE}/v1/orders?market=KRW-BTC",
+                hash_text=hash_input(list(body.items())),
+                content=json.dumps(body).encode(),
+                headers=[("Content-Type", "application/json")],
+            ),
+        )
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["query_params"]
+
+
+def test_encoded_array_brackets_are_a_violation_by_default(env):
+    async def scenario(w):
+        await expect_violation(
+            "query_encoding",
+            w.raw(
+                "GET",
+                f"{BASE}/v1/orders/uuids?identifiers%5B%5D=uat-test-1",
+                hash_text="identifiers[]=uat-test-1",
+            ),
+        )
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["query_encoding"]
+
+
+def test_encoded_array_brackets_can_be_allowed(make_env):
+    # 공식 SDK는 대괄호를 인코딩한다(업비트 API 연동 명세 3장). 실제 동작 확인 전까지 옵션으로 둔다.
+    env = make_env(forbid_encoded_brackets=False)
+
+    async def scenario(w):
+        await w.order(market_buy("uat-test-1"))
+        resp = await w.raw(
+            "GET",
+            f"{BASE}/v1/orders/uuids?identifiers%5B%5D=uat-test-1",
+            hash_text="identifiers[]=uat-test-1",
+        )
+
+        assert resp.status_code == 200
+        assert [o["identifier"] for o in json.loads(resp.text)] == ["uat-test-1"]
+
+    env.run(scenario)
+
+
+# ── 리뷰 반영: 응답의 빈 필드(M3) ───────────────────────
+
+
+def test_order_objects_leave_out_fields_without_a_value(env):
+    async def scenario(w):
+        bought = json.loads((await w.order(market_buy("uat-test-1"))).text)
+        sold = json.loads((await w.order(market_sell("uat-test-2"))).text)
+        looked_up = [await w.final("uat-test-1"), await w.final("uat-test-2")]
+        listed = json.loads(
+            (
+                await w.get(
+                    "/v1/orders/uuids",
+                    [("identifiers[]", "uat-test-1"), ("identifiers[]", "uat-test-2")],
+                )
+            ).text
+        )
+
+        for data in (bought, looked_up[0], *(o for o in listed if o["side"] == "bid")):
+            assert "volume" not in data
+            assert "remaining_volume" not in data
+            assert data["price"] == "10000"
+        for data in (sold, looked_up[1], *(o for o in listed if o["side"] == "ask")):
+            assert "price" not in data
+            assert data["volume"] == "0.001"
+        for data in (bought, sold, *looked_up, *listed):
+            assert None not in data.values()
+
+    env.run(scenario)
+
+
+# ── 리뷰 반영: 만들어진 주문에 fill(M4) ─────────────────
+
+
+def test_fill_on_a_waiting_limit_order_applies_at_once(env):
+    env.server.orderbook("KRW-BTC", THIN_BOOK)
+
+    async def scenario(w):
+        await w.order(limit_buy("uat-test-1", price="90000000", volume="0.02"))
+        assert (await w.final("uat-test-1"))["state"] == "wait"
+
+        env.server.fill("uat-test-1", ratio=Decimal("0.5"))
+        half = await w.final("uat-test-1")
+        assert half["state"] == "wait"
+        assert Decimal(half["executed_volume"]) == Decimal("0.01")
+        assert Decimal(half["remaining_volume"]) == Decimal("0.01")
+        assert [Decimal(t["price"]) for t in half["trades"]] == [Decimal("90000000")]
+        assert env.server.open_orders("KRW-BTC")[0]["identifier"] == "uat-test-1"
+
+        env.server.fill("uat-test-1", ratio=Decimal("1"))
+        full = await w.final("uat-test-1")
+        assert full["state"] == "done"
+        assert Decimal(full["executed_volume"]) == Decimal("0.02")
+        assert full["trades_count"] == 2
+        assert Decimal(full["locked"]) == 0
+        assert env.server.open_orders("KRW-BTC") == []
+
+    env.run(scenario)
+
+
+def test_fill_on_a_finished_order_is_a_value_error(env):
+    async def scenario(w):
+        await w.order(market_buy("uat-test-1"))
+
+        with pytest.raises(ValueError, match="끝난"):
+            env.server.fill("uat-test-1", ratio=Decimal("1"))
+
+    env.run(scenario)
+
+
+def test_fill_below_what_is_already_filled_is_a_value_error(env):
+    async def scenario(w):
+        await w.order(limit_buy("uat-test-1", price="1000", volume="2"))
+        env.server.fill("uat-test-1", ratio=Decimal("0.5"))
+
+        with pytest.raises(ValueError, match="이미 체결된"):
+            env.server.fill("uat-test-1", ratio=Decimal("0.25"))
+
+    env.run(scenario)
+
+
+def test_fill_plan_with_state_keeps_a_limit_order_waiting(env):
+    env.server.fill("uat-test-1", ratio=Decimal("0.5"), state="wait")
+
+    async def scenario(w):
+        await w.order(limit_buy("uat-test-1", price="1000", volume="2"))
+        order = await w.final("uat-test-1")
+
+        assert order["state"] == "wait"
+        assert Decimal(order["executed_volume"]) == 1
+        assert [o["identifier"] for o in env.server.open_orders()] == ["uat-test-1"]
+
+    env.run(scenario)
+
+
+# ── 리뷰 반영: assert_clean·공용 픽스처(M6) ──────────────
+
+
+def test_assert_clean_lists_the_violations(env):
+    env.server.assert_clean()
+
+    async def scenario(w):
+        await expect_violation("origin", w.public(TICKER, headers=[("Origin", "null")]))
+
+    env.run(scenario, clean=False)
+    with pytest.raises(AssertionError, match=r"\[origin\]"):
+        env.server.assert_clean()
+
+
+def test_shared_fixture_gives_a_server_checked_at_teardown(fake_upbit, make_fake_upbit):
+    clock = FakeClock()
+    other = make_fake_upbit(clock=clock, forbid_batch_cancel=False)
+    assert isinstance(fake_upbit, FakeUpbitServer)
+    assert other.clock is clock
+    assert other is not fake_upbit
+
+    async def main() -> None:
+        async with httpx.AsyncClient(transport=fake_upbit.transport) as client:
+            wire = Wire(client, fake_upbit.credentials)
+            assert (await wire.get("/v1/accounts")).status_code == 200
+
+    asyncio.run(main())
+
+
+# ── 리뷰 반영: 빠졌던 검사(M7·L6) ───────────────────────
+
+
+def test_validate_rejects_the_next_order_test_once(env):
+    env.server.validate("insufficient_funds_ask")
+
+    async def scenario(w):
+        failed = await w.test_order(market_sell("uat-V-1"))
+        passed = await w.test_order(market_sell("uat-V-2"))
+
+        assert failed.status_code == 400
+        assert error_name(failed) == "insufficient_funds_ask"
+        assert passed.status_code == 201
+
+    env.run(scenario)
+
+
+def test_set_accounts_changes_accounts_and_chance(env):
+    accounts = [
+        {
+            "currency": "KRW",
+            "balance": "123456.7",
+            "locked": "0",
+            "avg_buy_price": "0",
+            "avg_buy_price_modified": False,
+            "unit_currency": "KRW",
+        },
+        {
+            "currency": "BTC",
+            "balance": "0.5",
+            "locked": "0.1",
+            "avg_buy_price": "100000000",
+            "avg_buy_price_modified": False,
+            "unit_currency": "KRW",
+        },
+    ]
+    env.server.set_accounts(accounts)
+
+    async def scenario(w):
+        listed = json.loads((await w.get("/v1/accounts")).text)
+        chance = json.loads((await w.get("/v1/orders/chance", [("market", "KRW-BTC")])).text)
+        eth = json.loads((await w.get("/v1/orders/chance", [("market", "KRW-ETH")])).text)
+
+        assert listed == accounts
+        assert chance["bid_account"]["balance"] == "123456.7"
+        assert chance["ask_account"]["balance"] == "0.5"
+        assert eth["ask_account"]["currency"] == "ETH"
+        assert eth["ask_account"]["balance"] == "0"
+
+    env.run(scenario)
+
+
+def test_candles_injection_serves_the_series_newest_first(env):
+    series = [
+        {"market": "KRW-ETH", "candle_date_time_utc": f"2026-11-04T{h:02d}:00:00", "unit": 60}
+        for h in (1, 2, 5)  # 03·04시는 거래가 없어 캔들이 없다
+    ]
+    env.server.candles("KRW-ETH", "m60", series)
+    with pytest.raises(ValueError, match="m2"):
+        env.server.candles("KRW-ETH", "m2", series)
+
+    async def scenario(w):
+        latest = json.loads((await w.public("/v1/candles/minutes/60?market=KRW-ETH&count=2")).text)
+        before = json.loads(
+            (
+                await w.public(
+                    "/v1/candles/minutes/60?market=KRW-ETH&count=5&to=2026-11-04T05%3A00%3A00Z"
+                )
+            ).text
+        )
+
+        assert [c["candle_date_time_utc"] for c in latest] == [
+            "2026-11-04T05:00:00",
+            "2026-11-04T02:00:00",
+        ]
+        assert [c["candle_date_time_utc"] for c in before] == [
+            "2026-11-04T02:00:00",
+            "2026-11-04T01:00:00",
+        ]
+
+    env.run(scenario)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://api.upbit.com/v1/ticker?markets=KRW-BTC",
+        "https://example.com/v1/ticker?markets=KRW-BTC",
+    ],
+    ids=["http", "other-host"],
+)
+def test_scheme_and_host_must_be_the_upbit_base_url(env, url):
+    async def scenario(w):
+        await expect_violation("path", w.client.get(url))
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["path"]
+
+
+def test_unknown_jwt_payload_key_is_a_violation(env):
+    async def scenario(w):
+        await expect_violation(
+            "auth", w.get("/v1/accounts", token=w.token(extra={"timestamp": "1"}))
+        )
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["auth"]
+
+
+def test_reused_nonce_on_post_is_a_violation(env):
+    nonce = str(uuid.uuid4())
+
+    async def scenario(w):
+        first = market_buy("uat-test-1")
+        second = market_buy("uat-test-2")
+        resp = await w.order(first, token=w.token(hash_input(list(first.items())), nonce=nonce))
+        assert resp.status_code == 201
+        await expect_violation(
+            "nonce", w.order(second, token=w.token(hash_input(list(second.items())), nonce=nonce))
+        )
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["nonce"]
+
+
+@pytest.mark.parametrize(
+    "nonce",
+    [uuid.uuid4().hex, f"{{{uuid.uuid4()}}}", f"urn:uuid:{uuid.uuid4()}"],
+    ids=["no-hyphens", "braces", "urn"],
+)
+def test_nonce_must_be_a_hyphenated_uuid_string(env, nonce):
+    async def scenario(w):
+        await expect_violation("nonce", w.get("/v1/accounts", token=w.token(nonce=nonce)))
+
+    env.run(scenario, clean=False)
+    assert rules(env.server) == ["nonce"]
+
+
+# ── 리뷰 반영: 기록의 비밀 가리기 ────────────────────────
+
+
+def test_recorded_request_repr_hides_the_authorization_value(env):
+    async def scenario(w):
+        await w.get("/v1/accounts")
+
+    env.run(scenario)
+    record = env.server.requests[0]
+    token = next(v for k, v in record.headers if k.lower() == "authorization")
+    assert token.startswith("Bearer ")
+    assert token not in repr(record)
+    assert token.split(" ", 1)[1] not in repr(record)
+    assert "authorization" in repr(record).lower()

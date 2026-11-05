@@ -6,7 +6,8 @@
 
 - 시간은 FakeClock(monotonic 1000.0에서 시작, PC·거래소 오차 없음)만 쓴다. 실제로 기다리지 않는다.
 - "1초 창"은 정수 초 경계 [k, k+1)다. 시작 시각이 정수이고 오차가 없어 monotonic과 거래소 시각의
-  초 경계가 같다.
+  초 경계가 같다. 한도 장치는 슬라이딩 창이라 길이 1초인 어느 구간에도 절반을 넘지 않는다
+  (T2 리뷰 반영 결정, D-086 갱신 제안). 정수 초 창 조건은 그 특수한 경우다.
 - 한도의 절반: 시세 그룹 5, default 15, order 6, order-test 4(초당), order-cancel-all 4초에 1.
 """
 
@@ -27,7 +28,12 @@ from autotrader.core.errors import UpbitBlocked
 
 # isort: split
 # adapters.upbit는 아직 없어서 ruff가 서드파티로 분류한다. 구현 전후로 정렬이 바뀌지 않게 따로 둔다.
-from autotrader.adapters.upbit.ratelimit import GROUP_LIMITS, RateLimiter, group_for
+from autotrader.adapters.upbit.ratelimit import (
+    GROUP_LIMITS,
+    RateLimiter,
+    group_for,
+    parse_remaining_req,
+)
 
 START = 1000.0  # FakeClock의 monotonic 시작값
 TOLERANCE = 0.05  # "다음 초 경계까지"를 조금 넘겨 깨우는 구현을 허용하는 폭(초)
@@ -128,7 +134,6 @@ PATH_TABLE = [
     ("GET", "/v1/orders/open", "default"),
     ("GET", "/v1/orders/closed", "default"),
     ("DELETE", "/v1/order", "default"),
-    ("DELETE", "/v1/orders/open", "order-cancel-all"),
     ("GET", "/v1/api_keys", "default"),
 ]
 
@@ -142,10 +147,12 @@ def test_group_for_follows_the_path_table(method, path, group):
     assert group_for(method, path) == group
 
 
-def test_same_path_with_another_method_can_be_another_group():
-    # 미체결 목록 조회(GET)는 default, 일괄 취소(DELETE)는 order-cancel-all이다.
+def test_batch_cancel_is_not_in_the_path_table():
+    # D-069: 일괄 취소(DELETE /v1/orders/open)는 쓰지 않는다. 경로 표에 없어 보낼 수 없다.
+    # 미체결 목록 조회(GET)는 그대로 default다. order-cancel-all 한도 값은 표에 남긴다.
     assert group_for("GET", "/v1/orders/open") == "default"
-    assert group_for("DELETE", "/v1/orders/open") == "order-cancel-all"
+    with pytest.raises(ValueError):  # noqa: PT011
+        group_for("DELETE", "/v1/orders/open")
 
 
 # --- 한도의 절반 -----------------------------------------------------------------------------
@@ -178,6 +185,43 @@ def test_order_cancel_all_allows_one_request_per_four_seconds():
     assert first == START
     assert first + 4.0 <= second <= first + 4.0 + TOLERANCE
     assert second + 4.0 <= third <= second + 4.0 + TOLERANCE
+
+
+@pytest.mark.parametrize(("group", "half"), sorted(HALF_PER_SECOND.items()))
+def test_a_burst_late_in_a_second_waits_a_full_second_not_the_next_boundary(group, half):
+    # 슬라이딩 창: k+0.5에 절반을 쓰면 k+1.0(정수 경계)이 아니라 k+1.5까지 기다린다.
+    async def scenario():
+        clock = FakeClock(auto_advance=True)
+        limiter = RateLimiter(clock)
+        await advance(clock, 0.5)
+        return await acquire_times(limiter, clock, group, half + 1)
+
+    times = asyncio.run(scenario())
+
+    assert times[:half] == [START + 0.5] * half
+    assert START + 1.5 <= times[half] <= START + 1.5 + TOLERANCE
+    assert max_in_sliding_window(times, 1.0) <= half
+
+
+def test_spread_requests_free_their_slots_one_second_after_each_send():
+    # 창에 남는 것은 최근 절반 건의 송신 시각이다. 가장 오래된 것이 1초 지나면 한 자리가 빈다.
+    async def scenario():
+        clock = FakeClock(auto_advance=True)
+        limiter = RateLimiter(clock)
+        times = []
+        for _ in range(5):  # ticker 절반 5건을 0.1초 간격으로
+            await limiter.acquire("ticker")
+            times.append(clock.monotonic())
+            await advance(clock, 0.1)
+        times += await acquire_times(limiter, clock, "ticker", 2)
+        return times
+
+    times = asyncio.run(scenario())
+
+    assert times[:5] == pytest.approx([START + 0.1 * i for i in range(5)])
+    assert times[5] == pytest.approx(START + 1.0)
+    assert times[6] == pytest.approx(START + 1.1)
+    assert max_in_sliding_window(times, 1.0) <= 5
 
 
 def test_groups_do_not_share_their_budget():
@@ -255,11 +299,13 @@ def test_concurrent_bursts_stay_within_half_of_the_limit_in_every_second(tasks, 
         assert len(times) == count
         busiest = max(per_second_counts(times).values())
         assert busiest <= half, f"{group}: 1초 창에 {busiest}건(절반 {half})"
-        # 창 경계가 서버와 어긋나도 실제 한도는 넘지 않는다.
-        assert max_in_sliding_window(times, 1.0) <= LIMIT_PER_SECOND[group]
-        # 429를 받은 그룹은 다음 초 경계까지 보내지 않는다.
+        # 슬라이딩 창: 길이 1초인 어느 구간에도 절반 이하다(창 경계가 서버와 어긋나도 된다).
+        sliding = max_in_sliding_window(times, 1.0)
+        assert sliding <= half, f"{group}: 길이 1초 구간에 {sliding}건(절반 {half})"
+        # 429를 받은 그룹은 적어도 1초(그리고 다음 초 경계까지) 보내지 않는다.
         for paused in paused_at[group]:
-            assert not [t for t in times if paused < t < math.floor(paused) + 1.0]
+            resume = max(math.floor(paused) + 1.0, paused + 1.0)
+            assert not [t for t in times if paused < t < resume]
         # 활성 성질: 절반을 쓰며 진행한다(지나치게 늦추지 않는다).
         latest_start = max(START + s * TICK for g, s, _ in tasks if g == group)
         bound = latest_start + math.ceil(count / half) + 1.0 + 2.0 * len(paused_at[group])
@@ -286,7 +332,7 @@ def test_sec_zero_pauses_that_group_until_the_next_second_boundary(offset):
     other, paused = asyncio.run(scenario())
 
     assert other == START + offset
-    assert START + 1.0 <= paused <= START + offset + 1.0 + TOLERANCE
+    assert START + offset + 1.0 <= paused <= START + offset + 1.0 + TOLERANCE
 
 
 @pytest.mark.parametrize(
@@ -300,6 +346,8 @@ def test_sec_zero_pauses_that_group_until_the_next_second_boundary(offset):
         "garbage",
         "group=ticker; min=600; sec=abc",
         "group=ticker; min=0",
+        "group=ticker; sec=" + "0" * 7,  # 길이 상한(6자리)을 넘는 값은 무시한다
+        "group=ticker; sec=" + "0" * 5000,
     ],
 )
 def test_remaining_req_without_sec_zero_does_not_pause(remaining):
@@ -374,7 +422,44 @@ def test_rate_limited_pauses_only_that_group_until_the_next_second_boundary(offs
     other, paused = asyncio.run(scenario())
 
     assert other == START + offset
-    assert START + 1.0 <= paused <= START + offset + 1.0 + TOLERANCE
+    assert START + offset + 1.0 <= paused <= START + offset + 1.0 + TOLERANCE
+
+
+@pytest.mark.parametrize("pause", ["rate_limited", "sec_zero"])
+def test_a_pause_at_the_very_end_of_a_second_still_lasts_one_second(pause):
+    # 멈춤 만기 = max(floor(now)+1, now+1.0). k+0.99에 429를 받아도 k+1.0이 아니라 k+1.99까지.
+    async def scenario():
+        clock = FakeClock(auto_advance=True)
+        limiter = RateLimiter(clock)
+        await advance(clock, 0.99)
+        if pause == "rate_limited":
+            limiter.on_rate_limited("order")
+        else:
+            limiter.observe("order", "group=order; min=1800; sec=0")
+        await limiter.acquire("order")
+        return clock.monotonic()
+
+    resumed = asyncio.run(scenario())
+
+    assert START + 1.99 - 1e-9 <= resumed <= START + 1.99 + TOLERANCE
+
+
+# --- Remaining-Req 해석 ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "sec"),
+    [
+        ("group=default; min=1800; sec=29", 29),
+        ("group=default; sec=999999", 999999),  # 6자리까지 읽는다
+        ("group=default; sec=1000000", None),
+        ("group=default; sec=" + "9" * 4301, None),  # int 변환 상한(4300자리)을 넘어도 예외 없음
+        ("group=default; sec=" + "1" * 100_000, None),
+    ],
+    ids=["normal", "six_digits", "seven_digits", "over_int_limit", "huge"],
+)
+def test_parse_remaining_req_ignores_overlong_sec_values(value, sec):
+    assert parse_remaining_req(value) == ("default", sec)
 
 
 # --- 418 (D-078) ----------------------------------------------------------------------------
@@ -554,6 +639,107 @@ def test_check_not_blocked_raises_blocked_with_the_remaining_wait():
     assert error.raw_body == ""
 
 
+def test_many_418s_do_not_overflow_the_step_wait():
+    # 단계 지수에 상한이 있어 수천 번 차단돼도 대기 계산이 넘치지 않는다(60분 상한).
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        for _ in range(1100):
+            limiter.on_blocked(1.0)  # Retry-After 1초로 빨리 돌린다(단계는 오른다)
+            await advance(clock, 1.5)
+        now = clock.monotonic()
+        limiter.on_blocked(None)
+        return limiter.blocked_until() - now
+
+    assert asyncio.run(scenario()) == pytest.approx(3600.0)
+
+
+# --- 418 만기 뒤 반개방(T2 리뷰 반영 결정) ---------------------------------------------------
+
+
+def test_after_the_block_only_one_probe_may_be_in_flight():
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        limiter.on_blocked(None)
+        await advance(clock, 300.0)  # 만기 순간
+        limiter.check_not_blocked()  # 아직 아무도 확인하지 않았다
+        probe = limiter.start_send()
+        with pytest.raises(UpbitBlocked) as caught:
+            limiter.check_not_blocked()  # 확인 요청이 진행 중이면 다른 요청은 막는다
+        with pytest.raises(UpbitBlocked):
+            limiter.start_send()
+        limiter.end_send(probe)  # 결과 불명(타임아웃 등): 확인 자리만 푼다
+        second = limiter.start_send()  # 다음 요청이 다시 확인 요청이 된다
+        limiter.on_success_after_block()
+        limiter.end_send(second)
+        third = limiter.start_send()  # 단계가 풀렸으니 이제 확인 요청이 아니다
+        fourth = limiter.start_send()
+        limiter.end_send(third)
+        limiter.end_send(fourth)
+        now = clock.monotonic()
+        limiter.on_blocked(None)
+        return probe, caught.value, second, third, fourth, limiter.blocked_until() - now
+
+    probe, blocked, second, third, fourth, next_wait = asyncio.run(scenario())
+
+    assert probe is True
+    assert blocked.http_status == 418
+    assert blocked.raw_body == ""
+    assert second is True
+    assert (third, fourth) == (False, False)
+    assert next_wait == pytest.approx(300.0)  # 성공으로 단계가 처음으로 돌아갔다
+
+
+def test_sends_before_any_block_are_never_probes():
+    limiter = RateLimiter(FakeClock())
+
+    marks = [limiter.start_send() for _ in range(3)]
+    for mark in marks:
+        limiter.end_send(mark)
+
+    assert marks == [False, False, False]
+
+
+def test_a_probe_that_gets_418_moves_to_the_next_step_and_frees_the_slot():
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        limiter.on_blocked(None)
+        await advance(clock, 300.5)
+        probe = limiter.start_send()
+        now = clock.monotonic()
+        limiter.on_blocked(None)
+        limiter.end_send(probe)
+        wait = limiter.blocked_until() - now
+        await advance(clock, wait + 0.5)
+        return probe, wait, limiter.start_send()
+
+    probe, wait, next_probe = asyncio.run(scenario())
+
+    assert probe is True
+    assert wait == pytest.approx(600.0)
+    assert next_probe is True  # 확인 자리가 풀려 다음 만기 뒤 다시 확인할 수 있다
+
+
+def test_success_that_arrives_during_the_block_does_not_reset_the_step():
+    # 차단 전에 나갔던 요청의 2xx가 차단 중에 도착해도 차단이 풀렸다는 뜻이 아니다.
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        limiter.on_blocked(None)  # 5분
+        await advance(clock, 10.0)
+        limiter.on_success_after_block()  # 차단 중 도착한 2xx
+        await advance(clock, 290.5)
+        probe = limiter.start_send()
+        now = clock.monotonic()
+        limiter.on_blocked(None)  # 확인 요청의 418
+        limiter.end_send(probe)
+        return limiter.blocked_until() - now
+
+    assert asyncio.run(scenario()) == pytest.approx(600.0)
+
+
 UNKNOWN_PATHS = [
     ("GET", "/v1/candles/weeks"),
     ("GET", "/v1/orders"),
@@ -563,6 +749,7 @@ UNKNOWN_PATHS = [
     ("GET", "/v1/ticker/"),
     ("GET", "/v1/candles/minutes/2"),
     ("POST", "/v1/ticker"),
+    ("DELETE", "/v1/orders/open"),  # D-069: 일괄 취소는 표에서 뺐다
 ]
 
 

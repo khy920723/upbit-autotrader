@@ -18,7 +18,7 @@ import json
 import re
 import uuid
 import warnings
-from urllib.parse import unquote
+from urllib.parse import parse_qsl, unquote
 
 import pytest
 from fakes.canary import find_canaries, make_upbit_credentials
@@ -188,9 +188,15 @@ PARAM_KEYS = st.sampled_from(
         "order_by",
     ]
 )
-# 공백은 뺀다: 업비트 규칙상 쿼리 값에 공백·`+` 해석 차이가 생기지 않게 앱이 공백을 넣지 않는다
-# (업비트 API 연동 명세 3장). 그 밖의 출력 가능한 ASCII는 모두 넣는다.
-PARAM_VALUES = st.text(alphabet=st.characters(min_codepoint=0x21, max_codepoint=0x7E), max_size=30)
+# 공백·제어 문자는 뺀다: 쿼리 값에 공백·`+` 해석 차이가 생기지 않게 HTTP 계층이 보내기 전에
+# 거부한다(업비트 API 연동 명세 3장, T2 리뷰 반영 결정). 그 밖의 출력 가능한 ASCII와 한글은 넣는다.
+PARAM_VALUES = st.text(
+    alphabet=st.one_of(
+        st.characters(min_codepoint=0x21, max_codepoint=0x7E),
+        st.characters(min_codepoint=0xAC00, max_codepoint=0xD7A3),  # 한글 음절
+    ),
+    max_size=30,
+)
 PARAMS = st.lists(st.tuples(PARAM_KEYS, PARAM_VALUES), max_size=8)
 ENCODED_VALUE = re.compile(r"(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})*")
 
@@ -202,6 +208,10 @@ def test_wire_query_decodes_back_to_the_hashed_string(params):
 
     assert hashed == "&".join(f"{key}={value}" for key, value in params)
     assert unquote(sent) == hashed
+    # 서버처럼 전송 쿼리를 키·값 쌍으로 다시 해석해 이으면 해시 입력과 같다(`+`·`&`·`=` 포함).
+    parsed = parse_qsl(sent, keep_blank_values=True)
+    assert parsed == list(params)
+    assert "&".join(f"{key}={value}" for key, value in parsed) == hashed
     if not params:
         assert sent == ""
         return

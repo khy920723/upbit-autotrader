@@ -1,9 +1,13 @@
 import codecs
+import importlib.metadata
+import shutil
 import socket
 import ssl
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import certifi
 import pytest
 
 from autotrader.app import self_test
@@ -186,6 +190,15 @@ def test_import_check_fails_when_a_subpackage_cannot_be_imported(monkeypatch):
         check_imports()
 
 
+def test_import_check_covers_the_asyncio_backend_httpx_loads_on_first_request(monkeypatch):
+    # anyio는 첫 실제 요청에서야 asyncio 백엔드를 이름으로(동적으로) import한다. exe에 빠지면
+    # 시세 요청이 그때 실패하므로 자가 점검이 먼저 잡는다(QA R17-03).
+    monkeypatch.setitem(sys.modules, "anyio._backends._asyncio", None)
+
+    with pytest.raises(CheckFailed, match=r"anyio\._backends\._asyncio"):
+        check_imports()
+
+
 # --- Qt ----------------------------------------------------------------------------
 
 
@@ -318,66 +331,204 @@ def test_sqlite_check_fails_without_strict_table_support():
 
 
 # --- TLS ---------------------------------------------------------------------------
+#
+# check_tls(*, bundle_path: str | None = None,
+#           create_context: Callable[..., ssl.SSLContext] | None = None) -> str
+#   bundle_path: 검사할 CA 인증서 묶음 파일. 기본은 autotrader.adapters.tls.ca_bundle_path().
+#   create_context: 문맥을 만드는 함수. `create_context(cafile=bundle_path)`로 부른다.
+#     기본은 autotrader.adapters.tls.create_tls_context(REST·웹소켓과 같은 설정, D-093).
+#   실패(CheckFailed): 묶음 파일이 없음·읽을 수 없음·PEM 인증서 없음("CA 인증서 묶음" 문구),
+#     CA 0개, 최소 버전 TLS 1.2 미만, exe(frozen)인데 묶음이 번들 폴더(sys._MEIPASS) 밖("번들").
+#   성공 문구: "certifi <버전> 묶음, CA 인증서 N개, <ssl.OPENSSL_VERSION>, 최소 TLSv1_2".
+#   보고 문구(성공·실패)에 묶음 파일의 전체 경로를 넣지 않는다(사용자 이름이 들어갈 수 있다).
+#   연결하지 않는다. 운영체제 저장소와 SSL_CERT_FILE·SSL_CERT_DIR는 보지 않는다.
+
+BEGIN_CERTIFICATE = "-----BEGIN CERTIFICATE-----"
+END_CERTIFICATE = "-----END CERTIFICATE-----"
 
 
-def fake_context(ca_count: int, minimum_version=ssl.TLSVersion.TLSv1_2):
-    return lambda: SimpleNamespace(
-        cert_store_stats=lambda: {"x509": ca_count, "crl": 0, "x509_ca": ca_count},
-        minimum_version=minimum_version,
-    )
+def certifi_cert_count() -> int:
+    """certifi 묶음 파일의 인증서 수(파일을 직접 센다)."""
+    return Path(certifi.where()).read_text(encoding="utf-8").count(BEGIN_CERTIFICATE)
 
 
-def fake_verify_paths(capath):
-    return lambda: SimpleNamespace(cafile=None, capath=capath)
+def first_certifi_pem() -> str:
+    text = Path(certifi.where()).read_text(encoding="utf-8")
+    start = text.index(BEGIN_CERTIFICATE)
+    end = text.index(END_CERTIFICATE, start) + len(END_CERTIFICATE)
+    return text[start:end] + "\n"
 
 
-def test_tls_check_passes_with_loaded_ca_certificates():
-    detail = check_tls(
-        platform="win32", create_context=fake_context(150), verify_paths=fake_verify_paths(None)
-    )
+def copy_certifi_bundle(target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(certifi.where(), target)
+    return target
 
+
+def fake_context(
+    ca_count: int, minimum_version=ssl.TLSVersion.TLSv1_2, calls: list[str] | None = None
+):
+    def create(*, cafile):
+        if calls is not None:
+            calls.append(cafile)
+        return SimpleNamespace(
+            cert_store_stats=lambda: {"x509": ca_count, "crl": 0, "x509_ca": ca_count},
+            minimum_version=minimum_version,
+            check_hostname=True,
+            verify_mode=ssl.CERT_REQUIRED,
+        )
+
+    return create
+
+
+@pytest.fixture
+def exe_bundle(tmp_path, monkeypatch) -> Path:
+    """exe(PyInstaller onedir) 실행 형태를 흉내 낸다. 돌려주는 폴더가 sys._MEIPASS다."""
+    bundle = tmp_path / "autotrader" / "_internal"
+    bundle.mkdir(parents=True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle), raising=False)
+    return bundle
+
+
+def test_tls_check_reports_certifi_version_ca_count_and_minimum_version():
+    detail = check_tls()
+
+    assert f"certifi {importlib.metadata.version('certifi')}" in detail
+    assert f"CA 인증서 {certifi_cert_count()}개" in detail
+    assert ssl.OPENSSL_VERSION in detail
+    assert "최소 TLSv1_2" in detail
+
+
+def test_tls_check_does_not_show_where_the_bundle_lives():
+    detail = check_tls()
+
+    bundle = Path(certifi.where())
+    assert str(bundle) not in detail
+    assert str(bundle.parent.parent) not in detail  # site-packages(사용자 폴더 아래일 수 있다)
+
+
+def test_tls_check_uses_the_app_tls_context_and_ignores_ssl_environment(monkeypatch, tmp_path):
+    # 예전 동작(ssl.create_default_context())은 SSL_CERT_FILE을 읽어 CA 1개를 보고한다.
+    one_cert = tmp_path / "one-cert.pem"
+    one_cert.write_text(first_certifi_pem(), encoding="ascii")
+    cert_dir = tmp_path / "cert-dir"
+    cert_dir.mkdir()
+    monkeypatch.setenv("SSL_CERT_FILE", str(one_cert))
+    monkeypatch.setenv("SSL_CERT_DIR", str(cert_dir))
+
+    detail = check_tls()
+
+    assert f"CA 인증서 {certifi_cert_count()}개" in detail
+
+
+def test_tls_check_reads_no_operating_system_store(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("운영체제 CA 저장소를 읽으려 했다")
+
+    monkeypatch.setattr(ssl.SSLContext, "load_default_certs", forbidden)
+    monkeypatch.setattr(ssl.SSLContext, "set_default_verify_paths", forbidden)
+    monkeypatch.setattr(ssl, "get_default_verify_paths", forbidden)
+
+    assert f"CA 인증서 {certifi_cert_count()}개" in check_tls()
+
+
+def test_tls_check_makes_no_connection(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("TLS 점검이 연결하려 했다")
+
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr(socket, "getaddrinfo", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(ssl.SSLContext, "wrap_socket", forbidden)
+    monkeypatch.setattr(ssl.SSLContext, "wrap_bio", forbidden)
+
+    assert check_tls()
+
+
+def test_tls_check_builds_the_context_from_the_bundle_it_checks():
+    calls: list[str] = []
+    bundle = certifi.where()
+
+    detail = check_tls(bundle_path=bundle, create_context=fake_context(150, calls=calls))
+
+    assert calls == [bundle]
     assert "CA 인증서 150개" in detail
 
 
-def test_tls_check_accepts_a_lazy_ca_directory_outside_windows(tmp_path):
-    (tmp_path / "abcd1234.0").touch()
+def test_tls_check_fails_when_the_bundle_file_is_missing(tmp_path):
+    with pytest.raises(CheckFailed, match="CA 인증서 묶음") as exc:
+        check_tls(bundle_path=str(tmp_path / "missing" / "cacert.pem"))
 
-    detail = check_tls(
-        platform="linux",
-        create_context=fake_context(0),
-        verify_paths=fake_verify_paths(str(tmp_path)),
-    )
-
-    assert "CA 디렉터리" in detail
+    assert str(tmp_path) not in str(exc.value)
 
 
-def test_tls_check_fails_without_any_ca(tmp_path):
+@pytest.mark.parametrize("kind", ["empty", "text", "der", "directory"])
+def test_tls_check_fails_when_the_bundle_cannot_be_read(tmp_path, kind):
+    path = tmp_path / "cacert.pem"
+    if kind == "empty":
+        path.write_bytes(b"")
+    elif kind == "text":
+        path.write_text("이것은 인증서가 아니다\n", encoding="utf-8")
+    elif kind == "der":  # 올바른 인증서지만 PEM이 아니다
+        path.write_bytes(ssl.PEM_cert_to_DER_cert(first_certifi_pem()))
+    else:
+        path.mkdir()
+
+    with pytest.raises(CheckFailed, match="CA 인증서 묶음") as exc:
+        check_tls(bundle_path=str(path))
+
+    assert str(tmp_path) not in str(exc.value)
+
+
+def test_tls_check_fails_without_any_ca():
     with pytest.raises(CheckFailed, match="CA"):
-        check_tls(
-            platform="linux",
-            create_context=fake_context(0),
-            verify_paths=fake_verify_paths(str(tmp_path / "missing")),
-        )
+        check_tls(bundle_path=certifi.where(), create_context=fake_context(0))
 
 
-def test_tls_check_requires_loaded_certificates_on_windows(tmp_path):
-    (tmp_path / "abcd1234.0").touch()
-
-    with pytest.raises(CheckFailed, match="CA"):
-        check_tls(
-            platform="win32",
-            create_context=fake_context(0),
-            verify_paths=fake_verify_paths(str(tmp_path)),
-        )
-
-
-def test_tls_check_rejects_versions_below_tls12():
+@pytest.mark.parametrize(
+    "minimum_version",
+    [ssl.TLSVersion.MINIMUM_SUPPORTED, ssl.TLSVersion.TLSv1, ssl.TLSVersion.TLSv1_1],
+    ids=lambda version: version.name,
+)
+def test_tls_check_rejects_versions_below_tls12(minimum_version):
     with pytest.raises(CheckFailed, match="TLS"):
         check_tls(
-            platform="win32",
-            create_context=fake_context(150, ssl.TLSVersion.TLSv1_1),
-            verify_paths=fake_verify_paths(None),
+            bundle_path=certifi.where(),
+            create_context=fake_context(150, minimum_version),
         )
+
+
+def test_tls_check_in_the_exe_accepts_the_bundle_inside_the_bundle_folder(exe_bundle, tmp_path):
+    bundle_file = copy_certifi_bundle(exe_bundle / "certifi" / "cacert.pem")
+
+    detail = check_tls(bundle_path=str(bundle_file))
+
+    assert f"CA 인증서 {certifi_cert_count()}개" in detail
+    assert str(tmp_path) not in detail
+
+
+@pytest.mark.parametrize("where", ["installed", "elsewhere", "dot_dot", "sibling_prefix"])
+def test_tls_check_in_the_exe_rejects_a_bundle_outside_the_bundle_folder(
+    exe_bundle, tmp_path, where
+):
+    if where == "installed":  # 기본값: 개발 환경의 certifi(번들 밖)
+        bundle_path = None
+    else:
+        target = {
+            "elsewhere": tmp_path / "elsewhere" / "cacert.pem",
+            "dot_dot": exe_bundle / ".." / ".." / "elsewhere" / "cacert.pem",
+            "sibling_prefix": exe_bundle.parent / "_internal-other" / "cacert.pem",
+        }[where]
+        copy_certifi_bundle(target)
+        bundle_path = str(target)
+
+    with pytest.raises(CheckFailed, match="CA 인증서 묶음") as exc:
+        check_tls(bundle_path=bundle_path)
+
+    assert "번들" in str(exc.value)
+    assert str(tmp_path) not in str(exc.value)
+    assert certifi.where() not in str(exc.value)
 
 
 def test_tls_check_passes_with_this_machines_real_settings():

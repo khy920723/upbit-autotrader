@@ -17,6 +17,7 @@ import inspect
 import json
 import logging
 import re
+import ssl
 import traceback
 from collections import Counter
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote
 
+import certifi
 import httpx
 import pytest
 from fakes.canary import find_canaries, find_secret_shapes, make_upbit_credentials
@@ -754,6 +756,105 @@ def test_default_transport_does_not_retry():
 
     assert transport_type is httpx.AsyncHTTPTransport
     assert retries == 0
+
+
+# --- TLS 설정(D-093): 기본 전송은 앱의 TLS 문맥 하나(autotrader.adapters.tls)를 쓴다 ----------
+#
+# UpbitHttp(..., tls_context: ssl.SSLContext | None = None)
+#   transport가 없으면 AsyncHTTPTransport(retries=0, verify=tls_context or create_tls_context()).
+#   transport를 넘기면 tls_context는 쓰지 않고 TLS 문맥을 만들지도 않는다.
+# 문맥은 httpx 내부 속성(_client._transport._pool._ssl_context)으로 확인한다. 연결하지 않는다.
+
+_BEGIN_CERTIFICATE = "-----BEGIN CERTIFICATE-----"
+_END_CERTIFICATE = "-----END CERTIFICATE-----"
+
+
+def _certifi_ca_count() -> int:
+    return Path(certifi.where()).read_text(encoding="utf-8").count(_BEGIN_CERTIFICATE)
+
+
+def _write_one_cert_bundle(path: Path) -> Path:
+    """certifi 묶음의 첫 인증서 하나만 든 임시 묶음."""
+    text = Path(certifi.where()).read_text(encoding="utf-8")
+    start = text.index(_BEGIN_CERTIFICATE)
+    end = text.index(_END_CERTIFICATE, start) + len(_END_CERTIFICATE)
+    path.write_text(text[start:end] + "\n", encoding="ascii")
+    return path
+
+
+def _default_transport_context(**options) -> ssl.SSLContext:
+    async def scenario():
+        clock = FakeClock()
+        http = UpbitHttp(clock=clock, limiter=RateLimiter(clock), **options)
+        try:
+            transport = http._client._transport
+            assert type(transport) is httpx.AsyncHTTPTransport
+            assert transport._pool._retries == 0
+            return transport._pool._ssl_context
+        finally:
+            await http.aclose()
+
+    return run(scenario)
+
+
+def test_default_transport_uses_the_app_tls_context(monkeypatch, tmp_path):
+    from autotrader.adapters.tls import create_tls_context
+
+    # httpx 기본값은 SSL_CERT_FILE·SSL_CERT_DIR를 읽는다. 앱 문맥은 certifi 묶음만 읽는다.
+    monkeypatch.setenv("SSL_CERT_FILE", str(_write_one_cert_bundle(tmp_path / "one.pem")))
+    monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
+
+    context = _default_transport_context()
+    expected = create_tls_context()
+
+    assert context.cert_store_stats()["x509_ca"] == _certifi_ca_count()
+    assert context.cert_store_stats() == expected.cert_store_stats()
+    assert context.get_ca_certs(binary_form=True) == expected.get_ca_certs(binary_form=True)
+    assert context.minimum_version == expected.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_default_transport_follows_the_single_ca_source(monkeypatch, tmp_path):
+    from autotrader.adapters import tls
+
+    # CA 출처는 tls 모듈 한 곳에서 정한다. 거기를 바꾸면 기본 전송도 따라간다.
+    one_cert = _write_one_cert_bundle(tmp_path / "one.pem")
+    monkeypatch.setattr(tls, "ca_bundle_path", lambda: str(one_cert))
+
+    context = _default_transport_context()
+
+    assert context.cert_store_stats()["x509_ca"] == 1
+
+
+def test_given_tls_context_is_used_as_is(tmp_path):
+    given = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    given.load_verify_locations(cafile=str(_write_one_cert_bundle(tmp_path / "one.pem")))
+
+    context = _default_transport_context(tls_context=given)
+
+    assert context is given
+    assert context.cert_store_stats()["x509_ca"] == 1
+
+
+def test_given_transport_wins_over_tls_context(monkeypatch, tmp_path):
+    from autotrader.adapters import tls
+
+    # transport를 넘기면 TLS 문맥을 만들지 않는다(묶음 파일이 없어도 만들어진다).
+    monkeypatch.setattr(tls, "ca_bundle_path", lambda: str(tmp_path / "missing.pem"))
+    given = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+    async def scenario():
+        async with connect(tls_context=given) as h:
+            await h.http.get("/v1/ticker", [("markets", "KRW-BTC")])
+            client = h.http._client
+            return client._transport, dict(client._mounts), len(h.wire.requests)
+
+    transport, mounts, sent = run(scenario)
+
+    assert isinstance(transport, httpx.MockTransport)
+    assert mounts == {}
+    assert sent == 1
 
 
 def test_cookies_from_the_server_are_never_sent_back():

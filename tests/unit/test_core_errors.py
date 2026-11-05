@@ -2,6 +2,12 @@
 
 오류 표(7장)는 타입으로 처리를 나눈다. 예: live 주문 생성 중 NetworkError는 UNKNOWN,
 UpbitOrderRejected는 REJECTED. 그래서 형제 타입이 서로를 상속하면 안 된다.
+
+UpbitIdentifierConflict(`duplicated_identifier`)는 거절이 아니라 결과 불명이다. 같은 요청이 한 번 더
+전달돼 주문이 이미 접수됐을 수 있어 identifier로 조회해 확정한다(D-070, 매매 로직 명세 8·10장,
+INV-03·INV-04, QA R17-01). 그래서 UpbitOrderRejected의 하위가 아닌 형제 타입이다. 하위로 두면
+`except UpbitOrderRejected`가 잡아 REJECTED로 닫고, 거래소에 있을 수 있는 주문을 놓친 채 같은 코인에
+새 주문을 낼 수 있다.
 """
 
 import copy
@@ -16,6 +22,7 @@ UPBIT_SUBCLASSES = (
     errors.UpbitAuthError,
     errors.UpbitPermissionError,
     errors.UpbitOrderRejected,
+    errors.UpbitIdentifierConflict,
     errors.UpbitMarketOffline,
     errors.UpbitNotFound,
     errors.UpbitRateLimited,

@@ -85,10 +85,18 @@ curl -sS -H 'Accept: application/json' 'https://api.upbit.com/v1/ticker?markets=
 | `batch-cancel-orders.json` | DELETE /v1/orders/open(앱은 쓰지 않음, D-069) |
 | `list-api-keys.json` | GET /v1/api_keys |
 | `list-orderbook-instruments.json` | GET /v1/orderbook/instruments(공개 API지만 녹화가 없어 문서 예시를 둔다) |
+| `websocket-guide.json` | 웹소켓 안내: 주소 3개, 요청 예시, 오류 형식·`INVALID_AUTH` 예시, `{"status":"UP"}` |
+| `websocket-ticker.json` | 공개 웹소켓 ticker(KRW-BTC, KRW-ETH 수신 예시) |
+| `websocket-myorder.json` | 비공개 웹소켓 myOrder |
+| `websocket-myasset.json` | 비공개 웹소켓 myAsset |
+| `websocket-announcement.json` | 비공개 웹소켓 announcement(본문 포함 예시, 카테고리 8개) |
+| `websocket-list-subscriptions.json` | LIST_SUBSCRIPTIONS(문서 이름은 `list-subscriptions`) |
 
 - **형식:** `{source, retrieved_at, doc_updated_at, method, path, status, example_title, example}`. 문서에 있으면 `other_examples`, `request_examples`, `error_examples`, `replaced_with_placeholder`도 넣었다. 숫자 토큰은 원문 그대로다.
 - **키 자리표시:** `list-api-keys.json`의 `access_key`는 `CANARY-PLACEHOLDER`로 바꿨다(`replaced_with_placeholder`에 기록). 테스트는 실행 중에 카나리아 값으로 채운다.
 - **문서와 다른 점:** 주문 예시에는 `identifier`·`smp_type`·`time_in_force`가 없다(가짜가 붙인다). 시장가 매도 예시에는 `price` 키가 없다. 체결(`trades`)의 `created_at`에는 마이크로초가 있다.
+- **웹소켓 파일(3b):** `method`·`path`·`status` 대신 `endpoint`(안내·구독 목록은 `endpoints`)와 `type`이 있고, 문서에 있으면 `error_names`, `rate_limits`, `market_states`, `deprecated_fields`, `states`, `categories`, `event_types`, `formats`도 넣었다. 웹소켓 숫자는 JSON 숫자라 토큰을 원문 그대로 두었다(`9.101e-05`, `1386929.37231066771348207123`). 안내 문서의 `Authorization: Bearer eyJhb...d8sTw`는 `auth_header_example`에 자리표시로 바꿔 두었다. 같은 내용의 수신 예시가 두 번 나오는 문서(myOrder, announcement trade)는 한 번만 넣었다.
+- **웹소켓 문서끼리 어긋난 점:** 안내 문서의 공지 구독 예시는 `categories: ["trading", "wallet"]`인데 공지 문서의 값은 `trade`다(지원하지 않는 값은 `INVALID_PARAM`). 안내 문서의 오류 표는 6개이고 타입별 문서는 `TOO_MANY_REQUEST`를 더해 7개다. 구독 목록 문서의 두 번째 예시(myAsset·myOrder)는 소제목이 "Public WebSocket"이지만 비공개 예시다. 공지의 `uuid`는 숫자 문자열(`562593104`)이다.
 - `tests/unit/fakes/test_upbit_docs_examples.py`가 형식, 출처, 키 자리표시, 문자열 숫자, 오류 이름 타입을 검사한다.
 
 ## 공개 시세 웹소켓 녹화(`ws_public_recording.json`)

@@ -3,7 +3,9 @@
 앱 어댑터(adapters/upbit/websocket.py)가 아직 없으므로 테스트가 가짜에 직접 `connect()`해서
 WsConnection의 send/recv/ping/close로 시험한다. 서명은 PyJWT로 이 파일 안에서 만든다. 시간은
 FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌린다(실제로 기다리지 않는다).
-바탕 예시는 tests/fixtures/upbit/docs_examples/websocket-*.json(공식 문서, 2026-11-05)이다.
+바탕은 공개 웹소켓 녹화 tests/fixtures/upbit/ws_public_recording.json(2026-11-05 12:32 UTC)과
+공식 문서 예시 tests/fixtures/upbit/docs_examples/websocket-*.json(2026-11-05)이다. 공개 ticker는
+녹화, 비공개(myOrder·myAsset·announcement)는 문서 예시를 쓴다(3a와 같은 방식).
 
 이 테스트가 정하는 가짜의 계약(구현은 tests/fakes/upbit_ws.py):
 
@@ -12,8 +14,8 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
   공용 픽스처 `make_fake_upbit_ws(clock=None, credentials=None, **options)`(tests/conftest.py)는
   정리 단계에서 만든 가짜마다 `assert_clean()`을 부른다.
 - 연결(WsConnector): `await fake.connect(url, *, headers) -> FakeWsConnection`. headers는
-  (이름, 값) 쌍의 시퀀스다. 연결 객체(WsConnection): `await send(text)`, `await recv()`(str,
-  바이너리 모드면 bytes), `await ping()`(PING 프레임, 응답을 기다리지 않음),
+  (이름, 값) 쌍의 시퀀스다. 연결 객체(WsConnection): `await send(text)`, `await recv()`(기본은
+  bytes, ws_binary(False)면 str), `await ping()`(PING 프레임, 응답을 기다리지 않음),
   `await close(code=1000)`, `close_code`(열려 있으면 None).
   - 연결 거절은 `StreamConnectFailed`(core 오류, `.status`: 실제 한도 초과면 429,
     ws_reject_connect는 준 값, 기본 None).
@@ -44,10 +46,11 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
   - `rate_limit_half`: 한도의 절반 초과. 연결은 종류마다 초당 2회, 메시지는 연결마다 초당 2회·
     분당 50회. `rate_limit`: 실제 한도(연결 초당 5회, 메시지 초당 5회·분당 100회) 초과. 이때는
     예외 없이 위반만 남기고(절반 위반은 따로 남기지 않는다) 연결은 StreamConnectFailed
-    (status=429), 메시지는 처리하지 않고 `{"error": {"name": "TOO_MANY_REQUEST", ...}}`로 답한다.
+    (status=429), 메시지는 처리하지 않고 `{"error": {"name": "TOO_MANY_REQUEST", ...}}`로 답한 뒤
+    close 1000으로 끊는다(아래 오류 뒤 끊기와 같다).
   - `rate_limit_pause`: TOO_MANY_REQUEST(실제 한도·ws_error 모두)를 보낸 뒤 1초 안에 그 연결에
-    메시지를 보내거나 같은 종류로 다시 연결함. 429로 연결을 거절한 뒤 1초 안에 같은 종류로 다시
-    연결해도 같다. 1초가 지난 시각(t + 1)부터는 된다.
+    메시지를 보내거나(ws_error(close_code=None)로 열어 둔 경우) 같은 종류로 다시 연결함. 429로
+    연결을 거절한 뒤 1초 안에 같은 종류로 다시 연결해도 같다. 1초가 지난 시각(t + 1)부터는 된다.
   - 창은 슬라이딩이다: 시각 t의 시도는 (t - 창 길이, t]에 든 시도를 센다. 위반·거절된 시도도
     센다. 연결은 주소를 알아본 시도만 종류별로 센다(문서: 공개는 IP, 비공개는 포켓 단위).
     메시지는 클라이언트가 보낸 텍스트·바이너리 메시지 모두("PING" 문자열 포함)이고 PING 프레임은
@@ -57,19 +60,25 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
     rate_limit_pause → 한도 절반 → subscribe_format → 실제 한도(TOO_MANY_REQUEST) → ws_error →
     처리. 실제 한도를 넘은 시도는 한도 절반 검사를 건너뛴다(3a와 같다).
 - 서버 동작:
+  - 서버 메시지는 기본으로 UTF-8 바이너리 프레임이다(녹화: ticker·오류·status 모두 binary).
   - 구독하면 ticker 스냅숏을 codes 순서대로 마켓마다 1개(`stream_type: SNAPSHOT`) 보낸다
-    (is_only_realtime이면 없음). 내용은 그 마켓의 현재 상태다. 처음 상태는 문서 예시(KRW-BTC,
-    KRW-ETH), 다른 마켓은 KRW-BTC 예시에서 code만 바꾼 것. 비공개 type은 스냅숏이 없다.
+    (is_only_realtime이면 없음). 내용은 그 마켓의 현재 상태다. 처음 상태는 녹화한 스냅숏(KRW-BTC,
+    KRW-ETH, 숫자 원문 그대로), 다른 마켓은 녹화 KRW-BTC에서 code만 바꾼 것. 녹화의 필드는 문서
+    예시와 같다(폐기 필드 포함). 비공개 type은 스냅숏이 없다.
   - 같은 연결의 새 구독 요청은 앞 구독을 바꾼다(문서에 없음, 가정). LIST_SUBSCRIPTIONS는
     `{"method", "result", "ticket"}`(result 항목은 type과, 구독에 codes가 있었으면 codes)로 답한다.
   - 모든 서버 메시지의 `timestamp`는 실제 UTC(`clock.true_utc_now()`)의 밀리초다. 숫자는 JSON
     숫자다. 예시의 숫자 토큰(`9.101e-05` 같은 지수 표기 포함)은 원문 그대로, 주입한 Decimal은
-    지수 없는 십진 표기로, `fakes.upbit_json.RawNumber`는 원문 그대로 내보낸다. float는 TypeError.
+    지수 없는 십진 표기로, `fakes.upbit_json.RawNumber`는 원문 그대로 내보낸다(문서의 지수 표기
+    `9.101e-05`는 이렇게 낸다). float는 TypeError.
   - 120초 동안 주고받은 것(클라이언트 메시지, PING 프레임, 서버 메시지)이 없으면 서버가 close
     1001로 끊는다(문서에 코드가 없어 정한 값). 처음 기준은 연결 시각이고 정확히 120초에 끊는다.
-  - "PING" 문자열을 받으면 `{"status":"UP"}`(문서 그대로의 텍스트)를 바로 한 번, 그 뒤 10초마다
-    보낸다. 두 번째 이후 "PING"은 주기를 새로 만들지 않는다(fakes-spec의 ws_status_up은 기본
-    동작이고 끄는 옵션이 없다).
+  - "PING" 문자열을 받으면 `{"status":"UP"}`(문서·녹화 그대로의 원문)를 첫 "PING" 10초 뒤부터
+    10초마다 보낸다(녹화의 첫 UP은 연결 약 5초 뒤에 왔고 PING을 보낸 시각은 기록에 없다. 가짜는
+    가장 늦은 경우로 정했다). 두 번째 이후 "PING"은 주기를 새로 만들지 않는다(fakes-spec의
+    ws_status_up은 기본 동작이고 끄는 옵션이 없다).
+  - 오류 메시지(ws_error, 실제 한도의 TOO_MANY_REQUEST)를 보낸 뒤 바로 close 1000으로 끊는다
+    (녹화: NO_CODES 뒤 1000으로 끊었다).
 - 주입(fakes-spec 2.5절). 검증 실패는 TypeError(모르는 필드, float)나 ValueError(모르는 값,
   메시지에 그 값)다. stream 인자는 "public"·"private"·None(모두).
   - `push_ticker(market, **fields)`: 상태를 바꾸고 그 마켓을 구독한 공개 연결에 REALTIME을
@@ -89,18 +98,19 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
     `https://www.upbit.com/service_center/notice?id=<uuid>&view=share`, first_listed_at·
     listed_at은 지금의 KST 초 단위(`+09:00`). 이미 보낸 uuid면 first_listed_at을 지킨다.
     categories로 거르고, include_body 구독이면 `body`(None이면 null), 아니면 키가 없다.
-  - `ws_error(name, *, message=None, stream=None, close_code=None)`: 다음 구독 요청(LIST 제외)
-    하나에 구독 대신 `{"error": {"name", "message"}}`를 보낸다. 여러 번 부르면 차례로 쓴다. 문서에
-    없는 이름도 그대로 보낸다. 문구는 INVALID_AUTH만 문서 값이고 나머지는 가짜가 정한 값.
-    오류 뒤 연결은 열어 둔다(문서에 없음, 가정). close_code를 주면 오류를 보낸 뒤 그 코드로
-    끊는다. random_message=True면 문구만 바뀐다(seed로 정해진다).
+  - `ws_error(name, *, message=None, stream=None, close_code=1000)`: 다음 구독 요청(LIST 제외)
+    하나에 구독 대신 `{"error": {"name", "message"}}`를 보내고 close_code로 끊는다. close_code=None
+    이면 연결을 열어 둔다(그 연결에서 다시 구독할 수 있다). 여러 번 부르면 차례로 쓴다. 문서에 없는
+    이름도 그대로 보낸다. 기본 문구는 INVALID_AUTH가 문서 값, NO_CODES가 녹화 값이고 나머지는
+    가짜가 정한 값이다. random_message=True면 문구만 바뀐다(seed로 정해진다).
   - `ws_drop(after=None, *, stream=None)`: None이면 지금 열린 연결을 close 1006(close 프레임 없는
     끊김)으로 끊는다. after=N이면 그 뒤 서버 메시지 N개를 보낸 다음 끊는다. 열린 연결이 없으면
     다음에 받아들이는 연결 하나에 건다.
   - `ws_silence(seconds, *, stream=None)`: [지금, 지금 + seconds) 동안 서버는 아무것도 보내지 않고
     버린다(스냅숏·UP·오류 포함, UP 주기는 계속 돈다). 클라이언트 송신은 그대로 활동이라 PING
     프레임이 있으면 끊기지 않고, 없으면 120초 규칙으로 끊긴다.
-  - `ws_binary(enabled=True)`: 그 뒤 서버 메시지를 UTF-8 바이너리 프레임(bytes)으로 보낸다.
+  - `ws_binary(enabled)`: False면 그 뒤 서버 메시지를 텍스트 프레임(str)으로, True(처음 상태)면
+    UTF-8 바이너리 프레임(bytes)으로 보낸다.
   - `ws_reject_connect(times=1, *, stream=None, status=None)`: 다음 연결 시도 times번을
     StreamConnectFailed로 거절한다(rate_limit_pause는 걸지 않는다).
 - 검사: `connections`(시도 순서, 위반·거절 포함). 항목은 `.url`, `.headers`(받은 그대로),
@@ -138,13 +148,17 @@ pytestmark = pytest.mark.filterwarnings("ignore::jwt.warnings.InsecureKeyLengthW
 
 PUBLIC_URL = "wss://api.upbit.com/websocket/v1"
 PRIVATE_URL = "wss://api.upbit.com/websocket/v1/private"
-DOCS_EXAMPLES = Path(__file__).resolve().parents[2] / "fixtures" / "upbit" / "docs_examples"
+FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "upbit"
+DOCS_EXAMPLES = FIXTURES / "docs_examples"
+RECORDING = json.loads((FIXTURES / "ws_public_recording.json").read_text(encoding="utf-8"))
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 KST = timezone(timedelta(hours=9))
 STATUS_UP = '{"status":"UP"}'
+STATUS_UP_FRAME = STATUS_UP.encode("utf-8")  # 기본은 바이너리 프레임(녹화)
 IDLE_CLOSE_CODE = 1001
 DROP_CLOSE_CODE = 1006
-INVALID_AUTH_MESSAGE = "인증 정보가 올바르지 않습니다."
+INVALID_AUTH_MESSAGE = "인증 정보가 올바르지 않습니다."  # 안내 문서 예시
+NO_CODES_MESSAGE = "codes 필드가 존재하지 않습니다."  # 녹화
 DOCUMENTED_ERRORS = (
     "INVALID_AUTH",
     "WRONG_FORMAT",
@@ -171,6 +185,16 @@ def raw_json(text: str) -> Any:
 
 def docs_raw(name: str) -> dict[str, Any]:
     return raw_json((DOCS_EXAMPLES / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def session(name: str) -> dict[str, Any]:
+    return next(s for s in RECORDING["sessions"] if s["name"] == name)
+
+
+def recorded_tickers() -> dict[str, Any]:
+    """녹화한 ticker 스냅숏(숫자 원문): code → 메시지."""
+    frames = session("ticker_snapshot_btc_eth")["frames"]
+    return {m["code"]: m for m in (raw_json(f["text"]) for f in frames)}
 
 
 def num(token: str) -> tuple[str, str]:
@@ -340,6 +364,38 @@ def make_env() -> Callable[..., Env]:
 @pytest.fixture
 def env(make_env: Callable[..., Env]) -> Env:
     return make_env()
+
+
+# ── 녹화(ws_public_recording.json)가 정한 사실 ───────────────
+
+
+def test_recording_frames_are_all_binary():
+    frames = [f for s in RECORDING["sessions"] for f in s["frames"]]
+    assert frames
+    assert {f["frame"] for f in frames} == {"binary"}
+
+
+def test_recorded_ticker_has_the_same_fields_as_the_docs_example():
+    doc = docs("websocket-ticker")
+    for code, message in recorded_tickers().items():
+        assert list(message) == list(doc["example"]), code
+        assert message["stream_type"] == "SNAPSHOT"
+        assert message["market_state"] == "ACTIVE"
+        assert message["delisting_date"] is None
+        assert set(doc["deprecated_fields"]) <= set(message)  # 폐기 필드도 아직 온다
+
+
+def test_recorded_error_is_followed_by_close_1000():
+    recorded = session("error_no_codes")
+    (frame,) = recorded["frames"]
+    assert json.loads(frame["text"]) == {"error": {"name": "NO_CODES", "message": NO_CODES_MESSAGE}}
+    assert recorded["closed"]["code"] == 1000
+
+
+def test_recorded_status_up_is_the_documented_text():
+    (frame,) = session("ping_text_status_up")["frames"]
+    assert frame["text"] == STATUS_UP
+    assert docs("websocket-guide")["example"] == json.loads(STATUS_UP)
 
 
 # ── 기본 ──────────────────────────────────────────────────
@@ -763,6 +819,20 @@ def test_documented_request_examples_are_accepted(env, doc, key, stream):
     assert env.fake.connections[0].received == [(1000.0, text)]
 
 
+def test_recorded_request_is_accepted(env):
+    text = json.dumps(session("ticker_snapshot_btc_eth")["request"])
+
+    async def scenario(e: Env) -> None:
+        conn = await e.public()
+        await conn.send(text)
+        assert [json.loads(text_of(await recv_now(conn)))["code"] for _ in range(2)] == [
+            "KRW-BTC",
+            "KRW-ETH",
+        ]
+
+    env.run(scenario)
+
+
 def test_combined_private_subscription_is_accepted(env):
     async def scenario(e: Env) -> None:
         conn = await e.subscribed_private()
@@ -822,6 +892,7 @@ MALFORMED = [
         "private",
         request({"type": "announcement", "codes": ["KRW-BTC"]}),
     ),
+    ("recorded-no-codes", "public", json.dumps(session("error_no_codes")["request"])),
     (
         "guide-simple-trade-orderbook",
         "public",
@@ -928,8 +999,8 @@ def test_real_message_limit_per_second_answers_too_many_request(env):
         error = await recv_json(conn)
         assert error["error"]["name"] == "TOO_MANY_REQUEST"
         assert error["error"]["message"]
-        await assert_nothing_pending(conn)  # 넘긴 요청은 처리하지 않는다
-        assert conn.close_code is None
+        # 넘긴 요청은 처리하지 않고(스냅숏 없음), 오류 뒤에는 1000으로 끊는다
+        assert (await expect_closed(conn)).close_code == 1000
 
     env.run(scenario, clean=False)
     assert rules(env.fake) == ["rate_limit_half"] * 3 + ["rate_limit"]
@@ -952,13 +1023,14 @@ def test_real_message_limit_per_minute_answers_too_many_request(env):
         assert [r["ticket"] for r in replies[:50]] == [f"t{i}" for i in range(50)]
         assert replies[-1]["error"]["name"] == "TOO_MANY_REQUEST"
         assert len(replies) == 51
+        assert conn.close_code == 1000
 
     env.run(scenario, clean=False)
     assert rules(env.fake) == ["rate_limit_half"] * 50 + ["rate_limit"]
 
 
 def test_after_too_many_request_messages_and_reconnects_wait_a_second(env):
-    env.fake.ws_error("TOO_MANY_REQUEST")
+    env.fake.ws_error("TOO_MANY_REQUEST", close_code=None)  # 연결을 열어 두는 경우
 
     async def scenario(e: Env) -> None:
         conn = await e.public()
@@ -976,6 +1048,23 @@ def test_after_too_many_request_messages_and_reconnects_wait_a_second(env):
     assert rules(env.fake) == ["rate_limit_pause", "rate_limit_pause"]
 
 
+def test_after_an_error_closes_the_connection_reconnecting_waits_a_second(env):
+    env.fake.ws_error("TOO_MANY_REQUEST")  # 기본: 오류 뒤 1000으로 끊는다
+
+    async def scenario(e: Env) -> None:
+        conn = await e.public()
+        await conn.send(ticker_request("KRW-BTC"))
+        assert (await recv_json(conn))["error"]["name"] == "TOO_MANY_REQUEST"
+        assert (await expect_closed(conn)).close_code == 1000
+        await e.clock.run_for(0.5)
+        await expect_violation("rate_limit_pause", e.public())
+        await e.clock.run_for(0.5)
+        await e.subscribed_public("KRW-BTC")
+
+    env.run(scenario, clean=False)
+    assert rules(env.fake) == ["rate_limit_pause"]
+
+
 # ── 공개: 스냅숏·실시간 ───────────────────────────────────
 
 
@@ -983,8 +1072,8 @@ def without_timestamp(message: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in message.items() if k != "timestamp"}
 
 
-def test_ticker_subscription_sends_one_snapshot_per_market_from_the_docs(env):
-    doc = docs_raw("websocket-ticker")
+def test_ticker_subscription_sends_one_snapshot_per_market_from_the_recording(env):
+    recorded = recorded_tickers()
 
     async def scenario(e: Env) -> None:
         conn = await e.public()
@@ -993,27 +1082,32 @@ def test_ticker_subscription_sends_one_snapshot_per_market_from_the_docs(env):
         eth = await recv_raw(conn)
         await assert_nothing_pending(conn)
 
-        assert without_timestamp(btc) == without_timestamp(doc["example"])
-        assert without_timestamp(eth) == without_timestamp(doc["other_examples"]["KRW-ETH"])
+        assert without_timestamp(btc) == without_timestamp(recorded["KRW-BTC"])
+        assert without_timestamp(eth) == without_timestamp(recorded["KRW-ETH"])
         for message in (btc, eth):
             assert message["stream_type"] == "SNAPSHOT"
             assert message["timestamp"] == num(str(now_ms(e.clock)))
-        assert btc["trade_volume"] == num("9.101e-05")  # 지수 표기 그대로
+        # 숫자 표기 그대로(뒤 0, float로 읽으면 자릿수가 사라지는 긴 수)
+        assert btc["opening_price"] == num("108328000.00000000")
+        assert btc["acc_trade_price"] == num("44216351009.9575500000000000")
 
     env.run(scenario)
 
 
-def test_messages_are_text_frames_by_default(env):
+def test_messages_are_binary_frames_by_default(env):
+    # 녹화: 서버 프레임은 ticker·오류·status 모두 바이너리(UTF-8 JSON)다.
     async def scenario(e: Env) -> None:
         conn = await e.public()
         await conn.send(ticker_request("KRW-BTC"))
-        assert isinstance(await recv_now(conn), str)
+        snapshot = await recv_now(conn)
+        assert isinstance(snapshot, bytes)
+        assert json.loads(snapshot.decode("utf-8"))["code"] == "KRW-BTC"
 
     env.run(scenario)
 
 
-def test_snapshot_for_other_markets_uses_the_btc_example(env):
-    btc = docs_raw("websocket-ticker")["example"]
+def test_snapshot_for_other_markets_uses_the_recorded_btc_snapshot(env):
+    btc = recorded_tickers()["KRW-BTC"]
 
     async def scenario(e: Env) -> None:
         conn = await e.public()
@@ -1048,20 +1142,21 @@ def test_push_ticker_sends_realtime_to_subscribers_of_that_market_only(env):
 
 def test_push_ticker_numbers_are_json_numbers_and_raw_tokens_pass_through(env):
     long = Decimal("15639124215.8082700000000000")
+    exponent = docs_raw("websocket-ticker")["example"]["trade_volume"][1]  # 문서 예시 "9.101e-05"
 
     async def scenario(e: Env) -> None:
         conn = await e.subscribed_public("KRW-BTC")
         e.fake.push_ticker(
             "KRW-BTC",
             acc_trade_price=long,
-            trade_volume=RawNumber("1.2e-07"),
+            trade_volume=RawNumber(exponent),
             signed_change_rate=Decimal("-0.0123"),
         )
         message = await recv_raw(conn)
 
         assert as_decimal(message["acc_trade_price"]) == long  # float를 거치지 않는다
         assert "E" not in message["acc_trade_price"][1].upper()
-        assert message["trade_volume"] == num("1.2e-07")
+        assert message["trade_volume"] == num("9.101e-05")
         assert as_decimal(message["signed_change_rate"]) == Decimal("-0.0123")
 
     env.run(scenario)
@@ -1513,22 +1608,22 @@ def test_server_data_keeps_the_connection_open(env):
     env.run(scenario)
 
 
-def test_ping_text_gets_status_up_now_and_every_ten_seconds(env):
+def test_ping_text_gets_status_up_every_ten_seconds(env):
     async def scenario(e: Env) -> None:
         conn = await e.public()
         await conn.send("PING")
-        assert await recv_now(conn) == STATUS_UP  # 문서 그대로의 텍스트
+        await assert_nothing_pending(conn)  # 첫 UP은 10초 뒤(가정)
         await e.clock.run_for(5)
         await conn.send("PING")  # 주기를 새로 만들지 않는다
         await e.clock.run_for(5)
-        assert await recv_now(conn) == STATUS_UP  # 1010.0
+        assert await recv_now(conn) == STATUS_UP_FRAME  # 1010.0, 녹화와 같은 원문
         await assert_nothing_pending(conn)
         await e.clock.run_for(300)
         assert conn.close_code is None
 
     env.run(scenario)
     ups = [t for t, text in env.fake.connections[0].delivered if text == STATUS_UP]
-    assert ups == [1000.0 + 10 * i for i in range(32)]
+    assert ups == [1010.0 + 10 * i for i in range(31)]
 
 
 # ── 주입: 끊김 ────────────────────────────────────────────
@@ -1638,7 +1733,7 @@ def test_ws_silence_suppresses_status_up_but_the_period_goes_on(env):
         await e.clock.run_for(10)
         await assert_nothing_pending(conn)
         await e.clock.run_for(10)
-        assert await recv_now(conn) == STATUS_UP  # 1020.0
+        assert await recv_now(conn) == STATUS_UP_FRAME  # 1020.0
 
     env.run(scenario)
     assert [t for t, _ in env.fake.connections[0].delivered] == [1020.0]
@@ -1667,20 +1762,21 @@ def test_ws_silence_stream_filter(env):
     env.run(scenario)
 
 
-def test_ws_binary_sends_bytes_frames(env):
+def test_ws_binary_false_sends_text_frames_and_true_switches_back(env):
     async def scenario(e: Env) -> None:
-        e.fake.ws_binary(True)
+        e.fake.ws_binary(False)
         conn = await e.public()
         await conn.send(ticker_request("KRW-BTC"))
         snapshot = await recv_now(conn)
-        assert isinstance(snapshot, bytes)
-        assert json.loads(snapshot.decode("utf-8"))["code"] == "KRW-BTC"
+        assert isinstance(snapshot, str)
+        assert json.loads(snapshot)["code"] == "KRW-BTC"
         await conn.send("PING")
-        assert await recv_now(conn) == STATUS_UP.encode("utf-8")
+        await e.clock.run_for(10)
+        assert await recv_now(conn) == STATUS_UP
 
-        e.fake.ws_binary(False)
+        e.fake.ws_binary(True)
         e.fake.push_ticker("KRW-BTC", trade_price=Decimal("1"))
-        assert isinstance(await recv_now(conn), str)
+        assert isinstance(await recv_now(conn), bytes)
 
     env.run(scenario)
 
@@ -1688,8 +1784,25 @@ def test_ws_binary_sends_bytes_frames(env):
 # ── 주입: 오류 메시지 ─────────────────────────────────────
 
 
-def test_ws_error_answers_the_next_subscription_and_keeps_the_connection(env):
+def test_ws_error_answers_the_next_subscription_then_closes_1000(env):
     env.fake.ws_error("INVALID_AUTH")
+
+    async def scenario(e: Env) -> None:
+        conn = await e.private()
+        await conn.send(PRIVATE_ALL)
+        assert await recv_json(conn) == {
+            "error": {"name": "INVALID_AUTH", "message": INVALID_AUTH_MESSAGE}
+        }
+        assert (await expect_closed(conn)).close_code == 1000
+
+    env.run(scenario)
+    record = env.fake.connections[0]
+    assert record.close_code == 1000
+    assert record.closed_at == 1000.0
+
+
+def test_ws_error_with_close_code_none_keeps_the_connection(env):
+    env.fake.ws_error("INVALID_AUTH", close_code=None)
 
     async def scenario(e: Env) -> None:
         conn = await e.private()
@@ -1721,7 +1834,20 @@ def test_ws_error_shape_for_each_name(env, name):
         assert reply["error"]["name"] == name
         assert isinstance(reply["error"]["message"], str)
         assert reply["error"]["message"]
-        await assert_nothing_pending(conn)  # 스냅숏 없음
+        assert (await expect_closed(conn)).close_code == 1000  # 스냅숏 없이 끊긴다
+
+    env.run(scenario)
+
+
+def test_ws_error_default_messages_follow_the_docs_and_the_recording(env):
+    env.fake.ws_error("NO_CODES")
+
+    async def scenario(e: Env) -> None:
+        conn = await e.public()
+        await conn.send(ticker_request("KRW-BTC"))
+        recorded = json.loads(session("error_no_codes")["frames"][0]["text"])
+        assert await recv_json(conn) == recorded
+        assert recorded["error"]["message"] == NO_CODES_MESSAGE
 
     env.run(scenario)
 
@@ -1737,14 +1863,14 @@ def test_ws_error_message_override(env):
     env.run(scenario)
 
 
-def test_ws_error_with_close_code_closes_after_the_error(env):
-    env.fake.ws_error("INVALID_PARAM", close_code=1000)
+def test_ws_error_with_another_close_code(env):
+    env.fake.ws_error("INVALID_PARAM", close_code=1011)
 
     async def scenario(e: Env) -> None:
         conn = await e.public()
         await conn.send(ticker_request("KRW-BTC"))
         assert (await recv_json(conn))["error"]["name"] == "INVALID_PARAM"
-        assert (await expect_closed(conn)).close_code == 1000
+        assert (await expect_closed(conn)).close_code == 1011
 
     env.run(scenario)
 
@@ -1766,8 +1892,8 @@ def test_ws_error_ignores_list_subscriptions_and_respects_the_stream_filter(env)
 
 
 def test_ws_errors_queue_in_order(env):
-    env.fake.ws_error("NO_CODES")
-    env.fake.ws_error("NO_TYPE")
+    env.fake.ws_error("NO_CODES", close_code=None)
+    env.fake.ws_error("NO_TYPE", close_code=None)
 
     async def scenario(e: Env) -> None:
         conn = await e.public()

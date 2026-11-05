@@ -66,7 +66,8 @@ PLATFORM_ENVS: dict[str, dict[str, str]] = {
 }
 
 # 배포 번들에 들어가도 MIT 앱과 충돌하지 않는 라이선스(SPDX).
-# LGPL은 동적 링크·라이브러리 교체 가능·라이선스 원문 동봉을 지키는 조건으로 허용한다.
+# LGPL은 동적 링크·라이브러리 교체 가능·라이선스 원문 동봉을 지키는 조건으로,
+# MPL-2.0은 packaging/NOTICE.txt에 소스 위치를 적는 조건으로 허용한다.
 DISTRIBUTABLE_LICENSES = frozenset(
     {
         "0BSD",

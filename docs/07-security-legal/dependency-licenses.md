@@ -15,12 +15,12 @@
 | 언제 | 할 일 |
 |---|---|
 | 의존성을 바꿨을 때(`uv lock`) | `uv run python scripts/license_inventory.py --write`로 3·4장 표의 패키지·버전·플랫폼을 다시 쓴다. 라이선스·비고 칸은 유지된다 |
-| 새 패키지가 "확인 필요"로 들어오면 | 휠 안의 라이선스 파일과 PyPI 정보를 확인해 SPDX 식으로 적고, 번들 포함 여부를 비고에 적는다. 비고에 적힌 "메타데이터: …"는 참고값이라 그대로 믿지 않는다 |
+| 새 패키지가 "확인 필요"로 들어오면 | 휠 안의 라이선스 파일과 PyPI 정보를 확인해 SPDX 식으로 적고, 번들 포함 여부를 비고에 적는다. 비고에 적힌 "메타데이터: …"는 참고값이라 그대로 믿지 않는다. 조건이 붙는 라이선스(LGPL, MPL)면 `packaging/NOTICE.txt`에 고지와 소스 위치를 더한다 |
 | 확인 | `uv run python scripts/license_inventory.py`(검사만). `tests/unit/test_license_inventory.py`도 같은 검사를 한다 |
 
 - 검사 내용: 표와 `uv.lock`의 패키지·버전·설치 플랫폼이 같은지, 런타임 라이선스가 배포 가능한 것만으로 되어 있는지(OR는 하나 이상, AND는 모두), 설치된 패키지 메타데이터에 `License-Expression`이 있으면 표와 같은지.
 - "설치 플랫폼"은 `uv.lock`의 마커로 계산한 설치 대상 OS다. 번들에 실제로 들어가는지는 비고에 적는다. PyInstaller는 import한 모듈과 그 의존 파일만 묶는다.
-- 배포 가능 라이선스: MIT, MIT-0, BSD-2-Clause, BSD-3-Clause, Apache-2.0, PSF-2.0, ISC, 0BSD, Unlicense, MPL-2.0, LGPL-3.0(동적 링크·교체 가능·원문 동봉 조건).
+- 배포 가능 라이선스: MIT, MIT-0, BSD-2-Clause, BSD-3-Clause, Apache-2.0, PSF-2.0, ISC, 0BSD, Unlicense, MPL-2.0(파일 단위 카피레프트: 번들에 넣으면 NOTICE.txt에 소스 위치를 적는다), LGPL-3.0(동적 링크·교체 가능·원문 동봉 조건).
 
 ## 3. 런타임 의존성
 
@@ -39,8 +39,8 @@
 | more-itertools | 11.2.1 | MIT | Windows, Linux, macOS | jaraco.classes·jaraco.functools 의존. 번들에 들어감 |
 | pycparser | 3.12 | BSD-3-Clause | Linux | Linux 전용(cffi). Windows 번들에 없음 |
 | PySide6 | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Windows, Linux, macOS | 직접 의존. 메타 패키지(코드 없음), 메타데이터만 번들에 들어감 |
-| PySide6_Addons | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Windows, Linux, macOS | 설치만 됨. import하지 않아 바이너리는 번들에 없음. GPL 전용 모듈 포함(6장) |
-| PySide6_Essentials | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Windows, Linux, macOS | QtCore·QtGui·QtWidgets와 Qt DLL·플러그인이 번들에 들어감(6장) |
+| PySide6_Addons | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Windows, Linux, macOS | 설치만 됨. import하지 않아 바이너리는 번들에 없음. GPL 전용 모듈 포함(5.3) |
+| PySide6_Essentials | 6.12.0 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Windows, Linux, macOS | QtCore·QtGui·QtWidgets와 Qt DLL·플러그인이 번들에 들어감(5장) |
 | PySide6_Pdf | 6.12.0.140 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Windows, Linux, macOS | 설치만 됨. 쓰지 않음 |
 | PySide6_WebEngine | 6.12.0.140 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Windows, Linux, macOS | 설치만 됨(Chromium 포함). 쓰지 않음 |
 | pywin32-ctypes | 0.2.3 | BSD-3-Clause | Windows | Windows 전용. keyring의 Windows 백엔드가 씀. 번들에 들어감 |
@@ -89,7 +89,7 @@
 | HACL*(CPython의 해시 구현) | MIT | 고지 포함 | `licenses/python/hacl-star-MIT.txt`(CPython 문서에 빠져 있어 따로 넣음) |
 | Microsoft Visual C++ 런타임(vcruntime140.dll) | Microsoft 재배포 조건 | Python Windows 빌드에 딸린 파일을 고치지 않고 쓴다 | Python `LICENSE.txt`의 "Additional Conditions for this Windows binary build" |
 
-- python.org Windows 빌드의 `LICENSE.txt`에는 CPython, MS 런타임 조건, bzip2, libffi, OpenSSL 라이선스만 들어 있다. 나머지 외부 소프트웨어의 고지는 CPython 문서(`Doc/license.rst`)에 있어 그 사본을 넣는다.
+- python.org Windows 빌드의 `LICENSE.txt`에는 CPython, MS 런타임 조건, bzip2, libffi, OpenSSL, Tcl/Tk 라이선스가 들어 있다(Tcl/Tk는 앱이 쓰지 않아 번들에 없다). 나머지 외부 소프트웨어의 고지는 CPython 문서(`Doc/license.rst`)에 있어 그 사본을 넣는다.
 - 고지 파일 출처: LGPL·GPL 원문은 qtbase v6.12.0의 `LICENSES/`, CPython 문서는 v3.13.18 태그의 `Doc/license.rst`, HACL* 고지는 같은 태그의 `Modules/_hacl/*.c` 머리말이다.
 
 ### 5.1 Qt·PySide6(LGPL-3.0)

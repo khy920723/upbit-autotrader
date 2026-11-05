@@ -71,6 +71,8 @@
 
 설치한 폴더에서 실행 환경을 점검한다. 창을 띄우지 않고, 네트워크와 키를 쓰지 않는다.
 
+- PR을 병합하기 전에 확인하려면 Actions → build-exe → Run workflow에서 PR 브랜치를 골라 실행하고 `autotrader-windows-<커밋 해시>` zip을 받는다. 병합 뒤에는 main으로 실행한다. main에 `packaging/autotrader.spec`이 없으면 빌드 단계가 모두 건너뛰어져 zip이 생기지 않는다.
+
 1. 압축을 푼 폴더의 빈 곳에서 Shift + 마우스 오른쪽 클릭 → "여기에 PowerShell 창 열기".
 2. 아래 명령을 실행한다(끝날 때까지 몇 초 기다린다).
 

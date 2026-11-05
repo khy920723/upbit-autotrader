@@ -90,3 +90,21 @@ curl -sS -H 'Accept: application/json' 'https://api.upbit.com/v1/ticker?markets=
 - **키 자리표시:** `list-api-keys.json`의 `access_key`는 `CANARY-PLACEHOLDER`로 바꿨다(`replaced_with_placeholder`에 기록). 테스트는 실행 중에 카나리아 값으로 채운다.
 - **문서와 다른 점:** 주문 예시에는 `identifier`·`smp_type`·`time_in_force`가 없다(가짜가 붙인다). 시장가 매도 예시에는 `price` 키가 없다. 체결(`trades`)의 `created_at`에는 마이크로초가 있다.
 - `tests/unit/fakes/test_upbit_docs_examples.py`가 형식, 출처, 키 자리표시, 문자열 숫자, 오류 이름 타입을 검사한다.
+
+## 공개 시세 웹소켓 녹화(`ws_public_recording.json`)
+
+2026-11-05 12:32 UTC에 Claude 클라우드 세션(3단계 3b)이 `wss://api.upbit.com/websocket/v1`에 키 없이 연결해 받은 프레임이다. 연결 3번, 연결 사이 1.5초, 연결마다 요청 메시지 1개만 보냈다(연결 한도 초당 5회, 메시지 초당 5회보다 낮다). `Origin` 헤더는 보내지 않았고 라이브러리 PING은 껐다. 프레임 원문(숫자 표기 포함)을 UTF-8로 풀어 그대로 저장했다.
+
+| 세션 | 보낸 것 | 받은 것 |
+|---|---|---|
+| `ticker_snapshot_btc_eth` | ticker 구독(KRW-BTC, KRW-ETH) | 마켓마다 스냅숏 1개(`stream_type: SNAPSHOT`) |
+| `error_no_codes` | `codes` 없는 ticker 구독 | `{"error":{"name":"NO_CODES",...}}` 뒤 서버가 close code 1000으로 끊음 |
+| `ping_text_status_up` | 문자열 `PING` | `{"status":"UP"}` |
+
+관찰한 사실:
+
+1. 서버가 보내는 프레임은 모두 바이너리(UTF-8 JSON)다. ticker, 오류, `status` 모두 같다.
+2. 요청 형식 오류 메시지를 보낸 뒤 서버가 바로 연결을 정상 종료(1000)했다. 문서에는 오류 뒤 연결을 끊는지가 없었다(업비트 API 연동 명세 2장).
+3. ticker에는 `market_state`(`ACTIVE`), `delisting_date`(`null`)가 오고, 폐기 필드 `market_warning`·`is_trading_suspended`도 아직 온다. 앱은 폐기 필드를 읽지 않는다.
+4. 숫자는 JSON 숫자이고 `108328000.00000000`처럼 뒤 0이 붙은 표기가 섞인다.
+5. 응답 헤더에 `permessage-deflate`가 있다.

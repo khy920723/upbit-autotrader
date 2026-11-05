@@ -190,6 +190,63 @@ def test_str_names_the_error_for_logs():
     assert "400" in text
 
 
+# ── duplicated_identifier: 거절이 아니라 결과 불명(R17-01) ──
+
+
+def conflict(**overrides):
+    values = {"error_name": "duplicated_identifier", "message": "문구는 바뀔 수 있다", **overrides}
+    return errors.UpbitIdentifierConflict(**upbit_kwargs(**values))
+
+
+def test_identifier_conflict_is_an_upbit_error_but_not_an_order_rejection():
+    # D-070·INV-03: 주문이 이미 접수됐을 수 있다. REJECTED로 닫는 타입으로 잡히면 안 된다.
+    err = conflict()
+
+    assert isinstance(err, errors.UpbitError)
+    assert isinstance(err, errors.ExternalError)
+    assert not isinstance(err, errors.UpbitOrderRejected)
+    assert not issubclass(errors.UpbitIdentifierConflict, errors.UpbitOrderRejected)
+    assert not issubclass(errors.UpbitOrderRejected, errors.UpbitIdentifierConflict)
+
+
+def test_identifier_conflict_is_a_direct_child_of_upbit_error():
+    # 다른 분류(거절·요청 오류·없음 등)를 거쳐 물려받으면 그 분류의 처리(REJECTED 등)를 탄다.
+    assert errors.UpbitIdentifierConflict.__bases__ == (errors.UpbitError,)
+
+
+def test_identifier_conflict_is_not_a_network_error():
+    # 결과 불명이지만 서버가 답했다. 연결 실패(NetworkError)의 백오프·SUSPENDED 처리와는 다르다.
+    assert not issubclass(errors.UpbitIdentifierConflict, errors.NetworkError)
+    assert not isinstance(conflict(), errors.NetworkError)
+
+
+def test_except_order_rejected_does_not_catch_an_identifier_conflict():
+    # 5단계 주문 관리가 `except UpbitOrderRejected`로 REJECTED를 만들어도 이 오류는 빠져나와야 한다.
+    def close_as_rejected():
+        try:
+            raise conflict()
+        except errors.UpbitOrderRejected:
+            return "REJECTED"
+
+    with pytest.raises(errors.UpbitIdentifierConflict) as caught:
+        close_as_rejected()
+
+    assert caught.value.error_name == "duplicated_identifier"
+
+
+def test_identifier_conflict_keeps_the_error_name_and_status():
+    err = conflict()
+
+    assert err.http_status == 400
+    assert err.error_name == "duplicated_identifier"
+    assert err.message == "문구는 바뀔 수 있다"
+    assert (err.rate_group, err.remaining_sec) == ("order", 7)
+    text = str(err)
+    assert "UpbitIdentifierConflict" in text
+    assert "duplicated_identifier" in text
+    assert "400" in text
+
+
 # ── 비밀이 없음(INV-07) ───────────────────────────────────
 
 

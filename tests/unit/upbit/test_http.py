@@ -837,15 +837,16 @@ def test_given_tls_context_is_used_as_is(tmp_path):
     assert context.cert_store_stats()["x509_ca"] == 1
 
 
-def test_given_transport_wins_over_tls_context(monkeypatch, tmp_path):
+@pytest.mark.parametrize("with_context", [True, False], ids=["tls_context", "no_tls_context"])
+def test_given_transport_wins_over_tls_context(monkeypatch, tmp_path, with_context):
     from autotrader.adapters import tls
 
     # transport를 넘기면 TLS 문맥을 만들지 않는다(묶음 파일이 없어도 만들어진다).
     monkeypatch.setattr(tls, "ca_bundle_path", lambda: str(tmp_path / "missing.pem"))
-    given = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    options = {"tls_context": ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)} if with_context else {}
 
     async def scenario():
-        async with connect(tls_context=given) as h:
+        async with connect(**options) as h:
             await h.http.get("/v1/ticker", [("markets", "KRW-BTC")])
             client = h.http._client
             return client._transport, dict(client._mounts), len(h.wire.requests)

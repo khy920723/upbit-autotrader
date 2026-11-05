@@ -7,9 +7,14 @@
 
 - 거래(Exchange) API는 error.name이 문자열, 시세(Quotation) API는 숫자(예: 404)다.
 - 숫자 이름과 표에 없는 이름은 HTTP 상태로 분류하고 원문 이름을 보존한다.
+- `duplicated_identifier`는 UpbitOrderRejected가 아니라 형제 타입 UpbitIdentifierConflict다. 거절이
+  아니라 결과 불명이라 identifier로 조회해 확정한다(D-070, 매매 로직 명세 8·10장, 업비트 API 연동
+  명세 5장, INV-03·INV-04, QA R17-01).
 """
 
+import copy
 import json
+import pickle
 from pathlib import Path
 
 import httpx
@@ -21,6 +26,7 @@ from autotrader.core.errors import (
     UpbitAuthError,
     UpbitBlocked,
     UpbitError,
+    UpbitIdentifierConflict,
     UpbitMarketOffline,
     UpbitNotFound,
     UpbitOrderRejected,
@@ -45,6 +51,7 @@ CATEGORIES = (
     UpbitAuthError,
     UpbitPermissionError,
     UpbitOrderRejected,
+    UpbitIdentifierConflict,
     UpbitMarketOffline,
     UpbitNotFound,
     UpbitRateLimited,
@@ -99,8 +106,9 @@ KNOWN_NAMES = [
     ("invalid_post_only", 400, UpbitOrderRejected),
     ("create_bid_error", 400, UpbitOrderRejected),
     ("create_ask_error", 400, UpbitOrderRejected),
-    ("duplicated_identifier", 400, UpbitOrderRejected),
     ("notfoundmarket", 400, UpbitOrderRejected),
+    # 400 결과 불명: 거절이 아니다. identifier로 조회해 확정한다(D-070, R17-01)
+    ("duplicated_identifier", 400, UpbitIdentifierConflict),
     # 403 점검 등으로 주문 불가
     ("market_offline", 403, UpbitMarketOffline),
     # 404 주문 없음
@@ -138,6 +146,58 @@ def test_out_of_scope_is_the_same_type_for_401_and_403():
 
     assert category(as_401) is category(as_403) is UpbitPermissionError
     assert (as_401.http_status, as_403.http_status) == (401, 403)
+
+
+# --- duplicated_identifier: 거절이 아니라 결과 불명(R17-01) ------------------------------------
+
+
+def test_duplicated_identifier_is_an_identifier_conflict_not_an_order_rejection():
+    # 같은 요청이 한 번 더 전달돼 주문이 이미 있을 수 있다. 상위 계층이 타입만 보고 REJECTED로
+    # 닫으면 그 주문을 놓치고 같은 코인에 새 주문을 낼 수 있다(INV-04).
+    error = to_error(
+        400,
+        error_body("duplicated_identifier", "이미 사용된 identifier입니다."),
+        headers("group=order; min=1800; sec=5"),
+        group="order",
+    )
+
+    assert isinstance(error, UpbitIdentifierConflict)
+    assert not isinstance(error, UpbitOrderRejected)
+    assert category(error) is UpbitIdentifierConflict
+    assert error.http_status == 400
+    assert error.error_name == "duplicated_identifier"
+    assert error.message == "이미 사용된 identifier입니다."
+    assert error.rate_group == "order"
+    assert error.remaining_sec == 5
+
+
+def test_only_duplicated_identifier_maps_to_identifier_conflict():
+    assert NAME_TYPES["duplicated_identifier"] is UpbitIdentifierConflict
+    conflicts = sorted(name for name, kind in NAME_TYPES.items() if kind is UpbitIdentifierConflict)
+    assert conflicts == ["duplicated_identifier"]
+
+
+def test_name_table_matches_the_known_names_list():
+    # 이름표(업비트 API 연동 명세 5장)와 이 파일의 기대표가 어긋나면 한쪽만 고친 것이다.
+    expected = {name: kind for name, _, kind in KNOWN_NAMES}
+
+    assert dict(NAME_TYPES) == expected
+    assert set(NAME_TYPES.values()) <= set(CATEGORIES)
+
+
+@pytest.mark.parametrize(
+    "clone",
+    [copy.copy, copy.deepcopy, lambda e: pickle.loads(pickle.dumps(e))],
+    ids=["copy", "deepcopy", "pickle"],
+)
+def test_identifier_conflict_from_to_error_survives_copy_and_pickle(clone):
+    error = to_error(400, error_body("duplicated_identifier"), headers(), group="order")
+
+    cloned = clone(error)
+
+    assert type(cloned) is UpbitIdentifierConflict
+    assert vars(cloned) == vars(error)
+    assert str(cloned) == str(error)
 
 
 # --- 모르는 이름·숫자 이름은 HTTP 상태로 -----------------------------------------------------
@@ -406,6 +466,8 @@ STATUS_FIRST = [
     (504, "market_offline", UpbitServerError),
     (429, "invalid_parameter", UpbitRateLimited),
     (429, "out_of_scope", UpbitRateLimited),
+    (500, "duplicated_identifier", UpbitServerError),
+    (429, "duplicated_identifier", UpbitRateLimited),
 ]
 
 

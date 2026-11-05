@@ -36,6 +36,8 @@ error.name 분기), 업비트 API 연동 명세 2·5장, 시스템 구성도 6�
 - list_api_keys의 실패 경로(traceback 지역 변수 포함)에도 전체 Access Key가 없다. 키 제공 함수가
   없으면(credentials=None) 어느 키도 현재 키가 아니다.
 - cancel_order의 대상 없음(404)은 UpbitNotFound로 낸다(None이 아니다).
+- 주문 생성의 `duplicated_identifier`는 UpbitOrderRejected가 아닌 UpbitIdentifierConflict로 낸다
+  (결과 불명, D-070·R17-01). 어댑터는 다시 보내지도, 스스로 조회하지도 않는다(상위 계층 몫).
 """
 
 import asyncio
@@ -43,6 +45,7 @@ import dataclasses
 import itertools
 import json
 import logging
+import pickle
 import re
 import traceback
 import types
@@ -61,6 +64,8 @@ from autotrader.core.errors import (
     RequestTimeout,
     UpbitAuthError,
     UpbitBlocked,
+    UpbitError,
+    UpbitIdentifierConflict,
     UpbitMarketOffline,
     UpbitNotFound,
     UpbitOrderRejected,
@@ -709,8 +714,9 @@ REJECTS = {
     "invalid_post_only": (400, UpbitOrderRejected),
     "create_bid_error": (400, UpbitOrderRejected),
     "create_ask_error": (400, UpbitOrderRejected),
-    # 상위 계층이 UNKNOWN으로 두고 조회로 확정한다(D-070). 어댑터는 이름을 그대로 넘긴다.
-    "duplicated_identifier": (400, UpbitOrderRejected),
+    # 거절이 아니라 결과 불명: 상위 계층이 UNKNOWN으로 두고 조회로 확정한다(D-070, R17-01).
+    # 어댑터는 이름을 그대로 넘기고 UpbitOrderRejected가 아닌 타입으로 낸다.
+    "duplicated_identifier": (400, UpbitIdentifierConflict),
     "notfoundmarket": (400, UpbitOrderRejected),
     "market_offline": (403, UpbitMarketOffline),
     # 오류 이름표에 없다 → HTTP 상태로(오케스트레이터 결정 G)
@@ -736,6 +742,48 @@ def test_rejections_map_by_error_name(make_exchange_api, name, status, expected,
     assert error.http_status == status
     assert error.rate_group == "order"
     assert env.server.orders_received(ID1) == 1
+
+
+@pytest.mark.parametrize("random_message", [False, True], ids=["message", "random-message"])
+def test_duplicated_identifier_is_an_unknown_result_not_a_rejection(
+    make_exchange_api, random_message
+):
+    """INV-03·TS-89(어댑터 몫): `duplicated_identifier`는 REJECTED로 닫는 타입으로 잡히지 않는다.
+
+    D-070: 같은 요청이 한 번 더 전달돼 주문이 이미 접수됐을 수 있다. 상위 계층이
+    `except UpbitOrderRejected`로 REJECTED를 만들면 거래소에 있을 수 있는 주문을 놓치고 같은 코인에
+    새 주문을 낼 수 있다(INV-04). 어댑터는 다시 보내지도, identifier로 스스로 조회하지도 않는다.
+    """
+    env = make_exchange_api(random_message=random_message, seed=11)
+    env.server.reject("duplicated_identifier")
+
+    async def scenario(api):
+        try:
+            await api.create_order(market_buy(ID1))
+        except UpbitOrderRejected as rejected:  # 5단계가 REJECTED로 닫는 경로
+            return ("rejected", rejected)
+        except UpbitError as other:
+            return ("other", other)
+        return ("no error", None)
+
+    outcome, error = env.run(scenario)
+
+    assert outcome == "other", f"{outcome}: {error!r}"
+    assert type(error) is UpbitIdentifierConflict
+    assert not isinstance(error, UpbitOrderRejected)
+    assert not isinstance(error, NetworkError)
+    assert (error.error_name, error.http_status, error.rate_group) == (
+        "duplicated_identifier",
+        400,
+        "order",
+    )
+    # 1회만 보냈고, 어댑터가 다시 보내거나 조회하지 않았다(결과 확인은 상위 계층 몫).
+    assert env.server.orders_received(ID1) == 1
+    assert [(r.method, r.path) for r in env.sent()] == [("POST", "/v1/orders")]
+    # 오류 이벤트·프로세스 경계로 넘겨도 타입과 값이 그대로다.
+    cloned = pickle.loads(pickle.dumps(error))
+    assert type(cloned) is UpbitIdentifierConflict
+    assert vars(cloned) == vars(error)
 
 
 AUTH_NAMES = [
@@ -834,7 +882,12 @@ def test_test_order_goes_to_the_validation_api_only(exchange):
 
 @pytest.mark.parametrize(
     ("name", "expected"),
-    [("insufficient_funds_ask", UpbitOrderRejected), ("under_min_total_bid", UpbitOrderRejected)],
+    [
+        ("insufficient_funds_ask", UpbitOrderRejected),
+        ("under_min_total_bid", UpbitOrderRejected),
+        # 분류는 경로가 아니라 이름으로 한다. 주문 검증 API에서도 같은 타입이다.
+        ("duplicated_identifier", UpbitIdentifierConflict),
+    ],
 )
 def test_test_order_rejection_keeps_the_name(exchange, name, expected):
     exchange.server.validate(name)

@@ -134,3 +134,84 @@ class UpbitServerError(UpbitError):
 
 class UpbitRequestError(UpbitError):
     """그 밖의 4xx와 모르는 오류 이름."""
+
+
+# ── 웹소켓 스트림 오류(3단계 3b, D-080) ───────────────────
+# 감시(core/streams.py StreamSupervisor)가 타입으로 처리를 나눈다.
+# - 연결 문제(StreamClosed, StreamConnectFailed): NetworkError 하위. 백오프 뒤 다시 연결한다.
+# - 서버 오류 메시지 {"error": {"name", "message"}}(StreamError 하위): NetworkError가 아니다.
+#   TOO_MANY_REQUEST는 기다린 뒤 1번, INVALID_AUTH는 새 JWT로 1번 다시 연결하고,
+#   나머지(형식 오류·모르는 이름)는 다시 요청하지 않는다.
+# UpbitError 계열(REST)과 섞지 않는다. 생성자는 키워드 인자만 받고 요청·헤더·토큰을 담지 않는다(INV-07).
+
+
+class _KeywordOnlyError(Exception):
+    """키워드 인자로만 만드는 오류의 copy·pickle 지원(UpbitError.__reduce__와 같은 방식)."""
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # add_note가 남긴 __notes__ 같은 속성은 생성 인자가 아니므로 상태로 따로 넘긴다.
+        state = vars(self)
+        fields = {k: v for k, v in state.items() if not k.startswith("__")}
+        extra = {k: v for k, v in state.items() if k.startswith("__")}
+        return (_rebuild_keyword_error, (type(self), fields), extra or None)
+
+
+def _rebuild_keyword_error(cls: type[Exception], fields: dict[str, Any]) -> Exception:
+    return cls(**fields)
+
+
+class StreamClosed(_KeywordOnlyError, NetworkError):
+    """웹소켓 연결이 끊김. 서버의 정상 종료(1000·1001)도 여기다. 종료 코드를 모르면 None."""
+
+    def __init__(self, *, close_code: int | None, reason: str = "") -> None:
+        self.close_code = close_code
+        self.reason = reason
+        super().__init__(f"StreamClosed close_code={close_code} reason={reason}")
+
+
+class StreamConnectFailed(_KeywordOnlyError, NetworkError):
+    """연결 수립 실패(거절, 타임아웃, 핸드셰이크 HTTP 오류). HTTP 응답이 없으면 http_status는 None."""
+
+    def __init__(self, *, http_status: int | None, reason: str = "") -> None:
+        self.http_status = http_status
+        self.reason = reason
+        super().__init__(f"StreamConnectFailed http_status={http_status} reason={reason}")
+
+
+class StreamError(_KeywordOnlyError, ExternalError):
+    """서버가 보낸 웹소켓 오류 메시지. 원문 이름(error.name)과 메시지를 보존한다."""
+
+    def __init__(self, *, error_name: str, message: str | None = None) -> None:
+        self.error_name = error_name
+        self.message = message
+        super().__init__(self._describe())
+
+    def _describe(self) -> str:
+        parts = [type(self).__name__, f"error_name={self.error_name}"]
+        if self.message is not None:
+            parts.append(f"message={self.message}")
+        return " ".join(parts)
+
+
+class StreamRateLimited(StreamError):
+    """TOO_MANY_REQUEST. minute_limited는 어댑터가 센 분당 메시지 수가 한도에 닿았는지다."""
+
+    def __init__(
+        self, *, error_name: str, message: str | None = None, minute_limited: bool = False
+    ) -> None:
+        self.minute_limited = minute_limited
+        super().__init__(error_name=error_name, message=message)
+
+    def _describe(self) -> str:
+        return f"{super()._describe()} minute_limited={self.minute_limited}"
+
+
+class StreamAuthError(StreamError):
+    """INVALID_AUTH. 감시가 새 JWT로 1번 다시 연결하고, 또 오면 REST로 키를 확인한다(D-080)."""
+
+
+class StreamRequestError(StreamError):
+    """요청 형식 오류(WRONG_FORMAT, NO_TICKET, NO_TYPE, NO_CODES, INVALID_PARAM)와 모르는 이름.
+
+    같은 요청을 되풀이하지 않고 앱 버그로 기록한다(D-080).
+    """

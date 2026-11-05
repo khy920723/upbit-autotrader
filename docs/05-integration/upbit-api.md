@@ -1,6 +1,6 @@
 # 업비트 API 연동 명세
 
-상태: 확정(2026-11 기준 사실, 2026-11-05 공식 문서로 재확인. 체크리스트 A 확인 방법(D-048), 클라이언트 선택(D-038)은 대기) · 출처: https://docs.upbit.com/kr (각 쪽은 끝에 `.md`를 붙이면 본문과 OpenAPI 정의를 받을 수 있다) · 관련: [매매 로직 명세](../03-functional/trading-logic.md), [운영 런북](../09-operations/runbook.md), [ADR-0006 업비트 클라이언트](../06-architecture/adr/0006-upbit-client.md)
+상태: 확정(2026-11 기준 사실, 2026-11-05 공식 문서로 재확인. 체크리스트 A 확인 방법(D-048)은 대기, 클라이언트 선택은 D-038로 정함) · 출처: https://docs.upbit.com/kr (각 쪽은 끝에 `.md`를 붙이면 본문과 OpenAPI 정의를 받을 수 있다) · 관련: [매매 로직 명세](../03-functional/trading-logic.md), [운영 런북](../09-operations/runbook.md), [ADR-0006 업비트 클라이언트](../06-architecture/adr/0006-upbit-client.md)
 
 ## 1. 키 정책
 
@@ -140,7 +140,7 @@
 
 ## 8. 클라이언트 선택
 
-[ADR-0006](../06-architecture/adr/0006-upbit-client.md)(제안, D-038 대기)을 따른다. 공식 `upbit-sdk`는 PyPI에 0.9.0(2026-04-14), 1.0.0(2026-09-01), 1.1.0(2026-10-20)이 있다. `pyupbit`는 2024-06 이후 유지보수가 멈춰 쓰지 않는다.
+[ADR-0006](../06-architecture/adr/0006-upbit-client.md)(확정, D-038)을 따른다. httpx·websockets·PyJWT로 자체 클라이언트를 만들고, 공식 `upbit-sdk`는 의존성으로 넣지 않고 필드 이름·타입·엔드포인트 대조 자료로만 쓴다. 공식 `upbit-sdk`는 PyPI에 0.9.0(2026-04-14), 1.0.0(2026-09-01), 1.1.0(2026-10-20)이 있다. `pyupbit`는 2024-06 이후 유지보수가 멈춰 쓰지 않는다.
 
 ## 9. 418 대기, 공지, 웹소켓 오류 처리 (D-078~D-080)
 

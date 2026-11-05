@@ -1,6 +1,6 @@
 # 기술 스택·버전 정책
 
-상태: 확정(1단계 제안 반영, 결정 대기 있음: D-038, D-040~D-042) · 2026-11-03 확인, 2026-11-05 갱신 · 관련: [ADR-0001](adr/0001-python-pyside6-pyinstaller.md), [시스템 구성도](system-architecture.md)
+상태: 확정(1단계 제안 반영, 결정 대기 있음: D-041, D-042) · 2026-11-03 확인, 2026-11-05 갱신 · 관련: [ADR-0001](adr/0001-python-pyside6-pyinstaller.md), [시스템 구성도](system-architecture.md)
 
 ## 1. 스택
 
@@ -11,20 +11,20 @@
 | 화면 | PySide6 | `>=6.12,<6.13` | Qt 6.12가 Windows 10을 지원하는 마지막 버전(LTS) |
 | 패키징 | PyInstaller | 6.22.x, onedir·windowed·UPX 끔 | 크로스 컴파일 불가 → Windows 러너에서 빌드 |
 | LLM SDK | google-genai | 정확한 버전 고정(기준 2.34.0) | 공식 SDK. 구 SDK는 지원 종료 |
-| 업비트 클라이언트 | httpx 기반 자체 클라이언트(제안) | ADR-0006(D-038 대기) | 공식 upbit-sdk는 기본 자동 재시도(POST 포함), HS256, aiohttp 필수, websockets<16 |
-| HTTP·웹소켓 | httpx, websockets(후보) | 정확한 버전 고정(2026-11-05 최신 0.28.1, 17.4. google-genai 2.34.0은 websockets <18 요구) | 비동기, 웹소켓 헤더에 JWT |
-| JWT | PyJWT(후보) | 고정(2026-11-05 최신 2.15.1) | HS512 서명 |
+| 업비트 클라이언트 | httpx 기반 자체 클라이언트 | ADR-0006(확정, D-038) | 공식 upbit-sdk는 기본 자동 재시도(POST 포함), HS256, aiohttp 필수, websockets<16 |
+| HTTP·웹소켓 | httpx, websockets | 정확한 버전 고정(2026-11-05 최신 0.28.1, 17.4. google-genai 2.34.0은 websockets <18 요구) | 비동기, 웹소켓 헤더에 JWT |
+| JWT | PyJWT | 고정(2026-11-05 최신 2.15.1) | HS512 서명 |
 | 데이터 검증 | pydantic 2 | 고정 | LLM 출력·설정 검증 |
 | 비밀 저장 | keyring | 25.x | Windows 자격 증명 관리자. PyInstaller에 훅 있음 |
 | DB | SQLite(표준 라이브러리 `sqlite3`, 직접 SQL) | STRICT 테이블이라 SQLite 3.37 이상(self-test에서 확인) | 단일 사용자 로컬 앱(D-041 대기) |
 | 설정 파일 | JSON(표준 라이브러리) + pydantic 검증 | - | D-042 대기. `tomllib`는 읽기 전용이라 TOML을 쓰려면 의존성이 늘어남 |
-| GUI–asyncio 연결 | 표준 asyncio 루프를 전용 스레드에서 실행 | 추가 의존성 없음 | ADR-0009(D-040 대기). qasync, QtAsyncio는 쓰지 않음 |
+| GUI–asyncio 연결 | 표준 asyncio 루프를 전용 스레드에서 실행 | 추가 의존성 없음 | ADR-0009(확정, D-040). qasync, QtAsyncio는 쓰지 않음 |
 | 테스트 | pytest, pytest-qt | dev 그룹 | 화면 테스트는 offscreen |
 | 린트 | ruff | dev 그룹 | |
 | CI 액션 | actions/checkout@v7, astral-sh/setup-uv@v10.3.3, actions/upload-artifact@v7 | setup-uv는 주 버전 태그가 없어 정확한 버전으로 고정 | |
 | CI 러너 | ubuntu-24.04, windows-2025 | 라벨 고정 | ubuntu-latest는 2026-11에 26.04로 바뀜 |
 
-"후보"는 ADR-0006 결정과 2단계 구현에서 확정한다. 1단계 제안은 [결정 로그](../10-management/decision-log.md) D-038~D-042.
+httpx, websockets, PyJWT는 ADR-0006(D-038)으로 정했고, 정확한 버전은 3단계 구현 때 `pyproject.toml`에 고정한다. 1단계 제안은 [결정 로그](../10-management/decision-log.md) D-038~D-042.
 
 ## 2. 업그레이드 정책
 

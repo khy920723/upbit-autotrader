@@ -24,10 +24,10 @@
 | [0003](0003-paper-first-risk-precedence.md) | 페이퍼 우선, 위험 관리 우선 | 확정 |
 | [0004](0004-github-actions-windows-build.md) | GitHub Actions Windows 빌드와 워크플로 관리 | 확정 |
 | [0005](0005-news-sources.md) | 뉴스 출처: 네이버 검색 API + 영어 RSS | 확정 |
-| [0006](0006-upbit-client.md) | 업비트 클라이언트: httpx 기반 자체 클라이언트 | 제안(D-038 대기) |
+| [0006](0006-upbit-client.md) | 업비트 클라이언트: httpx 기반 자체 클라이언트 | 확정(D-038) |
 | 0007 | 규칙 조건 | 대기(비교 리포트 완료, 사용자 선택 대기: [규칙 조건 후보 비교 리포트](../../research/rule-candidates.md), D-021·D-072) |
 | [0008](0008-buy-method.md) | 매수 방식: 기본은 한 번에, 분할은 회차 금액이 예산 하한 이상일 때만 | 제안(D-039 대기) |
-| [0009](0009-gui-asyncio-bridge.md) | GUI와 asyncio 연결: asyncio 루프를 전용 스레드에서 실행 | 제안(D-040 대기) |
+| [0009](0009-gui-asyncio-bridge.md) | GUI와 asyncio 연결: asyncio 루프를 전용 스레드에서 실행 | 확정(D-040) |
 
 ## 결정 대기
 

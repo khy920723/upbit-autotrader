@@ -79,7 +79,7 @@ flowchart TB
 | 어댑터 | 외부 서비스 호출. 인터페이스(6장) 뒤에 두고 테스트에서는 가짜로 바꾼다 |
 | 앱 계층(app) | 앱 조립과 수명 주기, GUI ↔ core 브리지, Windows 플랫폼 기능. Qt 시그널은 이 계층만 쓴다 |
 
-## 3. 스레드 모델 (제안, ADR-0009, D-040 대기)
+## 3. 스레드 모델 (ADR-0009, D-040)
 
 asyncio 이벤트 루프를 GUI와 다른 스레드(core 스레드)에서 돌린다. 화면이 모달 대화상자나 무거운 그리기로 멈춰도 손절 점검(60초)과 웹소켓 처리가 영향을 받지 않게 하려는 것이다. 근거와 대안은 [ADR-0009](adr/0009-gui-asyncio-bridge.md).
 
@@ -378,8 +378,8 @@ AutotraderError
 
 | 항목 | 제안 | 상태 |
 |---|---|---|
-| asyncio와 Qt 연결 | core 전용 스레드에서 asyncio 루프(3장, [ADR-0009](adr/0009-gui-asyncio-bridge.md)) | 대기(D-040) |
-| 업비트 클라이언트 | [ADR-0006](adr/0006-upbit-client.md) | 대기(D-038) |
+| asyncio와 Qt 연결 | core 전용 스레드에서 asyncio 루프(3장, [ADR-0009](adr/0009-gui-asyncio-bridge.md)) | 유효(D-040) |
+| 업비트 클라이언트 | httpx 기반 자체 클라이언트([ADR-0006](adr/0006-upbit-client.md)) | 유효(D-038) |
 | 인터페이스 시그니처, 오류 타입 | 6·7장 | 유효(초안, 구현하면서 이름 조정 가능) |
 | EntryRule·ExitRule 입력 | 6장 가안(한 마켓의 캔들과 ticker) | 대기(ADR-0007, D-021) |
 | DB 접근 방식 | 표준 `sqlite3` + 직접 SQL([데이터 모델](../04-data/data-model.md) 1장) | 대기(D-041) |

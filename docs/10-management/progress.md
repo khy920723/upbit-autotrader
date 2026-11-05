@@ -2,6 +2,50 @@
 
 세션이 끝날 때마다 맨 위에 추가한다. 형식: 날짜 — 단계 / 한 일 / 결정 / 남은 일 / 다음 단계.
 
+## 2026-11-05 — QA: PR #17(3단계 3a 업비트 REST) 검토 (클라우드 세션)
+
+- 한 일:
+  - 지휘 세션 요청으로 병합된 [PR #17](https://github.com/khy920723/upbit-autotrader/pull/17)(main `5e20b24`)을 [PR 검토 기준](../08-quality/review-checklist.md)의 공통·인프라·기능·테스트 항목으로 검토했다. 하위 에이전트 없이 직접 했다. 프론트/백엔드가 3b를 작업 중이라 `src/`·`tests/`는 바꾸지 않았고, 테스트 보강은 아래 목록으로만 남긴다.
+  - 판정: **필수 0건, 권장 8건, 질문 3건.** 주문 안전 규칙은 결정·명세대로다: 자동 재전송 없음(전송 `retries=0`, 리다이렉트를 따라가지 않음, HTTP 계층 실패 15종 × 호출 5종과 거래 어댑터 주입 8종에서 요청 1회), `smp_type=cancel_maker` 항상(속성 테스트), `Origin` 없음, `Content-Type`은 POST에만 1개, 경로 정규식과 경로 표(일괄 취소 경로 없음), query_hash(알려진 값 2개, 가짜가 앱 코드 없이 다시 계산), `Remaining-Req`의 `sec`만, 슬라이딩 창으로 절반 이하(동시 폭주 속성 테스트), 429·`sec=0`은 최소 1초 멈춤, 418은 D-078과 D-089 추천안 A, 오류 분류는 D-088 추천안 A, 로그·예외 문구·traceback 지역 변수에 카나리아 0건.
+  - 확인한 것: `uv sync --locked`, `uv run ruff check .` 통과. `QT_QPA_PLATFORM=offscreen uv run pytest -q --cov --cov-branch` 2350개 통과(전체 96%, `adapters/upbit` 92~100%). head `4640270`과 병합 `5e20b24`의 `test`·`windows` 성공. 차이의 비밀·IP 모양 검색 0건. `tests/fixtures/upbit/docs_examples/` 12개가 공식 문서 예시와 같다(Decimal 비교, 키 목록은 자리표시만 다름). 가짜와 오류 매핑의 오류 이름·상태 코드, 주문 유형별 필수값, 주문 조회 파라미터, KRW 호가 단위 표(문서 갱신 2026-05-04), 한도 그룹 표가 공식 문서(2026-11-05 받음)와 같다. 새 런타임 패키지 8개의 라이선스가 설치 메타데이터와 같고, `packaging/NOTICE.txt`에 certifi 소스 주소가 있다.
+  - 공개 시세 API로 2건 확인했다(키 없음, 1초 간격, `Origin` 없음): `markets=KRW-BTC%2CKRW-ETH`(쉼표 인코딩)가 ticker와 instruments에서 200이다. instruments 응답의 `Remaining-Req` group은 `orderbook`(경로 표와 같음)이고 `tick_size`는 문자열이다.
+  - 결과:
+
+| ID | 심각도 | 근거(파일:줄) | 문제와 고칠 방법 | 고칠 세션 |
+|---|---|---|---|---|
+| R17-01 | 권장(높음) | `src/autotrader/adapters/upbit/errors.py:54`, `src/autotrader/core/errors.py:3-4·90-91`, `tests/unit/upbit/test_errors.py:102`, `tests/unit/upbit/test_exchange.py:713` | `duplicated_identifier`를 `UpbitOrderRejected`로 바꾼다. 시스템 구성도 7장 트리(`docs/06-architecture/system-architecture.md:318`)대로라 설계 위반은 아니다. 하지만 core 오류 문서는 "UpbitOrderRejected는 거절"이라고 적었고, D-070·매매 로직 명세 8·10장(`docs/03-functional/trading-logic.md:162·199`)·INV-03은 UNKNOWN이다. 5단계가 타입만 보고 REJECTED로 닫으면 거래소에 있을 수 있는 주문을 놓치고 같은 코인에 새 주문을 낼 수 있다(INV-04). 고칠 방법: `UpbitOrderRejected`를 상속하지 않는 형제 타입(예: `UpbitIdentifierConflict`, "결과 불명, identifier로 조회")으로 매핑하고 두 테스트를 고친다. 최소안은 core 오류 문서에 예외를 적고 5단계에서 TS-89를 먼저 쓰는 것이다 | 프론트/백엔드, 기획/문서(타입을 나누면 시스템 구성도 7장) |
+| R17-02 | 권장(높음, 3b 전) | `tests/conftest.py`(차단 픽스처 없음), `docs/08-quality/fakes-spec.md:92` | 가짜 구현 명세의 "실제 네트워크 없음" 규칙이 구현되지 않았다. 지금은 모든 `UpbitHttp`가 MockTransport를 받아 위반이 없다(`tests/unit/upbit/conftest.py:45`, `tests/unit/upbit/test_http.py:746`은 보내지 않음). 웹소켓 테스트가 들어오기 전에 `tests/conftest.py`에 autouse 픽스처로 `socket.socket.connect`(AF_INET·AF_INET6), `socket.getaddrinfo`, `socket.create_connection`을 막는다(`tests/unit/test_self_test.py:77-90`과 같은 방식). getaddrinfo도 막아야 Windows Proactor 루프의 연결이 이름 해석에서 걸린다 | 프론트/백엔드 |
+| R17-03 | 권장(높음) | `src/autotrader/app/self_test.py:179`, `src/autotrader/adapters/upbit/http.py:167-173` | self-test의 TLS 점검은 `ssl.create_default_context()`(Windows는 시스템 인증서 저장소)를 본다. httpx 0.28.1은 `ssl.create_default_context(cafile=certifi.where())`를 쓴다(`httpx/_config.py`의 `create_ssl_context`). 그래서 번들에서 certifi의 `cacert.pem`이 빠져도 self-test는 통과하고 `UpbitHttp`를 만들 때 실패한다. 또 전송의 `trust_env` 기본값 때문에 `SSL_CERT_FILE`·`SSL_CERT_DIR` 환경 변수가 있으면 그 인증서를 믿는다(프록시 환경 변수는 전송을 직접 넘겨서 쓰지 않는다, `httpx/_client.py:1399`). 고칠 방법: SSL 문맥을 만드는 함수를 하나 두고 `UpbitHttp`와 self-test가 같은 함수를 쓰며, `trust_env`를 명시한다. PR #17이 제안한 `anyio._backends._asyncio` import 점검도 함께 넣는다 | 인프라(self-test), 프론트/백엔드(SSL 문맥) |
+| R17-04 | 권장 | PR #17의 새 테스트 파일 15개 | 테스트 함수 612개 중 docstring 첫 줄에 TS·INV ID가 있는 것은 1개(`tests/unit/upbit/test_ratelimit.py:288`)다(RC-E02, 추적표 7장). 모듈 docstring에는 ID가 있다. 불변식·시나리오를 직접 증명하는 테스트부터 첫 줄에 ID를 넣는다: `test_http.py:655·742`(INV-03·TS-72), `:339`(INV-13·TS-72), `:1043`(TS-05), `:1150·1395`(INV-07), `:782`(INV-14), `test_exchange.py:602`(INV-06·TS-13), `:651`(INV-03), `:1246`(INV-07), `test_quotation.py:408`(TS-104), `:179·199`(TS-102), `test_architecture.py:435`(INV-16), `:496`(INV-14) | 프론트/백엔드 |
+| R17-05 | 권장(낮음) | `docs/07-security-legal/dependency-licenses.md:63-64`, `packaging/autotrader.spec:171-177` | 4장 설명이 옛 상태다. "excludes를 빼고 빌드하면 `_distutils_hack, packaging, setuptools, typing_extensions`에서 멈춘다"고 적었지만 typing_extensions는 이제 런타임이고, 새 제외 항목 `_pytest`, `pytest`, `httpx._main`, `pygments`와 그 이유가 없다 | 인프라 |
+| R17-06 | 권장(낮음) | `src/autotrader/adapters/upbit/exchange.py:67·104·136·336`, `src/autotrader/adapters/upbit/http.py:100·161` | 보내기 전 검사 분기 일부가 시험되지 않았다(테스트 전략 5장의 주문 관련 분기 100% 목표). 특히 `exchange.py:136`(smp_type이 cancel_maker가 아님)은 `OrderRequest`가 먼저 막아 닿지 않는다. 검사를 우회한 요청(`object.__setattr__`로 바꾼 값)을 넣어 ValueError와 전송 0건을 확인한다 | 프론트/백엔드 |
+| R17-07 | 권장(낮음) | `src/autotrader/core/models.py:123`, `src/autotrader/adapters/upbit/exchange.py:204` | `market.order_types`는 공식 주문 가능 정보 문서에서 폐기 예정이다(대체: `bid_types`·`ask_types`). 지금은 빠지면 빈 튜플이라 안전하다. 필드 설명에 "폐기 예정, 판단에 쓰지 않는다"를 적거나 필드를 뺀다 | 프론트/백엔드 |
+| R17-08 | 권장(낮음) | `docs/05-integration/upbit-api.md:90`, `src/autotrader/adapters/upbit/ratelimit.py:126·185` | "연결 지연이 끼어도 실제 한도를 넘지 않는다"는 요청 사이 지연의 차이가 1초 안일 때만 맞다. 한도 장치는 송신 허가 시각을 센다. 새 연결(TCP·TLS)과 재사용 연결이 섞여 지연 차이가 1초를 넘으면 서버의 1초 창에 한도보다 많이 들어갈 수 있다(그때는 429 처리가 막는다). 문구를 고친다 | 기획/문서 |
+| R17-09 | 질문 | `src/autotrader/adapters/upbit/ratelimit.py:224`, `src/autotrader/adapters/upbit/errors.py:83` | `Retry-After`에 상한이 없다(9자리까지 읽어 약 31년). D-089 추천안 그대로지만, 비정상적으로 큰 값이 오면 앱을 다시 시작할 때까지 멈춘다. D-089를 물을 때 상한(예: 24시간)이나 "1시간을 넘으면 알리고 그 뒤 확인 1건"을 함께 묻는다 | 지휘(사용자에게) |
+| R17-10 | 질문 | R17-03과 같음 | 신뢰할 인증서를 certifi 묶음으로 할지 Windows 인증서 저장소로 할지 정한다(ADR-0006). 회사망이나 백신이 TLS를 가로채는 PC에서는 그 루트 인증서가 시스템 저장소에만 있어 certifi로는 연결이 실패할 수 있다. 시스템 저장소를 쓰면 그 가로채기를 믿게 된다 | 기획/문서(ADR) → 사용자 |
+| R17-11 | 질문 | `src/autotrader/adapters/upbit/exchange.py:322-331` | `GET /v1/order`에서 `order_not_found`만 "없음"(None)이고 이름 없는 404는 `UpbitNotFound`로 올린다. REST 안내 문서의 404 표는 "데이터를 찾을 수 없음"의 에러 코드를 "—"로 적었다(개별 조회 문서 예시는 `order_not_found`). 이름 없는 404를 D-046의 "없음"으로 셀지 정한다. 세지 않으면 그때 UNKNOWN이 풀리지 않아 그 코인 주문이 막힌다(안전하지만 NTF-16까지 간다) | 기획/문서(매매 로직 명세 9장) |
+
+  - 불변식 증명 현황(3a 범위):
+    - INV-03: 실패 유형마다 POST 1회(`tests/unit/upbit/test_exchange.py:651`, `tests/unit/upbit/test_http.py:655`), 기본 전송 재시도 0(`test_http.py:742`), 가짜의 `auto_retry`·`identifier` 위반 검출. 남은 것: DB 선커밋, `duplicated_identifier` → UNKNOWN(TS-89), 크래시 주입(5단계).
+    - INV-06: 임의 유효 주문 → `smp_type=cancel_maker`로 1회 전송 속성 테스트(`test_exchange.py:602`), `OrderRequest`가 다른 값을 거부. 남은 것: 주문 종류 × 모드(5단계).
+    - INV-07: 로그·예외 문구·traceback(capture_locals) 카나리아 0건(`test_http.py:1150·1395`, `test_exchange.py:1246·1717`), 키 목록은 앞 4자. 남은 것: 가리기 필터, DB·설정·CSV·알림·프롬프트(이후 단계).
+    - INV-13: 동시 폭주 속성 테스트(정수 초 창·슬라이딩 창·공허한 통과 방지·진행 경계, `tests/unit/upbit/test_ratelimit.py:288`), 429·`sec=0` 멈춤, 418 차단 중 0건, `Origin` 없음(`test_http.py:339`). 남은 것: 웹소켓(3b), 시세·거래 어댑터가 RateLimiter 하나를 함께 쓰는 조립(5단계).
+    - INV-14: 응답 JSON 숫자를 모두 Decimal로(`test_http.py:782·807·825`), 주문 숫자 문자열 왕복 속성(`test_exchange.py:1337`), core의 `float(` 0건(`tests/unit/test_architecture.py:496`). 남은 것: DB 저장·읽기 왕복(5단계).
+    - INV-16: 구조 검사(`test_architecture.py:435`). 남은 것: PC 시계 점프 속성(5단계), 추적표 Q-14.
+  - 테스트 보강 목록(코드는 고치지 않았다):
+    1. 네트워크 차단 autouse 픽스처(R17-02).
+    2. R17-01을 타입 분리로 고치면: `create_order`가 `reject("duplicated_identifier")`에서 `UpbitOrderRejected`가 아닌 타입을 낸다.
+    3. 보내기 전 검사 분기(R17-06).
+    4. self-test가 httpx와 같은 SSL 문맥으로 CA를 읽고 `anyio._backends._asyncio`를 import한다(R17-03).
+    5. 5단계 몫: 주문 POST 중 태스크 취소(`CancelledError`)도 UNKNOWN으로 둔다(HTTP 계층은 취소를 그대로 올린다, `src/autotrader/adapters/upbit/http.py:280-288`). 418 만기 뒤 첫 요청은 가벼운 조회다(D-078. HTTP 계층은 어떤 요청이든 확인 요청으로 잡는다, `src/autotrader/adapters/upbit/ratelimit.py:255-266`). 시세·거래 어댑터의 RateLimiter 공유. TS-89. 매매 로직 명세 10장 "응답 수준" 표(예외 타입 → 주문 상태)를 표 테스트로.
+- 결정: 없음. R17-09~R17-11은 사용자·기획 결정이 필요한 질문이다.
+- 남은 일:
+  - 프론트/백엔드: R17-01·02·04·06·07(3b PR에 넣거나 최신 main에서 새 PR).
+  - 인프라: R17-03(self-test)·R17-05.
+  - 기획/문서: R17-01(타입을 나누면 시스템 구성도 7장), R17-08, R17-10(ADR-0006), R17-11.
+  - 지휘: R17-09를 D-088·D-089와 함께 사용자에게 묻는다.
+- 다음 단계: 3b PR이 열리면 같은 기준으로 검토한다(R17-02의 차단 픽스처, D-080 웹소켓 오류 처리, INV-13의 웹소켓 한도).
+
 ## 2026-11-05 — 3단계 3a: 업비트 REST 연동과 가짜 거래소(REST) (클라우드 세션)
 
 - 한 일:

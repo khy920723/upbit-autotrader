@@ -46,12 +46,18 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
    INVALID_AUTH → StreamAuthError, 나머지와 모르는 이름 → StreamRequestError로 이터레이터가
    끝난다(error_name·message 원문 보존, message가 없으면 None). 서버가 오류 뒤 close 1000으로
    끊어도 StreamClosed가 아니라 오류가 나온다. 서버가 연결을 열어 두면 어댑터가 닫는다.
-7. 읽을 수 없는 서버 메시지(UTF-8 아님, JSON 아님, 객체 아님, NaN·Infinity, 아는 type인데 필드
+7. 읽을 수 없는 서버 메시지(UTF-8 아님, JSON 아님, 객체 아님, NaN·Infinity, ticker·공지인데 필드
    모양이 다름)는 그 메시지만 건너뛰고 앱 버그로 기록한다(앱 로거 "autotrader..."에 WARNING
    이상, 메시지 원문·값은 넣지 않는다. 비공개 메시지에는 주문·잔고가 있다). 연결은 그대로 두고
-   다음 메시지를 받는다. 모르는 type의 메시지(예: 앱이 구독하지 않은 trade)도 건너뛴다(기록은
-   정하지 않음). 설계 메모에 없던 결정(오케스트레이터 권장안). 공개 시세가 계속 깨져 오면 감시의
-   120초 무수신 감시가 DEGRADED로 만든다.
+   다음 메시지를 받는다. 건너뛴 수는 스트림 객체의 읽기 전용 `skipped_messages`(type별, type을
+   모르면 "unknown")로 센다. 모르는 type의 메시지(예: 앱이 구독하지 않은 trade)와 status UP도
+   건너뛰지만 세지 않는다. 공개 시세가 계속 깨져 오면 감시의 120초 무수신 감시가 DEGRADED로
+   만든다. 안전 쪽 예외(B2 리뷰):
+   - ticker의 market_state·delisting_date가 있는데 읽을 수 없으면 메시지를 버리지 않고 둘 다
+     None으로 넣는다(core.notices.ticker_blocks_buy가 신규 매수를 막는다) + WARNING.
+   - myOrder·myAsset 모양이 다르면 건너뛰지 않고 이터레이터를 `StreamClosed(close_code=None,
+     reason="unreadable_myOrder"|"unreadable_myAsset")`로 끝낸다(감시가 다시 연결하고 재연결 뒤
+     REST 대조가 돈다). 연결은 어댑터가 닫는다.
 8. 끊김: 연결의 StreamClosed(close_code 보존)가 그대로 나온다. 끊기 전에 받은 메시지를 먼저 낸다.
    연결 실패: StreamConnectFailed(http_status 보존). 어댑터는 다시 연결하지 않는다(감시 몫).
 9. PING 프레임: 연결이 열려 있는 동안 별도 태스크가 ping_interval(30초)마다 보낸다(소비자가 다음
@@ -73,12 +79,15 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
    공개에는 Authorization이 없다. 둘 다 Origin을 보내지 않는다.
 13. 비밀(키, JWT, Authorization 값)은 로그·예외 문구·repr·어댑터 프레임의 지역 변수
    (traceback capture_locals)에 남지 않는다.
-14. WebsocketsConnector: websockets.asyncio.client.connect에 additional_headers=받은 헤더,
-   user_agent_header=앱 값, origin 없음, proxy=None(명시. 기본값 True는 HTTPS_PROXY 등을 따른다,
-   D-091), ping_interval=None(PING은 어댑터가 Clock으로), wss 주소면 ssl=TLS 문맥(명시. 기본값은
-   운영체제 저장소다. ws 주소면 ssl 없음), open_timeout을 넘긴다. 핸드셰이크 HTTP 오류(401
-   포함)·OSError·타임아웃·잘못된 핸드셰이크는 StreamConnectFailed(HTTP 응답이 있으면 그 상태
-   코드)다.
+14. WebsocketsConnector: websockets.asyncio.client.connect의 하위 클래스(리다이렉트를 따라가지
+   않는다: process_redirect가 받은 예외를 그대로 돌려준다, ADR-0006·D-091)에 additional_headers=
+   받은 헤더, user_agent_header=앱 값, origin 없음, proxy=None(명시. 기본값 True는 HTTPS_PROXY
+   등을 따른다, D-091), ping_interval=None(PING은 어댑터가 Clock으로), wss 주소면(대소문자
+   무관) ssl=TLS 문맥(명시. 기본값은 운영체제 저장소다. ws 주소면 ssl 없음), open_timeout,
+   close_timeout, logger=DEBUG를 내지 않는 LoggerAdapter(요청 헤더·프레임 원문을 기록하지
+   않는다. 앱 로그 설정과 상관없이)를 넘긴다. 핸드셰이크 HTTP 오류(401·3xx 포함)·OSError·
+   타임아웃·잘못된 핸드셰이크·그 밖의 websockets 예외(InvalidURI 등)는 StreamConnectFailed(HTTP
+   응답이 있으면 그 상태 코드)다.
 15. TLS 문맥(D-093, B4 리뷰): tls_context를 주지 않으면 커넥터마다 create_tls_context()로 새로
    만든다(REST와 문맥 객체를 함께 쓰지 않는다). 주면 그대로 쓰되 만들 때 검사한다(UpbitHttp와
    같다): ssl.SSLContext가 아니면 TypeError, check_hostname True·CERT_REQUIRED·최소 TLS 1.2
@@ -91,6 +100,12 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
    StreamOpened까지(connect + 구독 전송) open_timeout(Clock, 기본 10초)이 지나면
    StreamConnectFailed(http_status=None)이고 열린 연결은 닫는다. 한도 대기는 open_timeout에 들지
    않는다(연결 전에 기다린다).
+17. 설정 검사(B2 리뷰): 주소는 wss:// 또는 ws://(대소문자 무관)이고 ws://는 루프백(127.0.0.1,
+   ::1, localhost)만이다. 아니면 스트림 생성자와 WebsocketsConnector.connect가 ValueError(연결하지
+   않는다). ping_interval은 0 초과 120 미만(서버의 120초 무송수신 규칙)이다. 키 제공 함수가
+   예외를 내면 연결하지 않고 StreamAuthError(error_name "CREDENTIALS_ERROR", 문구에는 예외 타입
+   이름만). 공지 시각은 UTC aware datetime이다(REST의 aware_utc와 같은 관례). 연결이 닫힌 코드는
+   받은 close 프레임, 없으면 보낸 close 프레임, 둘 다 없으면 1006이다.
 """
 
 import asyncio
@@ -659,6 +674,48 @@ def test_connection_and_connector_are_protocols():
     assert params["headers"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
+def _stream_maker(kind: str) -> Callable[..., Any]:
+    """연결기·시계가 필요 없는 생성자 검사용(연결하지 않는다)."""
+    if kind == "public":
+        return lambda **options: make_public_stream(object(), FakeClock(), **options)
+    return lambda **options: make_private_stream(object(), FakeClock(), lambda: None, **options)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ws://api.upbit.com/websocket/v1",
+        "ws://10.0.0.1:8080/websocket/v1",
+        "ws://127.0.0.2:8080/websocket/v1",
+        "WS://api.upbit.com/websocket/v1",
+        "https://api.upbit.com/websocket/v1",
+        "api.upbit.com/websocket/v1",
+        "wss://",
+        "wss://api.upbit.com/websocket/v1#frag",
+    ],
+)
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_streams_reject_plain_ws_except_loopback_and_bad_urls(kind, url):
+    make = _stream_maker(kind)
+    with pytest.raises(ValueError, match="ws"):
+        make(url=url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ws://127.0.0.1:8080/websocket/v1",
+        "ws://localhost:8080/websocket/v1",
+        "ws://LOCALHOST:8080/websocket/v1",
+        "ws://[::1]:8080/websocket/v1",
+        "WSS://api.upbit.com/websocket/v1",
+    ],
+)
+def test_streams_accept_wss_and_loopback_ws(url):
+    make_public_stream(object(), FakeClock(), url=url)
+    make_private_stream(object(), FakeClock(), lambda: None, url=url)
+
+
 def test_stream_methods_give_iterators_without_await(env):
     public = env.public()
     private = env.private()
@@ -933,6 +990,18 @@ def test_ping_frames_every_thirty_seconds_keep_the_connection_open(env, kind):
     assert len(record.received) == 1  # PING은 텍스트 "PING"이 아니라 PING 프레임이다
 
 
+@pytest.mark.parametrize("interval", [0, -1.0, 120, 120.0, 300.0])
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_ping_interval_must_be_under_the_120_second_idle_rule(kind, interval):
+    make = _stream_maker(kind)
+    with pytest.raises(ValueError, match="ping_interval"):
+        make(ping_interval=interval)
+
+
+def test_ping_interval_just_under_120_seconds_is_accepted():
+    make_public_stream(object(), FakeClock(), ping_interval=119.5)
+
+
 def test_ping_interval_option(env):
     stream = env.public(ping_interval=10.0)
 
@@ -1027,7 +1096,7 @@ UNREADABLE = {
     "nan": btc_frame(trade_price=RawNumber("NaN")),
     "infinity": btc_frame(acc_trade_price_24h=RawNumber("Infinity")),
     "missing-field": btc_frame(trade_price=...),
-    "bad-date": btc_frame(delisting_date="2026/12/01"),
+    "bad-code": btc_frame(code="BTC"),
 }
 
 
@@ -1058,14 +1127,58 @@ def test_unreadable_server_message_is_skipped_and_logged(case, caplog):
     assert "opening_price" not in caplog.text  # 메시지 원문을 기록하지 않는다
 
 
-def test_unreadable_private_message_is_logged_without_its_content(caplog):
+def _doc_example(name: str) -> dict[str, Any]:
+    return loads_raw((DOCS_EXAMPLES / name).read_text(encoding="utf-8"))["example"]
+
+
+def _broken_my_order(marker: str) -> str:
+    broken = dict(_doc_example("websocket-myorder.json"), identifier=marker)
+    del broken["executed_funds"]
+    return dumps(broken)
+
+
+def _broken_my_asset(marker: str) -> str:
+    broken = dict(_doc_example("websocket-myasset.json"), asset_uuid=marker)
+    broken["assets"] = [{"currency": "KRW", "balance": marker}]  # locked가 빠지고 값이 문자
+    return dumps(broken)
+
+
+@pytest.mark.parametrize(
+    ("kind", "broken"),
+    [("myOrder", _broken_my_order), ("myAsset", _broken_my_asset)],
+    ids=["myOrder", "myAsset"],
+)
+def test_unreadable_my_order_or_my_asset_ends_the_iterator(kind, broken, caplog):
+    # 주문·잔고 메시지를 조용히 버리면 대조에 공백이 생긴다. 끊고 감시가 다시 연결하게 한다
+    # (재연결 뒤 REST 대조가 돈다). 뒤 메시지는 받지 않는다.
     caplog.set_level(logging.DEBUG)
     marker = "uat-P-unreadable-marker-0001"
-    order = loads_raw((DOCS_EXAMPLES / "websocket-myorder.json").read_text(encoding="utf-8"))
-    broken = dict(order["example"], identifier=marker)
-    del broken["executed_funds"]
-    good = dict(order["example"], identifier="uat-P-0002")
-    env = scripted_env(([dumps(broken), dumps(good)], None))
+    good = dumps(dict(_doc_example("websocket-myorder.json"), identifier="uat-P-0002"))
+    env = scripted_env(([broken(marker), good], None))
+    stream = env.private(credentials=make_upbit_credentials)
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.events()))
+        assert items == [opened("private", 1)]
+        assert type(error) is StreamClosed
+        assert (error.close_code, error.reason) == (None, f"unreadable_{kind}")
+        assert e.connector.connections[0].closed_by_client == 1000  # 어댑터가 닫았다
+
+    env.run(scenario)
+    assert app_warnings(caplog), "앱 버그로 기록해야 한다"
+    assert stream.skipped_messages == {}  # 건너뛴 것이 아니라 끝냈다
+    assert marker not in caplog.text
+    for record in caplog.records:
+        assert marker not in repr(vars(record))
+
+
+def test_unreadable_announcement_is_skipped_without_its_content(caplog):
+    caplog.set_level(logging.DEBUG)
+    marker = "uat-P-unreadable-title-0001"
+    announcement = dict(_doc_example("websocket-announcement.json"), title=marker)
+    del announcement["listed_at"]
+    good = dumps(dict(_doc_example("websocket-myorder.json"), identifier="uat-P-0002"))
+    env = scripted_env(([dumps(announcement), good], None))
     stream = env.private(credentials=make_upbit_credentials)
 
     async def scenario(e: Env) -> None:
@@ -1075,9 +1188,70 @@ def test_unreadable_private_message_is_logged_without_its_content(caplog):
 
     env.run(scenario)
     assert app_warnings(caplog)
+    assert stream.skipped_messages == {"announcement": 1}
     assert marker not in caplog.text
     for record in caplog.records:
         assert marker not in repr(vars(record))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"delisting_date": "2026/12/01"},
+        {"delisting_date": 20261201},
+        {"delisting_date": "2026/12/01", "market_state": "ACTIVE"},
+        {"market_state": 1},
+    ],
+    ids=["bad-date-text", "date-not-text", "bad-date-while-active", "state-not-text"],
+)
+def test_unreadable_market_state_or_delisting_date_blocks_new_buys(changes, caplog):
+    # 버리면 마지막 상태(ACTIVE 등)가 남아 상장 폐지 예고를 놓친다. 둘 다 None으로 넣는다.
+    from autotrader.core.notices import ticker_blocks_buy
+
+    caplog.set_level(logging.DEBUG)
+    env = scripted_env(([btc_frame(**changes)], None))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        iterator, _ = await e.open_ticker(stream)
+        event = await e.next(iterator)
+        assert event == expected_ticker(
+            "KRW-BTC",
+            timestamp_ms=event.timestamp_ms,
+            market_state=None,
+            delisting_date=None,
+        )
+        assert ticker_blocks_buy(event)
+
+    env.run(scenario)
+    assert app_warnings(caplog)
+    assert stream.skipped_messages == {}
+    assert "2026/12/01" not in caplog.text  # 값은 기록하지 않는다
+
+
+def test_skipped_messages_are_counted_by_type():
+    frames = [
+        UNREADABLE["not-json"],
+        UNREADABLE["array"],
+        UNREADABLE["missing-field"],
+        UNREADABLE["bad-code"],
+        STATUS_UP,  # 정상적으로 건너뛰는 것은 세지 않는다
+        '{"type":"trade","code":"KRW-BTC","trade_price":1}',
+        BTC_FRAME,
+    ]
+    env = scripted_env((frames, 1000))
+    stream = env.public()
+    assert stream.skipped_messages == {}
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
+        assert [type(item) for item in items] == [StreamOpened, TickerEvent]
+        assert type(error) is StreamClosed
+
+    env.run(scenario)
+    assert stream.skipped_messages == {"unknown": 2, "ticker": 2}
+    with pytest.raises(TypeError):
+        stream.skipped_messages["ticker"] = 0  # 읽기 전용
 
 
 @pytest.mark.parametrize(
@@ -1485,6 +1659,44 @@ def test_private_without_credentials_fails_before_connecting(env, credentials):
     assert env.fake.connections == []
 
 
+def test_failing_credentials_provider_is_an_auth_error_without_its_text(env, caplog):
+    # 키 제공 함수(keyring 등)의 예외는 core 오류로 바꾼다. 원래 문구(비밀이 있을 수 있다)는
+    # 남기지 않고 타입 이름만 둔다. 연결하지 않는다.
+    caplog.set_level(logging.DEBUG)
+    marker = "uat-secret-in-provider-error-0001"
+
+    def credentials() -> UpbitCredentials:
+        raise RuntimeError(f"keyring 실패 {marker}")
+
+    stream = env.private(credentials=credentials)
+    result: dict[str, Any] = {}
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.events()))
+        assert items == []
+        result["error"] = error
+        result["locals"] = app_frame_locals(error)
+
+    env.run(scenario)
+    error = result["error"]
+    assert type(error) is StreamAuthError
+    assert error.error_name == "CREDENTIALS_ERROR"
+    assert "RuntimeError" in (error.message or "")
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    blob = "\n".join(
+        [
+            str(error),
+            repr(error),
+            "".join(traceback.format_exception(error)),
+            result["locals"],
+            caplog.text,
+        ]
+    )
+    assert marker not in blob
+    assert env.fake.connections == []
+
+
 def test_private_works_again_once_credentials_appear(env):
     current: list[UpbitCredentials | None] = [None]
     stream = env.private(credentials=lambda: current[0])
@@ -1725,7 +1937,9 @@ def test_announcement_events(env):
             timestamp_ms=now_ms(e.clock) - 61_000,
         )
         assert created.uuid.isdigit()
-        assert created.listed_at.utcoffset() is not None
+        # REST(aware_utc)와 같은 관례: UTC aware(받은 +09:00을 UTC로 바꾼다).
+        for moment in (created.listed_at, created.first_listed_at, updated.listed_at):
+            assert moment.tzinfo is UTC
         assert updated.event_type == "UPDATED"
         assert updated.uuid == created.uuid
         assert updated.first_listed_at == first_time
@@ -1879,31 +2093,71 @@ class _Failing:
         return False
 
 
-class ConnectSpy:
-    def __init__(self, error: BaseException) -> None:
-        self.error = error
-        self.calls: list[tuple[str, dict[str, Any]]] = []
+class _Opened:
+    """await하면 주어진 연결 대역(websockets ClientConnection 자리)을 주는 connect 결과."""
 
-    def __call__(self, uri: str, **kwargs: Any) -> _Failing:
+    def __init__(self, ws: Any) -> None:
+        self._ws = ws
+
+    def __await__(self) -> Any:
+        return self._ws
+        yield  # 생성기로 만든다(도달하지 않음)
+
+
+class ConnectSpy:
+    def __init__(self, error: BaseException | None, ws: Any = None) -> None:
+        self.error = error
+        self.ws = ws
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.replaced: list[type] = []  # 바꿔 끼운 어댑터의 connect 클래스
+
+    def __call__(self, uri: str, **kwargs: Any) -> Any:
         self.calls.append((uri, kwargs))
+        if self.error is None:
+            return _Opened(self.ws)
         return _Failing(self.error)
 
 
-def spy_on_websockets_connect(monkeypatch: pytest.MonkeyPatch, error: BaseException) -> ConnectSpy:
-    """websockets.asyncio.client.connect를 바꿔 끼운다(어댑터가 이름을 가져다 썼어도)."""
+def spy_on_websockets_connect(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException | None, *, ws: Any = None
+) -> ConnectSpy:
+    """websockets.asyncio.client.connect와 어댑터의 그 하위 클래스를 바꿔 끼운다.
+
+    어댑터는 리다이렉트를 끈 하위 클래스로 연결한다(ADR-0006). 어떤 이름으로 가져다 썼든
+    connect 자신이나 그 하위 클래스인 모듈 속성을 모두 바꾼다. error가 None이면 ws를 준다.
+    """
     import websockets
     import websockets.asyncio.client as client
 
     from autotrader.adapters.upbit import websocket as module
 
-    spy = ConnectSpy(error)
+    spy = ConnectSpy(error, ws)
     original = client.connect
     monkeypatch.setattr(client, "connect", spy)
     monkeypatch.setattr(websockets, "connect", spy, raising=False)
     for name, value in list(vars(module).items()):
-        if value is original:
+        if value is original or (isinstance(value, type) and issubclass(value, original)):
+            if value is not original:
+                spy.replaced.append(value)
             monkeypatch.setattr(module, name, spy)
     return spy
+
+
+def adapter_connect_class() -> type:
+    """어댑터가 쓰는 connect 하위 클래스(하나여야 한다)."""
+    import websockets.asyncio.client as client
+
+    from autotrader.adapters.upbit import websocket as module
+
+    found = {
+        value
+        for value in vars(module).values()
+        if isinstance(value, type) and issubclass(value, client.connect)
+    }
+    assert len(found) == 1, found
+    (cls,) = found
+    assert cls is not client.connect
+    return cls
 
 
 def header_pairs(value: Any) -> list[tuple[str, str]]:
@@ -1942,7 +2196,161 @@ def test_connector_passes_the_decided_options(monkeypatch):
     assert kwargs["user_agent_header"] == APP_UA
     assert header_pairs(kwargs["additional_headers"]) == [("X-Test", "1")]
     assert kwargs.get("open_timeout") == 10
+    assert kwargs.get("close_timeout") == 5
     assert kwargs.get("max_size", 2**20) == 2**20
+    assert spy.replaced  # 리다이렉트를 끈 하위 클래스로 불렀다
+    # 라이브러리는 DEBUG에서 요청 헤더(Authorization)·프레임 원문을 기록한다. 로거 단계와
+    # 상관없이 DEBUG를 내지 않는 LoggerAdapter를 넘긴다(앱이 로그 설정을 바꿔도 그대로).
+    wire = kwargs["logger"]
+    assert isinstance(wire, logging.LoggerAdapter)
+    wire.logger.setLevel(logging.DEBUG)
+    try:
+        assert wire.isEnabledFor(logging.DEBUG) is False
+        assert wire.isEnabledFor(logging.INFO) is True
+    finally:
+        wire.logger.setLevel(logging.NOTSET)
+
+
+def test_connector_does_not_follow_redirects():
+    # ADR-0006: 리다이렉트를 따라가지 않는다. 3xx는 InvalidStatus 그대로(→ StreamConnectFailed).
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    cls = adapter_connect_class()
+    connector = cls("wss://api.upbit.com/websocket/v1")  # 만들기만 한다(연결하지 않는다)
+    for status in (300, 301, 302, 303, 307, 308):
+        for location in ("wss://api.upbit.com/elsewhere", "wss://evil.example/x", "/again"):
+            exc = InvalidStatus(Response(status, "redirect", Headers({"Location": location}), b""))
+            assert connector.process_redirect(exc) is exc
+
+
+@pytest.mark.parametrize("url", ["WSS://API.UPBIT.COM/websocket/v1", "Wss://api.upbit.com/x"])
+def test_connector_uses_tls_for_wss_in_any_letter_case(monkeypatch, url):
+    spy = spy_on_websockets_connect(monkeypatch, refused())
+    context = strict_context()
+
+    with pytest.raises(StreamConnectFailed):
+        asyncio.run(make_connector(tls_context=context).connect(url, headers=[]))
+
+    ((_, kwargs),) = spy.calls
+    assert kwargs["ssl"] is context
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["ws://api.upbit.com/websocket/v1", "WS://api.upbit.com/websocket/v1", "ws://10.1.2.3/x"],
+)
+def test_connector_refuses_plain_ws_outside_loopback(monkeypatch, url):
+    spy = spy_on_websockets_connect(monkeypatch, refused())
+
+    with pytest.raises(ValueError, match="ws://"):
+        asyncio.run(make_connector().connect(url, headers=[]))
+
+    assert spy.calls == []
+
+
+@pytest.mark.parametrize(
+    "url", ["ws://localhost:9/x", "ws://[::1]:9/x", "ws://127.0.0.1:9/x", "WS://LocalHost:9/x"]
+)
+def test_connector_allows_plain_ws_on_loopback(monkeypatch, url):
+    spy = spy_on_websockets_connect(monkeypatch, refused())
+
+    with pytest.raises(StreamConnectFailed):
+        asyncio.run(make_connector().connect(url, headers=[]))
+
+    ((_, kwargs),) = spy.calls
+    assert kwargs.get("ssl") is None
+
+
+@pytest.mark.parametrize("url", ["wss://", "https://api.upbit.com/x", "wss://a.b/x#frag"])
+def test_connector_maps_an_invalid_uri_to_connect_failed(url):
+    # 실제 라이브러리(InvalidURI는 연결 전에 난다. 네트워크는 차단 hook이 막는다).
+    with pytest.raises(StreamConnectFailed) as info:
+        asyncio.run(make_connector().connect(url, headers=[]))
+
+    assert info.value.http_status is None
+    assert info.value.reason == "InvalidURI"
+    assert info.value.__cause__ is None
+    assert info.value.__context__ is None
+
+
+class _ClosedWs:
+    """recv·send·ping이 주어진 ConnectionClosed를 내는 ClientConnection 대역."""
+
+    close_code = 1000
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    async def recv(self) -> Any:
+        raise self._error
+
+    async def send(self, text: str) -> None:
+        raise self._error
+
+    async def ping(self) -> None:
+        raise self._error
+
+    async def close(self, code: int = 1000) -> None:
+        return None
+
+
+def _close_frames() -> list[Any]:
+    from websockets.frames import Close
+
+    return [
+        pytest.param(Close(4000, "srv"), Close(1000, ""), 4000, id="received-first"),
+        pytest.param(None, Close(1000, ""), 1000, id="only-sent"),
+        pytest.param(None, None, 1006, id="none"),
+    ]
+
+
+@pytest.mark.parametrize(("rcvd", "sent", "code"), _close_frames())
+def test_connection_close_code_prefers_the_received_frame_then_the_sent_one(
+    monkeypatch, rcvd, sent, code
+):
+    from websockets.exceptions import ConnectionClosedError
+
+    both = rcvd is not None and sent is not None
+    closed = ConnectionClosedError(rcvd, sent, rcvd_then_sent=True if both else None)
+    spy_on_websockets_connect(monkeypatch, None, ws=_ClosedWs(closed))
+
+    async def main() -> list[StreamClosed]:
+        conn = await make_connector().connect("ws://127.0.0.1:9/x", headers=[])
+        found = []
+        for action in (conn.recv, lambda: conn.send("x"), conn.ping):
+            with pytest.raises(StreamClosed) as info:
+                await action()
+            found.append(info.value)
+        return found
+
+    assert [error.close_code for error in asyncio.run(main())] == [code] * 3
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param("concurrency", id="concurrency"),
+        pytest.param("protocol", id="protocol"),
+    ],
+)
+def test_connection_maps_other_library_errors_to_stream_closed(monkeypatch, error):
+    from websockets.exceptions import ConcurrencyError, ProtocolError
+
+    failure = ConcurrencyError("two recv (test)") if error == "concurrency" else ProtocolError("x")
+    spy_on_websockets_connect(monkeypatch, None, ws=_ClosedWs(failure))
+
+    async def main() -> list[StreamClosed]:
+        conn = await make_connector().connect("ws://127.0.0.1:9/x", headers=[])
+        found = []
+        for action in (conn.recv, lambda: conn.send("x"), conn.ping):
+            with pytest.raises(StreamClosed) as info:
+                await action()
+            found.append(info.value)
+        return found
+
+    assert all(e.reason == type(failure).__name__ for e in asyncio.run(main()))
 
 
 def test_connector_user_agent_and_open_timeout_options(monkeypatch):
@@ -2062,7 +2470,17 @@ def test_tls_context_must_be_an_ssl_context(value):
 
 def _handshake_failures() -> list[Any]:
     from websockets.datastructures import Headers
-    from websockets.exceptions import InvalidHeader, InvalidMessage, InvalidStatus
+    from websockets.exceptions import (
+        InvalidHeader,
+        InvalidMessage,
+        InvalidProxy,
+        InvalidStatus,
+        InvalidURI,
+        PayloadTooBig,
+        ProtocolError,
+        SecurityError,
+        WebSocketException,
+    )
     from websockets.http11 import Response
 
     def status(code: int) -> InvalidStatus:
@@ -2077,6 +2495,15 @@ def _handshake_failures() -> list[Any]:
         pytest.param(status(503), 503, id="http-503"),
         pytest.param(InvalidMessage("did not receive a valid HTTP response"), None, id="garbage"),
         pytest.param(InvalidHeader("Upgrade"), None, id="bad-upgrade"),
+        pytest.param(status(301), 301, id="http-301-redirect"),
+        pytest.param(status(308), 308, id="http-308-redirect"),
+        # 그 밖의 websockets 예외도 core 오류로(안전망).
+        pytest.param(InvalidURI("wss://x", "test"), None, id="invalid-uri"),
+        pytest.param(InvalidProxy("http://p", "test"), None, id="invalid-proxy"),
+        pytest.param(SecurityError("more than 10 redirects (test)"), None, id="security"),
+        pytest.param(ProtocolError("test"), None, id="protocol"),
+        pytest.param(PayloadTooBig(2**21, 2**20), None, id="payload-too-big"),
+        pytest.param(WebSocketException("test"), None, id="base-exception"),
     ]
 
 
@@ -2091,6 +2518,9 @@ def test_connector_maps_connection_failures_to_connect_failed(monkeypatch, failu
         )
 
     assert info.value.http_status == http_status
+    assert type(info.value) is StreamConnectFailed
+    assert info.value.__cause__ is None
+    assert info.value.__context__ is None  # 라이브러리 예외(요청 정보)를 잇지 않는다
     text = "\n".join(
         [str(info.value), repr(info.value), "".join(traceback.format_exception(info.value))]
     )

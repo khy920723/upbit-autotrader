@@ -8,6 +8,7 @@
   (tests/unit/test_architecture.py가 검사한다).
 - 최소 TLS 1.2, 호스트 이름 확인, 인증서 필수.
 - 문맥은 부를 때마다 새로 만든다. 한쪽이 고쳐도 다른 쪽에 번지지 않는다.
+- 호출 쪽이 문맥을 직접 줄 때는 `check_tls_context`로 앱 정책보다 약한지 검사한다(REST·웹소켓).
 - 네트워크에 연결하지 않는다(파일만 읽는다).
 근거: docs/10-management/decision-log.md D-093, ADR-0006.
 """
@@ -51,3 +52,21 @@ def create_tls_context(*, cafile: str | None = None) -> ssl.SSLContext:
     # create_default_context는 SSLKEYLOGFILE이 있으면 그 파일에 세션 키를 쓰게 한다. 끈다.
     context.keylog_filename = None
     return context
+
+
+def check_tls_context(context: object) -> None:
+    """주어진 TLS 문맥이 앱 정책(호스트 이름 확인, 인증서 필수, 최소 TLS 1.2)보다 약하면 거부.
+
+    예외: ssl.SSLContext가 아니면 TypeError, 약하면 ValueError(문구에 "tls_context").
+    """
+    if not isinstance(context, ssl.SSLContext):
+        raise TypeError(f"tls_context는 ssl.SSLContext여야 한다: {type(context).__name__}")
+    if context.check_hostname is not True:
+        raise ValueError("tls_context는 호스트 이름을 확인해야 한다(check_hostname=True)")
+    if context.verify_mode != ssl.CERT_REQUIRED:
+        raise ValueError("tls_context는 서버 인증서를 요구해야 한다(CERT_REQUIRED)")
+    # MINIMUM_SUPPORTED(-2)·MAXIMUM_SUPPORTED(-1)는 실제 버전이 아니라 거부한다.
+    if int(context.minimum_version) < int(ssl.TLSVersion.TLSv1_2):
+        raise ValueError(
+            f"tls_context의 최소 버전은 TLS 1.2 이상이어야 한다: {context.minimum_version.name}"
+        )

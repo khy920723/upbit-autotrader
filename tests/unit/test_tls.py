@@ -14,6 +14,9 @@
   깨진 PEM이면 ssl.SSLError. 둘 다 OSError의 하위 타입이라 부르는 쪽은 OSError 하나로 잡을 수 있다.
 - `ca_bundle_path() -> str`: `certifi.where()`.
 - `ca_bundle_version() -> str`: certifi 배포 버전(예: "2026.10.23").
+- `check_tls_context(context)`: 호출 쪽이 준 문맥 검사(REST·웹소켓이 함께 쓴다). ssl.SSLContext가
+  아니면 TypeError, 호스트 이름 확인·CERT_REQUIRED·최소 TLS 1.2 이상이 아니면 ValueError(문구에
+  "tls_context"). 앱 문맥(create_tls_context)은 통과한다. 자세한 경우는 test_http·test_websocket.
 
 네트워크에 연결하지 않는다. 임시 묶음은 실제 certifi 묶음에서 첫 인증서를 잘라 만든다.
 """
@@ -164,6 +167,16 @@ def test_sslkeylogfile_environment_variable_is_ignored(
     )
 
     assert context.keylog_filename is None
+
+
+def test_check_tls_context_accepts_the_app_context_and_rejects_weaker_ones(one_cert_bundle):
+    tls.check_tls_context(tls.create_tls_context())
+    weak = tls.create_tls_context(cafile=str(one_cert_bundle))
+    weak.check_hostname = False
+    with pytest.raises(ValueError, match="tls_context"):
+        tls.check_tls_context(weak)
+    with pytest.raises(TypeError, match="tls_context"):
+        tls.check_tls_context("cacert.pem")
 
 
 def test_each_call_returns_a_new_context():

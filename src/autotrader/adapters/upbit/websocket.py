@@ -16,15 +16,25 @@ core 포트(core/ports.py PublicStream·PrivateStream)를 구현한다. 연결 �
   거부), 모델의 *_ms는 int. `{"status":"UP"}`과 구독하지 않은 type은 건너뛴다. 서버 오류
   `{"error":{...}}`는 StreamError 계열로 끝낸다(서버가 오류 뒤 1000으로 끊어도 오류가 먼저다).
   읽을 수 없는 메시지는 그 메시지만 건너뛰고 앱 버그로 WARNING을 남긴다(원문·값은 기록하지 않는다).
+  건너뛴 수는 `skipped_messages`(type별)로 센다. 안전 쪽 예외 둘(B2 리뷰): ticker의
+  market_state·delisting_date를 읽을 수 없으면 버리지 않고 둘 다 None(신규 매수를 막는다),
+  myOrder·myAsset을 읽을 수 없으면 StreamClosed(reason "unreadable_<type>")로 끝낸다(감시가 다시
+  연결하고 재연결 뒤 REST 대조가 돈다). 공지 시각은 UTC aware datetime이다.
 - 닫기: 끝나는 방식과 상관없이(aclose·취소·오류) PING 태스크를 끝내고 연결을 닫는다. 닫기에서 난
   오류는 결과를 덮지 않고 기록만 한다. 두 번째 취소는 닫기를 기다리지 않고 CancelledError로 끝낸다.
 - 비공개: 연결마다 키 제공 함수를 불러 새 JWT(HS512, access_key·nonce, query_hash 없음)를
   `Authorization: Bearer` 헤더 하나로 보낸다. 키가 없으면 연결하지 않고 StreamAuthError
-  (error_name "NO_CREDENTIALS"). 헤더 목록은 repr이 값을 가리는 시퀀스라 traceback 지역 변수·
-  로그에 토큰이 남지 않는다. 라이브러리의 DEBUG 로그(요청 헤더·프레임 원문)도 내보내지 않는다.
-- WebsocketsConnector: websockets.asyncio.client.connect를 감싼다. Origin 없음, 앱 User-Agent,
-  proxy=None(환경 변수 프록시 무시), ping_interval=None, wss면 앱 TLS 문맥(adapters/tls.py,
-  커넥터마다 새로), 1 MiB 넘는 메시지 거부. 라이브러리 예외는 core 오류로 바꾼다.
+  (error_name "NO_CREDENTIALS"), 키 제공 함수가 예외를 내면 StreamAuthError("CREDENTIALS_ERROR",
+  문구에는 예외 타입 이름만). 헤더 목록은 repr이 값을 가리는 시퀀스라 traceback 지역 변수·
+  로그에 토큰이 남지 않는다. 라이브러리의 DEBUG 로그(요청 헤더·프레임 원문)도 내보내지 않는다
+  (로거 단계가 아니라 DEBUG를 버리는 LoggerAdapter로. 앱이 로그 설정을 바꿔도 그대로다).
+- 주소: wss:// 또는 ws://(대소문자 무관). ws://는 루프백(127.0.0.1, ::1, localhost)만(시험용).
+  ping_interval은 0 초과 120 미만.
+- WebsocketsConnector: websockets.asyncio.client.connect의 하위 클래스로 연다. 리다이렉트를
+  따라가지 않는다(ADR-0006: 3xx는 StreamConnectFailed(http_status=3xx), 핸드셰이크는 1번).
+  Origin 없음, 앱 User-Agent, proxy=None(환경 변수 프록시 무시), ping_interval=None, wss면 앱 TLS
+  문맥(adapters/tls.py, 커넥터마다 새로), 1 MiB 넘는 메시지 거부. 라이브러리 예외(websockets
+  예외 전체·OSError·TimeoutError)는 core 오류로 바꾼다.
 근거: CLAUDE.md "업비트 API 주의", docs/05-integration/upbit-api.md 2장·9장(D-080), D-091, D-093,
 INV-07·13·14·16, tests/unit/upbit/test_websocket.py docstring.
 """
@@ -39,17 +49,25 @@ from collections import deque
 from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Any, ClassVar, Final, Protocol
 
-from websockets.asyncio.client import ClientConnection
-from websockets.asyncio.client import connect as _websockets_connect
-from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
+from websockets.asyncio import client as _client
+from websockets.exceptions import (
+    ConnectionClosed,
+    InvalidStatus,
+    InvalidURI,
+    WebSocketException,
+)
+from websockets.uri import WebSocketURI, parse_uri
 
-from autotrader.adapters.tls import create_tls_context
+from autotrader.adapters.tls import check_tls_context, create_tls_context
 from autotrader.adapters.upbit.auth import Credentials, make_token
 from autotrader.adapters.upbit.convert import (
+    SHAPE_ERRORS,
     ResponseShapeError,
     ShapeFailure,
+    aware_utc,
     check_market,
     check_markets,
     dec,
@@ -61,7 +79,7 @@ from autotrader.adapters.upbit.convert import (
     to_int,
     try_parse,
 )
-from autotrader.adapters.upbit.http import DEFAULT_USER_AGENT, _check_tls_context
+from autotrader.adapters.upbit.http import DEFAULT_USER_AGENT
 from autotrader.core.clock import Clock
 from autotrader.core.errors import (
     StreamAuthError,
@@ -84,10 +102,23 @@ from autotrader.core.ports import PrivateStreamItem, PublicStreamItem
 
 logger = logging.getLogger(__name__)
 
-# websockets는 DEBUG에서 요청 헤더(Authorization 포함)와 프레임 원문(주문·잔고)을 기록한다.
-# 앱 로그 설정과 상관없이 그 기록이 나가지 않게 전용 로거의 단계를 INFO로 고정한다.
-_wire_logger = logging.getLogger(f"{__name__}.wire")
-_wire_logger.setLevel(logging.INFO)
+
+class _NoDebugLogger(logging.LoggerAdapter[logging.Logger]):
+    """DEBUG 이하를 버리는 로거. websockets에 넘긴다(INFO 이상은 그대로 앱 로그로 간다).
+
+    websockets는 DEBUG에서 요청 헤더(Authorization 포함)와 프레임 원문(주문·잔고)을 기록한다.
+    연결을 만들 때 `isEnabledFor(DEBUG)`를 보고 참일 때만 남긴다. 로거 단계(setLevel)는 앱 로그
+    설정(dictConfig가 하위 로거 단계를 NOTSET으로 되돌리는 경우 등)이 바꿀 수 있어 기대지 않는다.
+    """
+
+    def isEnabledFor(self, level: int) -> bool:
+        return level > logging.DEBUG and self.logger.isEnabledFor(level)
+
+    def debug(self, msg: object, *args: object, **kwargs: Any) -> None:
+        return None
+
+
+_wire_logger = _NoDebugLogger(logging.getLogger(f"{__name__}.wire"))
 
 PUBLIC_URL: Final = "wss://api.upbit.com/websocket/v1"
 PRIVATE_URL: Final = "wss://api.upbit.com/websocket/v1/private"
@@ -102,6 +133,15 @@ MINUTE_BUDGET: Final = 50
 
 NO_CREDENTIALS: Final = "NO_CREDENTIALS"
 """키가 없어 연결하지 않았을 때 StreamAuthError의 error_name(서버 이름이 아니라 앱이 정한 것)."""
+CREDENTIALS_ERROR: Final = "CREDENTIALS_ERROR"
+"""키 제공 함수가 예외를 내 연결하지 않았을 때 StreamAuthError의 error_name(앱이 정한 것)."""
+MAX_PING_INTERVAL: Final = 120.0
+"""서버는 120초 동안 주고받은 것이 없으면 끊는다. PING 간격은 이보다 짧아야 한다."""
+UNKNOWN_TYPE: Final = "unknown"
+"""skipped_messages에서 type을 알 수 없는 메시지(UTF-8·JSON·객체가 아님)의 열쇠."""
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+_UNSKIPPABLE = frozenset({"myOrder", "myAsset"})  # 읽지 못하면 건너뛰지 않고 연결을 끝낸다
 
 _EPS = 1e-9  # Clock 초(float) 비교 오차
 _STREAM_TYPES = ("SNAPSHOT", "REALTIME")
@@ -162,6 +202,25 @@ class _Headers(tuple[tuple[str, str], ...]):
     __str__ = __repr__
 
 
+def _parse_url(url: str) -> WebSocketURI:
+    """wss:// 또는 ws://(대소문자 무관) 주소. 모양이 틀리면 InvalidURI, 루프백이 아닌 ws://면
+    ValueError(암호화 없는 주소는 루프백 시험에만 쓴다)."""
+    target = parse_uri(url)
+    if not target.secure and target.host.lower() not in _LOOPBACK_HOSTS:
+        raise ValueError("ws://(암호화 없음) 주소는 루프백(127.0.0.1, ::1, localhost)만 쓴다")
+    return target
+
+
+def _check_stream_url(url: str) -> None:
+    """스트림 생성자용: 틀린 주소와 루프백이 아닌 ws://는 ValueError."""
+    try:
+        _parse_url(url)
+        return
+    except InvalidURI:
+        pass
+    raise ValueError("웹소켓 주소는 wss:// 또는 ws://로 시작하는 올바른 주소여야 한다")
+
+
 def _check_headers(headers: _Headers) -> None:
     names = [name.lower() for name, _ in headers]
     if len(names) != len(set(names)):
@@ -176,8 +235,22 @@ def _check_headers(headers: _Headers) -> None:
 
 
 def _closed(exc: ConnectionClosed) -> StreamClosed:
-    code = exc.rcvd.code if exc.rcvd is not None else 1006
+    """받은 close 프레임의 코드, 없으면 보낸 것, 둘 다 없으면 1006."""
+    frame = exc.rcvd if exc.rcvd is not None else exc.sent
+    code = frame.code if frame is not None else 1006
     return StreamClosed(close_code=code, reason=f"연결이 닫혔다({type(exc).__name__})")
+
+
+class _ConnectWithoutRedirects(_client.connect):
+    """websockets connect에서 리다이렉트만 끈다(ADR-0006).
+
+    기본 connect는 3xx + Location을 따라가 다시 핸드셰이크한다(같은 출처면 Authorization까지
+    다시 보낸다). 여기서는 받은 InvalidStatus를 그대로 돌려줘 connect가 그 예외를 올린다
+    (→ StreamConnectFailed(http_status=3xx)). 그래서 connect 한 번 = 핸드셰이크 한 번이다.
+    """
+
+    def process_redirect(self, exc: Exception) -> Exception | str:
+        return exc
 
 
 class _WebsocketsConnection:
@@ -185,7 +258,7 @@ class _WebsocketsConnection:
 
     __slots__ = ("_ws",)
 
-    def __init__(self, ws: ClientConnection) -> None:
+    def __init__(self, ws: _client.ClientConnection) -> None:
         self._ws = ws
 
     def __repr__(self) -> str:
@@ -195,27 +268,33 @@ class _WebsocketsConnection:
     def close_code(self) -> int | None:
         return self._ws.close_code
 
+    def _failure(self, exc: WebSocketException) -> StreamClosed:
+        if isinstance(exc, ConnectionClosed):
+            return _closed(exc)
+        # 그 밖의 라이브러리 예외(ConcurrencyError 등)도 core 오류로. 연결은 쓸 수 없다고 본다.
+        return StreamClosed(close_code=self._ws.close_code, reason=type(exc).__name__)
+
     async def send(self, text: str) -> None:
         try:
             await self._ws.send(text)
             return
-        except ConnectionClosed as exc:
-            failure = _closed(exc)
+        except WebSocketException as exc:
+            failure = self._failure(exc)
         raise failure
 
     async def recv(self) -> str | bytes:
         try:
             return await self._ws.recv()
-        except ConnectionClosed as exc:
-            failure = _closed(exc)
+        except WebSocketException as exc:
+            failure = self._failure(exc)
         raise failure
 
     async def ping(self) -> None:
         try:
             await self._ws.ping()  # PONG을 기다리는 future는 버린다(라이브러리가 정리한다)
             return
-        except ConnectionClosed as exc:
-            failure = _closed(exc)
+        except WebSocketException as exc:
+            failure = self._failure(exc)
         raise failure
 
     async def close(self, code: int = 1000) -> None:
@@ -228,7 +307,8 @@ class WebsocketsConnector:
 
     tls_context: 생략하면 `create_tls_context()`로 이 연결기만의 문맥을 새로 만든다(REST와 공유하지
     않는다). 주면 그대로 쓰되 앱 정책보다 약하면 ValueError, ssl.SSLContext가 아니면 TypeError.
-    ws:// 주소(루프백 시험)에는 TLS 문맥을 넘기지 않는다.
+    ws:// 주소(루프백 시험)에는 TLS 문맥을 넘기지 않는다. 루프백이 아닌 ws:// 주소는 ValueError
+    (연결하지 않는다), 모양이 틀린 주소는 StreamConnectFailed(reason "InvalidURI").
     """
 
     def __init__(
@@ -240,7 +320,7 @@ class WebsocketsConnector:
         close_timeout: float = 5.0,
     ) -> None:
         if tls_context is not None:
-            _check_tls_context(tls_context)
+            check_tls_context(tls_context)
         if open_timeout <= 0 or close_timeout <= 0:
             raise ValueError("open_timeout·close_timeout은 0보다 커야 한다")
         self._user_agent = user_agent
@@ -257,9 +337,15 @@ class WebsocketsConnector:
     async def connect(self, url: str, *, headers: Sequence[tuple[str, str]]) -> WsConnection:
         headers = headers if isinstance(headers, _Headers) else _Headers(headers)
         _check_headers(headers)
-        tls: dict[str, Any] = {"ssl": self._tls_context} if url.startswith("wss://") else {}
         try:
-            ws = await _websockets_connect(
+            target = _parse_url(url)
+        except InvalidURI:
+            target = None
+        if target is None:
+            raise StreamConnectFailed(http_status=None, reason="InvalidURI")
+        tls: dict[str, Any] = {"ssl": self._tls_context} if target.secure else {}
+        try:
+            ws = await _ConnectWithoutRedirects(
                 url,
                 additional_headers=headers,
                 user_agent_header=self._user_agent,
@@ -274,10 +360,10 @@ class WebsocketsConnector:
                 **tls,
             )
             return _WebsocketsConnection(ws)
-        except InvalidStatus as exc:
+        except InvalidStatus as exc:  # 3xx(리다이렉트를 따라가지 않는다)·401·429 등
             status = exc.response.status_code
             failure = StreamConnectFailed(http_status=status, reason=f"핸드셰이크 HTTP {status}")
-        except (InvalidHandshake, ConnectionClosed, OSError, TimeoutError) as exc:
+        except (WebSocketException, OSError, TimeoutError) as exc:  # 라이브러리 예외 전체
             failure = StreamConnectFailed(http_status=None, reason=type(exc).__name__)
         # except 블록 밖에서 올려 라이브러리 예외(요청 정보가 든 프레임)를 잇지 않는다.
         raise failure
@@ -384,26 +470,46 @@ def _opt_date(value: Any) -> date | None:
         return datetime.fromisoformat(raw).date()
 
 
-def _aware(value: Any) -> datetime:
-    """시간대가 붙은 ISO 8601 시각(업비트는 +09:00). 시간대는 받은 그대로 둔다."""
-    moment = datetime.fromisoformat(text(value))
-    if moment.utcoffset() is None:
-        raise ResponseShapeError("시각에 시간대가 없다")
-    return moment
+def _listing(data: Mapping[str, Any], market: str) -> tuple[str | None, date | None]:
+    """(market_state, delisting_date). 있는데 읽을 수 없으면 둘 다 None(안전 쪽).
+
+    메시지를 버리면 마지막으로 받은 상태(ACTIVE 등)가 남아 상장 폐지 예고를 놓친다. None이면
+    core.notices.ticker_blocks_buy가 신규 매수를 막는다. 값은 기록하지 않는다.
+    """
+    try:
+        return opt_text(data.get("market_state")), _opt_date(data.get("delisting_date"))
+    except SHAPE_ERRORS as exc:
+        kind = type(exc).__name__
+    logger.warning(
+        "public 웹소켓 ticker(%s)의 market_state·delisting_date를 읽지 못해 비운다"
+        "(신규 매수를 막는다, 앱 버그 가능): %s",
+        market,
+        kind,
+    )
+    return None, None
 
 
 def _ticker(data: Mapping[str, Any]) -> TickerEvent:
     # 폐기 필드 is_trading_suspended·market_warning은 읽지 않는다.
+    market = check_market(data["code"])
+    trade_price = dec(data["trade_price"])
+    signed_change_rate = dec(data["signed_change_rate"])
+    acc_trade_price_24h = dec(data["acc_trade_price_24h"])
+    acc_trade_volume_24h = dec(data["acc_trade_volume_24h"])
+    timestamp_ms = to_int(data["timestamp"])
+    stream_type = _choice(data["stream_type"], _STREAM_TYPES)
+    # 다른 필드가 깨졌으면 위에서 건너뛴다. 상태만 깨졌을 때 이벤트를 내며 비운다.
+    market_state, delisting_date = _listing(data, market)
     return TickerEvent(
-        market=check_market(data["code"]),
-        trade_price=dec(data["trade_price"]),
-        signed_change_rate=dec(data["signed_change_rate"]),
-        acc_trade_price_24h=dec(data["acc_trade_price_24h"]),
-        acc_trade_volume_24h=dec(data["acc_trade_volume_24h"]),
-        market_state=opt_text(data.get("market_state")),
-        delisting_date=_opt_date(data.get("delisting_date")),
-        timestamp_ms=to_int(data["timestamp"]),
-        stream_type=_choice(data["stream_type"], _STREAM_TYPES),
+        market=market,
+        trade_price=trade_price,
+        signed_change_rate=signed_change_rate,
+        acc_trade_price_24h=acc_trade_price_24h,
+        acc_trade_volume_24h=acc_trade_volume_24h,
+        market_state=market_state,
+        delisting_date=delisting_date,
+        timestamp_ms=timestamp_ms,
+        stream_type=stream_type,
     )
 
 
@@ -456,8 +562,8 @@ def _announcement(data: Mapping[str, Any]) -> AnnouncementEvent:
         category=text(data["category"]),
         url=text(data["url"]),
         event_type=_choice(data["event_type"], _EVENT_TYPES),
-        listed_at=_aware(data["listed_at"]),
-        first_listed_at=_aware(data["first_listed_at"]),
+        listed_at=aware_utc(data["listed_at"]),
+        first_listed_at=aware_utc(data["first_listed_at"]),
         body=opt_text(data.get("body")),
         timestamp_ms=to_int(data["timestamp"]),
     )
@@ -494,10 +600,11 @@ class _UpbitStream:
         open_timeout: float,
         ticket: Callable[[], str],
     ) -> None:
-        if not url.startswith(("wss://", "ws://")):
-            raise ValueError("웹소켓 주소는 wss:// 또는 ws://로 시작한다")
-        if ping_interval <= 0 or open_timeout <= 0:
-            raise ValueError("ping_interval·open_timeout은 0보다 커야 한다")
+        _check_stream_url(url)
+        if not 0 < ping_interval < MAX_PING_INTERVAL:
+            raise ValueError("ping_interval은 0초보다 크고 120초보다 작아야 한다(120초 무송수신)")
+        if open_timeout <= 0:
+            raise ValueError("open_timeout은 0보다 커야 한다")
         self._connector = connector
         self._clock = clock
         self._url = url
@@ -507,9 +614,18 @@ class _UpbitStream:
         self._connects = _SlidingBudget(clock, CONNECT_LIMITS)
         self._messages = _SlidingBudget(clock, MESSAGE_LIMITS)
         self._opened = 0
+        self._skipped: dict[str, int] = {}
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(url={self._url!r})"
+
+    @property
+    def skipped_messages(self) -> Mapping[str, int]:
+        """읽지 못해 건너뛴 메시지 수(type별, type을 모르면 "unknown"). 읽기 전용, 모든 연결 합계.
+
+        status UP과 구독하지 않은 type은 세지 않는다. 연결을 끝낸 myOrder·myAsset도 세지 않는다.
+        """
+        return MappingProxyType(self._skipped)
 
     def _headers(self) -> _Headers:
         """연결 헤더(공개는 없음). 비공개는 키가 없으면 StreamAuthError."""
@@ -538,7 +654,7 @@ class _UpbitStream:
             while True:
                 frame = await self._receive(conn, pinger)
                 outcome = self._read(frame)
-                if isinstance(outcome, StreamError):
+                if isinstance(outcome, StreamError | StreamClosed):
                     raise outcome
                 if outcome is not None:
                     yield outcome
@@ -631,24 +747,24 @@ class _UpbitStream:
             await asyncio.wait({pinger})
 
     def _read(self, frame: str | bytes) -> Any:
-        """메시지 하나 → 이벤트, 서버 오류(StreamError), 건너뛸 것(None)."""
+        """메시지 하나 → 이벤트, 끝낼 오류(StreamError·StreamClosed), 건너뛸 것(None)."""
         if isinstance(frame, bytes):
             try:
                 frame = frame.decode("utf-8")
             except UnicodeDecodeError:
-                return self._skip("UTF-8이 아니다")
+                return self._skip(UNKNOWN_TYPE, "UTF-8이 아니다")
         try:
             data = json.loads(
                 frame, parse_float=Decimal, parse_int=Decimal, parse_constant=_reject_constant
             )
         except ValueError:
-            return self._skip("JSON이 아니다")
+            return self._skip(UNKNOWN_TYPE, "JSON이 아니다")
         if not isinstance(data, dict):
-            return self._skip("JSON 객체가 아니다")
+            return self._skip(UNKNOWN_TYPE, "JSON 객체가 아니다")
         if "error" in data:
             error = data["error"]
             if not isinstance(error, dict) or not isinstance(error.get("name"), str):
-                return self._skip("오류 메시지 형식이 다르다")
+                return self._skip("error", "오류 메시지 형식이 다르다")
             message = error.get("message")
             return _server_error(
                 error["name"],
@@ -661,13 +777,26 @@ class _UpbitStream:
             # {"status":"UP"}, LIST_SUBSCRIPTIONS 응답, 구독하지 않은 type.
             return None
         outcome = try_parse(parser, data)
-        if isinstance(outcome, ShapeFailure):
-            return self._skip(f"{kind} 필드 형식이 다르다({outcome.kind})")
-        return outcome
+        if not isinstance(outcome, ShapeFailure):
+            return outcome
+        if kind in _UNSKIPPABLE:
+            # 주문·잔고 변화를 조용히 버리면 대조에 공백이 생긴다. 끊어 감시가 다시 연결하게 한다
+            # (재연결 뒤 REST 대조가 돈다). 원문·값은 넣지 않는다.
+            logger.warning(
+                "%s 웹소켓 %s 메시지를 읽지 못해 연결을 끝낸다(앱 버그 가능): 필드 형식(%s)",
+                self._name,
+                kind,
+                outcome.kind,
+            )
+            return StreamClosed(close_code=None, reason=f"unreadable_{kind}")
+        return self._skip(kind, f"필드 형식이 다르다({outcome.kind})")
 
-    def _skip(self, why: str) -> None:
+    def _skip(self, kind: str, why: str) -> None:
+        self._skipped[kind] = self._skipped.get(kind, 0) + 1
         # 원문·값은 넣지 않는다(비공개 메시지에는 주문·잔고가 있다).
-        logger.warning("%s 웹소켓 메시지를 읽지 못해 건너뛴다(앱 버그 가능): %s", self._name, why)
+        logger.warning(
+            "%s 웹소켓 %s 메시지를 읽지 못해 건너뛴다(앱 버그 가능): %s", self._name, kind, why
+        )
 
 
 class UpbitPublicStream(_UpbitStream):
@@ -739,8 +868,19 @@ class UpbitPrivateStream(_UpbitStream):
         )
         self._credentials = credentials
 
+    def _load_credentials(self) -> Credentials | None:
+        try:
+            return self._credentials()
+        except Exception as exc:  # keyring 등. 원래 문구는 비밀을 담을 수 있어 타입 이름만 둔다
+            failure = StreamAuthError(
+                error_name=CREDENTIALS_ERROR,
+                message=f"업비트 키를 읽지 못해 연결하지 않았다({type(exc).__name__})",
+            )
+        # except 블록 밖에서 올려 원래 예외(__context__)를 잇지 않는다.
+        raise failure
+
     def _headers(self) -> _Headers:
-        creds = self._credentials()
+        creds = self._load_credentials()
         if creds is None:
             raise StreamAuthError(
                 error_name=NO_CREDENTIALS, message="업비트 키가 설정되지 않아 연결하지 않았다"

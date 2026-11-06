@@ -14,6 +14,11 @@ TIME_LIMIT). 스트림 어댑터와 함께 붙을 때는 url만 루프백 주소
 - 연결 실패: 거절된 포트, 핸드셰이크 HTTP 오류(401·429·503, 상태 보존), 핸드셰이크 무응답
   (open_timeout)은 StreamConnectFailed.
 - 프록시 환경 변수(HTTP_PROXY·HTTPS_PROXY·WS_PROXY 등)가 잘못된 주소여도 쓰지 않는다(proxy=None).
+- 리다이렉트를 따라가지 않는다(ADR-0006, B2 리뷰): 3xx + Location(같은 출처 ws, 다른 출처,
+  https, 자기 자신으로 도는 루프)은 모두 StreamConnectFailed(http_status=3xx)이고 서버가 본
+  핸드셰이크는 1번이다. 다른 출처 서버에는 아무 요청도 가지 않는다.
+- 라이브러리의 DEBUG 로그(요청 헤더 원문)는 앱이 로그 설정을 DEBUG로 바꿔도(dictConfig로
+  autotrader 로거 재설정 포함) 나가지 않는다.
 - 스트림 어댑터 + 기본 연결기 + SystemClock: 공개 구독·ticker·status UP·PING·서버 종료,
   비공개 JWT(HS512, access_key·nonce)·구독·myOrder·서버 종료, 연결 실패의 비밀 비노출.
 """
@@ -21,6 +26,8 @@ TIME_LIMIT). 스트림 어댑터와 함께 붙을 때는 url만 루프백 주소
 import asyncio
 import contextlib
 import json
+import logging
+import logging.config
 import socket
 import time
 import traceback
@@ -38,7 +45,9 @@ import websockets
 from fakes.canary import find_canaries, make_upbit_credentials
 from fakes.upbit_json import dumps, loads_raw
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.datastructures import Headers
 from websockets.frames import Opcode
+from websockets.http11 import Response
 
 import autotrader
 from autotrader.core.clock import SystemClock
@@ -66,6 +75,9 @@ MY_ORDER_EXAMPLE = loads_raw(
     (FIXTURES / "docs_examples" / "websocket-myorder.json").read_text(encoding="utf-8")
 )["example"]
 STATUS_UP = '{"status":"UP"}'
+# 루프백 서버 쪽 라이브러리 로그(받은 요청 헤더를 DEBUG로 남긴다)는 시험 대상이 아니라 끈다.
+SERVER_LOGGER = logging.getLogger("loopback.server")
+SERVER_LOGGER.setLevel(logging.INFO)
 PROXY_VARIABLES = (
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -130,13 +142,21 @@ Handler = Callable[[RecordingConnection, Loopback], Awaitable[None]]
 
 @contextlib.asynccontextmanager
 async def loopback(
-    handler: Handler, *, reject: HTTPStatus | None = None
+    handler: Handler,
+    *,
+    reject: HTTPStatus | None = None,
+    respond: Callable[[Loopback], Response] | None = None,
 ) -> AsyncIterator[Loopback]:
-    """127.0.0.1 임시 포트 서버. reject를 주면 핸드셰이크를 그 HTTP 상태로 거절한다."""
+    """127.0.0.1 임시 포트 서버. reject를 주면 핸드셰이크를 그 HTTP 상태로 거절한다.
+
+    respond를 주면 핸드셰이크마다 그 함수가 만든 HTTP 응답(예: 리다이렉트)을 준다.
+    """
     state = Loopback(port=0)
 
     def process_request(connection: ServerConnection, request: Any) -> Any:
         state.requests.append(request)
+        if respond is not None:
+            return respond(state)
         if reject is not None:
             return connection.respond(reject, "rejected (test)\n")
         return None
@@ -153,6 +173,7 @@ async def loopback(
         create_connection=RecordingConnection,
         process_request=process_request,
         ping_interval=None,
+        logger=SERVER_LOGGER,
     ) as server:
         state.port = server.sockets[0].getsockname()[1]
         yield state
@@ -419,6 +440,163 @@ def test_proxy_environment_variables_are_not_used(monkeypatch):
     assert run(scenario) == 1
 
 
+# ── 리다이렉트를 따라가지 않는다(ADR-0006) ────────────────
+
+
+def redirect_to(status: int, location: Callable[[Loopback], str]) -> Callable[[Loopback], Response]:
+    def respond(state: Loopback) -> Response:
+        headers = Headers([("Location", location(state)), ("Content-Length", "0")])
+        return Response(status, "Redirect (test)", headers, b"")
+
+    return respond
+
+
+REDIRECTS = {
+    # 같은 출처(같은 서버의 다른 경로): 라이브러리 기본값이면 Authorization까지 다시 보낸다.
+    "same-origin-ws": lambda state, other: f"ws://127.0.0.1:{state.port}/websocket/v1/elsewhere",
+    "relative": lambda state, other: "/websocket/v1/elsewhere",
+    "cross-origin": lambda state, other: f"ws://127.0.0.1:{other.port}/websocket/v1/private",
+    "https": lambda state, other: f"https://127.0.0.1:{other.port}/websocket/v1",
+    "loop": lambda state, other: f"ws://127.0.0.1:{state.port}/websocket/v1/private",
+}
+
+
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+@pytest.mark.parametrize("case", sorted(REDIRECTS))
+def test_redirects_are_not_followed(case, status):
+    location = REDIRECTS[case]
+
+    async def scenario() -> dict[str, Any]:
+        async with contextlib.AsyncExitStack() as stack:
+            other = await stack.enter_async_context(loopback(wait_for_close))
+            respond = redirect_to(status, lambda state: location(state, other))
+            server = await stack.enter_async_context(loopback(wait_for_close, respond=respond))
+            with pytest.raises(StreamConnectFailed) as info:
+                await make_connector().connect(
+                    server.url("/websocket/v1/private"),
+                    headers=[("Authorization", "Bearer uat.redirect-test.not-a-jwt")],
+                )
+            return {
+                "error": info.value,
+                "handshakes": len(server.requests),
+                "other": len(other.requests),
+            }
+
+    result = run(scenario)
+    assert result["error"].http_status == status
+    assert result["handshakes"] == 1  # 연결 한도 기록(연결 1회)과 실제 핸드셰이크 수가 같다
+    assert result["other"] == 0
+
+
+def test_private_stream_does_not_follow_a_redirect():
+    creds = make_upbit_credentials()
+
+    async def scenario() -> dict[str, Any]:
+        async with loopback(wait_for_close) as other:
+            respond = redirect_to(302, lambda state: other.url("/websocket/v1/private"))
+            async with loopback(wait_for_close, respond=respond) as server:
+                stream = make_private_stream(
+                    make_connector(),
+                    SystemClock(),
+                    lambda: creds,
+                    url=server.url("/websocket/v1/private"),
+                )
+                items, error = await collect(stream.events())
+                return {
+                    "items": items,
+                    "error": error,
+                    "handshakes": len(server.requests),
+                    "other": len(other.requests),
+                }
+
+    result = run(scenario)
+    assert result["items"] == []
+    assert type(result["error"]) is StreamConnectFailed
+    assert result["error"].http_status == 302
+    assert (result["handshakes"], result["other"]) == (1, 0)
+
+
+# ── 라이브러리 DEBUG 로그(요청 헤더 원문)를 내보내지 않는다 ───────
+
+
+@pytest.fixture
+def restore_autotrader_loggers() -> Any:
+    """dictConfig가 바꾼 autotrader·websockets 로거들의 단계·핸들러·전파를 테스트 뒤 되돌린다.
+
+    테스트 전에 없던 로거(dictConfig가 자리표시를 실제 로거로 바꾼 "autotrader" 등)는 기본값으로.
+    """
+
+    def ours() -> dict[str, logging.Logger]:
+        return {
+            name: logger
+            for name, logger in list(logging.Logger.manager.loggerDict.items())
+            if isinstance(logger, logging.Logger)
+            and (name == "autotrader" or name.startswith(("autotrader.", "websockets")))
+        }
+
+    saved = {
+        name: (logger.level, list(logger.handlers), logger.propagate, logger.disabled)
+        for name, logger in ours().items()
+    }
+    yield
+    for name, logger in ours().items():
+        level, handlers, propagate, disabled = saved.get(name, (logging.NOTSET, [], True, False))
+        logger.setLevel(level)
+        logger.handlers = handlers
+        logger.propagate = propagate
+        logger.disabled = disabled
+
+
+@pytest.mark.parametrize("reconfigure", [False, True], ids=["caplog-debug", "dictconfig-debug"])
+def test_library_debug_log_never_carries_the_handshake_headers(
+    reconfigure, caplog, restore_autotrader_loggers
+):
+    caplog.set_level(logging.DEBUG)
+    if reconfigure:
+        # 앱이 나중에 autotrader 로거를 DEBUG로 다시 설정하는 경우: 하위 로거 단계가 NOTSET으로
+        # 돌아간다. 로거 단계에 기대는 차단은 여기서 풀린다.
+        logging.config.dictConfig(
+            {
+                "version": 1,
+                "loggers": {"autotrader": {"level": "DEBUG"}},
+                "disable_existing_loggers": False,
+            }
+        )
+    creds = make_upbit_credentials()
+    canary = "uat-wire-log-canary-0001"
+
+    async def handler(connection: RecordingConnection, state: Loopback) -> None:
+        state.received.append(await connection.recv())
+        await connection.send(dumps(dict(MY_ORDER_EXAMPLE, identifier=canary)))
+        await connection.close(1000)
+
+    async def scenario() -> list[Any]:
+        async with loopback(handler) as server:
+            # 연결기를 바로 써도(헤더 원문 그대로) 남지 않는다.
+            conn = await make_connector().connect(
+                server.url("/websocket/v1/private"), headers=[("Authorization", f"Bearer {canary}")]
+            )
+            await conn.close()
+            stream = make_private_stream(
+                make_connector(),
+                SystemClock(),
+                lambda: creds,
+                url=server.url("/websocket/v1/private"),
+            )
+            items, _ = await collect(stream.events())
+            return items
+
+    items = run(scenario)
+    assert any(isinstance(item, MyOrderEvent) for item in items)  # 비공개 메시지를 받았다
+    logging.getLogger("autotrader.adapters.upbit.websocket").debug("capture-check (test)")
+    assert "capture-check (test)" in caplog.text  # DEBUG 기록이 실제로 잡히는 상태였다
+    assert "Authorization" not in caplog.text
+    assert "authorization" not in caplog.text.lower()
+    assert "eyJ" not in caplog.text
+    assert canary not in caplog.text
+    assert find_canaries(caplog.text, [creds.access_key, creds.secret_key]) == []
+
+
 # ── 스트림 어댑터 + 기본 연결기 + 실제 시계 ───────────────
 
 
@@ -541,13 +719,20 @@ def _app_frame_locals(error: BaseException) -> str:
     return "\n".join(parts)
 
 
-@pytest.mark.parametrize("failure", ["refused", "http-401"])
+async def _silent(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    await reader.read()  # 핸드셰이크에 답하지 않는다
+    writer.close()
+
+
+@pytest.mark.parametrize("failure", ["refused", "http-401", "http-301", "open-timeout"])
 def test_failed_private_connection_keeps_secrets_out_of_errors_and_locals(failure):
     creds = make_upbit_credentials()
 
     async def scenario() -> tuple[BaseException, str]:
         async def attempt(url: str) -> tuple[BaseException, str]:
-            stream = make_private_stream(make_connector(), SystemClock(), lambda: creds, url=url)
+            # open-timeout은 라이브러리의 open_timeout(TimeoutError) 경로다.
+            connector = make_connector(open_timeout=0.3)
+            stream = make_private_stream(connector, SystemClock(), lambda: creds, url=url)
             try:
                 await anext(stream.events())
             except StreamConnectFailed as exc:
@@ -557,6 +742,19 @@ def test_failed_private_connection_keeps_secrets_out_of_errors_and_locals(failur
 
         if failure == "refused":
             return await attempt(f"ws://127.0.0.1:{free_port()}/websocket/v1/private")
+        if failure == "open-timeout":
+            silent = await asyncio.start_server(_silent, "127.0.0.1", 0)
+            try:
+                port = silent.sockets[0].getsockname()[1]
+                return await attempt(f"ws://127.0.0.1:{port}/websocket/v1/private")
+            finally:
+                silent.close()
+                silent.close_clients()
+                await silent.wait_closed()
+        if failure == "http-301":
+            respond = redirect_to(301, lambda state: state.url("/websocket/v1/private"))
+            async with loopback(wait_for_close, respond=respond) as server:
+                return await attempt(server.url("/websocket/v1/private"))
         async with loopback(wait_for_close, reject=HTTPStatus.UNAUTHORIZED) as server:
             return await attempt(server.url("/websocket/v1/private"))
 

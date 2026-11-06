@@ -42,7 +42,7 @@ from typing import Any
 import httpx
 
 from autotrader import __version__
-from autotrader.adapters.tls import create_tls_context
+from autotrader.adapters.tls import check_tls_context, create_tls_context
 from autotrader.adapters.upbit.auth import (
     Credentials,
     Params,
@@ -143,21 +143,6 @@ def _no_cookies() -> CookieJar:
     return CookieJar(policy=DefaultCookiePolicy(allowed_domains=()))
 
 
-def _check_tls_context(context: object) -> None:
-    """주어진 TLS 문맥이 앱 정책(호스트 이름 확인, 인증서 필수, 최소 TLS 1.2)보다 약하면 거부."""
-    if not isinstance(context, ssl.SSLContext):
-        raise TypeError(f"tls_context는 ssl.SSLContext여야 한다: {type(context).__name__}")
-    if context.check_hostname is not True:
-        raise ValueError("tls_context는 호스트 이름을 확인해야 한다(check_hostname=True)")
-    if context.verify_mode != ssl.CERT_REQUIRED:
-        raise ValueError("tls_context는 서버 인증서를 요구해야 한다(CERT_REQUIRED)")
-    # MINIMUM_SUPPORTED(-2)·MAXIMUM_SUPPORTED(-1)는 실제 버전이 아니라 거부한다.
-    if int(context.minimum_version) < int(ssl.TLSVersion.TLSv1_2):
-        raise ValueError(
-            f"tls_context의 최소 버전은 TLS 1.2 이상이어야 한다: {context.minimum_version.name}"
-        )
-
-
 class UpbitHttp:
     """업비트 REST 호출 한 곳. 한 이벤트 루프에서만 쓴다.
 
@@ -195,7 +180,7 @@ class UpbitHttp:
         if tls_context is not None:
             if transport is not None:
                 raise ValueError("transport와 tls_context는 함께 줄 수 없다")
-            _check_tls_context(tls_context)
+            check_tls_context(tls_context)
         if transport is None:
             transport = httpx.AsyncHTTPTransport(
                 retries=0,

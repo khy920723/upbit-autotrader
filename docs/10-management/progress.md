@@ -2,6 +2,72 @@
 
 세션이 끝날 때마다 맨 위에 추가한다. 형식: 날짜 — 단계 / 한 일 / 결정 / 남은 일 / 다음 단계.
 
+## 2026-11-06 — QA: PR #22(3단계 3b 업비트 웹소켓) 검토와 3단계 완료 확인 (클라우드 세션)
+
+- 한 일:
+  - 지휘 세션 요청으로 병합된 [PR #22](https://github.com/khy920723/upbit-autotrader/pull/22)(main `d6242b6`)를 [PR 검토 기준](../08-quality/review-checklist.md)의 공통·인프라·기능·테스트 항목으로 검토했다. 하위 에이전트 없이 직접 했다. `src/`·`tests/`는 바꾸지 않았고, 테스트 보강은 아래 목록으로만 남긴다.
+  - 판정: **필수 0건, 권장 6건.** 로드맵 3단계의 완료 기준("가짜 거래소로 테스트 통과")을 충족한다. JWT 서명, 요청 한도, 오류 매핑, 주문 가능 정보, 호가 단위, 종목 경고, 시세·비공개 웹소켓과 재연결 뒤 대조 자리, REST·웹소켓 가짜가 모두 들어왔다. 대조 자리의 내용과 상태 연결은 5단계 몫이다.
+  - 웹소켓 확인:
+    - D-080: TOO_MANY_REQUEST는 1초(분당 한도면 60초) 뒤 1번 다시 연다. INVALID_AUTH는 새 JWT로 1번 다시 열고, 또 오면 AUTH_CHECK다. 그 밖의 오류 이름은 BROKEN이다.
+    - D-091: backoff 1~60초이고 60초 넘게 유지되면 처음으로 돌린다. 공개 시세는 120초 무수신이면 DEGRADED를 알린 뒤 다시 연결한다. PING 프레임은 30초마다다. 재연결 때는 대조 훅이 끝난 뒤 OPEN을 알린다. 프록시와 리다이렉트를 쓰지 않는다.
+    - 연결 한도: 스트림 객체마다 연결은 초당 2회, 구독 메시지는 초당 2개·분당 50개다.
+    - Origin: `origin=None`이고, 추가 헤더에 넣으면 거부하며, 루프백 테스트가 실제 핸드셰이크에 없음을 본다.
+    - 비공개 인증: 연결마다 새 HS512 JWT(access_key·nonce)를 만든다. 헤더 튜플의 repr이 값을 가린다. 라이브러리 DEBUG 로그를 막는다. 예외를 except 밖에서 올려 라이브러리 프레임을 잇지 않는다.
+  - 확인한 것:
+    - `uv sync --locked`, `uv run ruff check .` 통과. `QT_QPA_PLATFORM=offscreen uv run pytest -q --cov --cov-branch`는 3763개 통과, 9개 건너뜀(IPv6 소켓 없음 8, Windows 전용 1)이다. 커버리지는 전체 96%, `websocket.py` 95%, `streams.py` 93%, `tls.py`·`notices.py` 100%다.
+    - PR #22 head `cbe4a1d`의 `test`·`windows`가 성공했다.
+    - `windows` 작업 로그(job 127628692398): uv가 websockets 17.4·certifi 2026.10.23을 설치했고, PyInstaller가 `hook-websockets`(contrib)·`hook-certifi`를 처리하고 `autotrader.adapters.upbit.websocket`을 분석했다. 번들 검사를 통과했고 exe 자가 점검이 6/6이다(import "autotrader 모듈 30개", TLS "certifi 2026.10.23 묶음, CA 인증서 118개, OpenSSL 3.5.9, 최소 TLSv1_2"). 이 러너는 windows-2025(Windows 10.0.26100)라 Windows 10 실기 점검은 따로다.
+    - 공식 문서 대조: `tests/fixtures/upbit/docs_examples/`의 웹소켓 6개 가운데 5개(ticker, myOrder, myAsset, announcement, 안내 문서)가 2026-11-05에 받은 문서 사본의 예시와 같다(Decimal 비교). `websocket-list-subscriptions.json`은 대조할 사본이 없어 확인하지 못했다. 공지 카테고리 `trade`가 문서 목록에 있고, 구독 파라미터(myOrder의 codes 생략 = 모든 마켓, announcement의 `include_body`)가 문서와 같다.
+    - 공개 시세 녹화 `ws_public_recording.json`에 비밀·IP·쿠키가 없다(응답 헤더는 Date·sec-websocket-extensions뿐).
+    - websockets 17.4의 라이선스 BSD-3-Clause가 설치 메타데이터·[의존성 라이선스 목록](../07-security-legal/dependency-licenses.md)과 같다.
+    - 차이의 비밀 모양 검색: Bearer 값은 모두 가짜이고, IP는 문서용(203.0.113.0/24)·사설·링크 로컬·루프백 주소뿐이다.
+  - R17(PR #17 검토) 반영 확인:
+
+| ID | 상태 | 근거 |
+|---|---|---|
+| R17-01 | 반영 | `src/autotrader/adapters/upbit/errors.py:57`이 `duplicated_identifier`를 `UpbitIdentifierConflict`(`src/autotrader/core/errors.py:95`, UpbitOrderRejected를 상속하지 않음)로 바꾼다. 테스트 `tests/unit/upbit/test_errors.py:112·165·176`, `tests/unit/upbit/test_exchange.py:719`. 시스템 구성도 7장(`docs/06-architecture/system-architecture.md:329·350`)도 고쳤다 |
+| R17-02 | 반영(한계 있음) | `tests/conftest.py`의 hook이 `pytest_configure`에서 차단을 걸고(`tests/fakes/network_guard.py`), 삼켜진 시도도 정리 단계에서 실패로 만든다. 차단이 풀리면 실패한다. Windows 경로는 한 번도 돌지 않았고(CI 변경안 2번), 우회 경로는 R22-06 |
+| R17-03·D-093 | 반영 | TLS 문맥은 `src/autotrader/adapters/tls.py` 한 곳에서 만든다. REST는 `http.py:187-188·196`(certifi 문맥, `trust_env=False`), 웹소켓은 `websocket.py:327·346`, 자가 점검은 `self_test.py:173·197`이 쓴다. `tests/unit/test_architecture.py:594-596`이 다른 곳에서 문맥을 만들지 못하게 막는다. 자가 점검에 `anyio._backends._asyncio` import를 더했다. Windows exe 결과는 위와 같다 |
+| R17-04 | 남음(정리 PR) | 3b의 새 테스트 함수 475개도 docstring 첫 줄 ID가 0개다(R22-04) |
+| R17-05 | 남음(인프라) | `docs/07-security-legal/dependency-licenses.md:65` |
+| R17-06 | 남음(정리 PR) | 웹소켓 쪽 같은 종류는 R22-03 |
+| R17-07 | 남음(정리 PR) | - |
+| R17-08 | 남음(기획/문서) | `docs/05-integration/upbit-api.md:92` |
+| R17-09 | 반영(알림은 5단계) | 24시간 상한 `ratelimit.py:82`, 표시 `retry_after_capped`(`ratelimit.py:217·229`), 9자리 초과는 `math.inf`(`errors.py:97`). 테스트 `tests/unit/upbit/test_ratelimit.py:617-700`. 표시가 켜질 때의 긴급 알림은 5단계 앱 계층이 보낸다 |
+| R17-10 | 결정됨 | D-093 선택지 A(certifi 묶음) |
+| R17-11 | 남음(기획/문서) | 매매 로직 명세 9장(이름 없는 404) |
+
+  - 결과:
+
+| ID | 심각도 | 근거(파일:줄) | 문제와 고칠 방법 | 고칠 세션 |
+|---|---|---|---|---|
+| R22-01 | 권장(중간) | `src/autotrader/adapters/upbit/websocket.py:175·294·354-355`, `src/autotrader/core/streams.py:386` | 반쯤 열린 연결을 늦게 알아챈다. PING을 보내고 PONG을 기다리지 않으며 라이브러리 keepalive도 껐다. 비공개 스트림에는 무수신 감시도 없다(D-091 (3)). 공유기 NAT 만료나 망 전환으로 TCP가 반쯤 열리면 OS의 TCP 재전송 시간 초과까지 끊김을 모른다. 주문 체결은 JOB-05(30초 REST 재조정)가 메우지만, 그동안 공지(D-079)와 myAsset을 받지 못한다. 고칠 방법: `_keepalive`가 PING의 PONG을 Clock 기준 상한(예: 30초) 안에 받지 못하면 StreamClosed(reason "pong_timeout")로 끝낸다. D-091 (4)에 보완을 적는다. 테스트: 가짜에 PONG을 보내지 않는 주입을 더하고, 상한 뒤 다시 연결되는지 본다 | 프론트/백엔드 |
+| R22-02 | 권장(중간) | `src/autotrader/core/streams.py:483·539-546`, `src/autotrader/core/models.py:456-467` | 핸드셰이크 HTTP 상태가 감시 상태로 전달되지 않는다. `StreamConnectFailed.http_status`(401·403·429)를 StreamStatus에 싣지 않아 앱이 인증·한도 문제와 네트워크 끊김을 구분하지 못한다. 업비트가 비공개 연결의 인증 실패(키 만료, 허용 IP 아님)를 핸드셰이크 401·403으로 거절하는지는 문서에 없다(문서는 연결 뒤 INVALID_AUTH 메시지만 적었다). 그렇게 오면 감시는 60초마다 끝없이 다시 연결한다. 고칠 방법: RECONNECTING 상태에 HTTP 상태를 싣는다(예: error_name "HTTP_401"). 5단계에서 401·403 연결 실패가 이어지면 REST로 키를 확인(AUTH_CHECK와 같게)하도록 D-080·D-091에 보완을 적는다 | 프론트/백엔드(상태 전달), 기획/문서(D-080·D-091 보완, 5단계 처리) |
+| R22-03 | 권장(낮음) | `src/autotrader/adapters/upbit/websocket.py:227·229·231·678-679·687-688·722`, `src/autotrader/core/streams.py:381-382` | 보내기 전 검사와 예외 변환 분기가 시험되지 않았다(R17-06과 같은 종류). 헤더 검사의 거부(같은 이름 두 번, Origin, User-Agent), OSError → core 오류 변환, `open_stream`이 core 오류를 낼 때가 해당한다. Origin 거부 분기는 CLAUDE.md 규칙이라 먼저 시험한다. 정리 PR에서 R17-06과 함께 한다 | 프론트/백엔드 |
+| R22-04 | 권장(낮음) | 3b의 새 테스트 파일 10개 | R17-04의 범위가 넓어졌다. 테스트 함수 475개 중 docstring 첫 줄에 TS·INV ID가 있는 것이 0개다. 우선 넣을 곳: `tests/unit/upbit/test_websocket.py:758`(INV-13 Origin), `:864`(INV-14), `:1540·1559`(INV-13 한도), `:972`(TS-106 PING), `:2017·2055·2530`(INV-07), `tests/unit/test_streams.py:496·585·626`(TS-41, D-091), `tests/unit/test_notices.py:121`(TS-104), `tests/integration/test_websocket_loopback.py:551`(INV-07), `tests/unit/test_network_guard.py:202`(가짜 구현 명세 2.3절) | 프론트/백엔드 |
+| R22-05 | 권장(낮음) | `src/autotrader/adapters/upbit/websocket.py:642-649` | 구독 메시지 예산은 연결 전에 확인하고 연결(await)이 끝난 뒤 기록한다. 그래서 같은 스트림 객체로 연결을 동시에 열면 분당 50개를 넘을 수 있다(초당 2개는 연결 예산이 먼저 막는다). 지금은 감시 하나가 연결을 하나씩 열어 생기지 않는다. 고칠 방법: 5단계 조립에서 스트림 객체마다 감시 하나만 쓰게 하거나(3b 남은 일과 같다), 메시지 예산을 연결 전에 예약한다. INV-13의 웹소켓 쪽은 예시 테스트뿐이므로 동시 연결 속성 테스트를 더한다 | 프론트/백엔드 |
+| R22-06 | 권장(낮음) | `tests/fakes/network_guard.py:23-25·79-87·207-214` | 네트워크 차단에 우회 경로가 남았다. 루프백을 허용하는데 클라우드 세션의 프록시가 루프백 주소에 있다(이 세션에서 확인). 지금은 프록시 환경 변수를 지우고 앱이 `trust_env=False`·`proxy=None`이라 보통 경로로는 쓰지 않는다. 그러나 그 주소로 직접 연결하는 코드는 막지 못한다. 고칠 방법: `install`이 지우기 전에 프록시 주소(호스트·포트)를 기록하고 그곳으로의 연결도 막는다. 자식 프로세스는 문서화된 한계다(자가 점검의 무네트워크는 `tests/unit/test_self_test.py:77`이 같은 프로세스에서 증명한다) | 프론트/백엔드 |
+
+  - 불변식 증명 현황(3b 범위):
+    - INV-13: 웹소켓 연결 초당 2회와 구독 분당 50개를 예시 테스트로 본다(`tests/unit/upbit/test_websocket.py:1540·1559`). 가짜를 쓰는 테스트마다 가짜가 절반 한도를 엄격 검사한다(`tests/fakes/upbit_ws.py:474·835`의 `rate_limit_half`). `Origin` 없음은 `test_websocket.py:758`과 루프백 핸드셰이크가 본다. 남은 것: 동시 연결 속성 테스트(R22-05).
+    - INV-07: 로그·예외·repr·traceback 지역 변수에 카나리아가 0건이다(`test_websocket.py:2017·2055·2530`). 라이브러리 DEBUG 로그에 핸드셰이크 헤더가 없다(`tests/integration/test_websocket_loopback.py:551`). 연결 실패 때 비밀이 남지 않는다(`:728`). 남은 것: 가리기 필터, DB·알림(이후 단계).
+    - INV-14: 웹소켓 숫자를 float 없이 Decimal로 읽고(`test_websocket.py:864`), 이벤트 모델이 Decimal·int ms만 받는다(`src/autotrader/core/models.py`의 `_check_stream_event`).
+    - INV-16: core 감시의 시간(무수신, backoff)과 어댑터의 PING·연결 상한은 Clock으로 잰다(라이브러리에 넘기는 `open_timeout`·`close_timeout`만 실제 시간이다). core 구조 검사가 그대로 돈다.
+  - 테스트 보강 목록(코드는 고치지 않았다):
+    1. PONG이 오지 않는 연결의 끊김(R22-01).
+    2. 핸드셰이크 401·403·429가 상태로 전달되는지(R22-02).
+    3. 헤더 검사·예외 변환 분기(R22-03), docstring 첫 줄 ID(R22-04).
+    4. 같은 스트림 객체의 동시 연결에서 웹소켓 한도 속성(R22-05).
+    5. 루프백 프록시 주소로의 직접 연결 차단(R22-06).
+- 결정: 없음.
+- 남은 일:
+  - 프론트/백엔드(3b 뒤 정리 PR): R17-04·R17-06·R17-07과 R22-01~R22-06.
+  - 인프라: R17-05.
+  - 기획/문서: R17-08, R17-11, R22-02의 D-080·D-091 보완 문구. 로드맵 3단계 "진행" 줄을 완료로 고친다(QA 확인 2026-11-06).
+  - 사용자(로컬): CI 변경안 2번(Windows에서 네트워크 차단·웹소켓 루프백 테스트 실행).
+  - 5단계: 3b 남은 일의 조립 목록(RateLimiter 공유, 스트림 객체 하나씩, 재연결 뒤 대조 내용, 상태를 매매 상태로, 24시간 상한 긴급 알림, 418 확인 요청을 가벼운 조회로).
+- 다음 단계: 4단계(뉴스 + LLM 시그널). 정리 PR이 열리면 R17·R22 반영을 확인한다.
+
 ## 2026-11-06 — 3단계 3b: 업비트 웹소켓, 재연결 감시, 가짜 웹소켓, QA 권장 반영 (클라우드 세션)
 
 - 한 일:

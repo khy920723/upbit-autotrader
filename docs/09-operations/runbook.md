@@ -34,7 +34,7 @@
 
 1. 대시보드에서 [정지](신규 주문 중지 + 앱이 낸 미체결 주문 취소, 보유는 유지).
 2. 트레이 → 종료.
-3. 기존 폴더를 `upbit-autotrader-old`로 이름을 바꾸고, 새 zip을 차단 해제한 뒤 **기존과 같은 경로**(예: `C:\Apps\upbit-autotrader\`)에 푼다. 시작 앱 등록이 이 경로를 가리키기 때문이다. 데이터는 `%LOCALAPPDATA%`에 있어 그대로 남는다.
+3. 기존 폴더를 `upbit-autotrader-old`로 이름을 바꾸고, 새 zip을 차단 해제한 뒤 **기존과 같은 경로**(예: `C:\Apps\upbit-autotrader\`)에 푼다. 시작 앱 등록이 이 경로를 가리키기 때문이다. 데이터는 `%LOCALAPPDATA%`에 있어 그대로 남는다. 푼 뒤 [설치 가이드](install-guide.md) 3장 "인터넷 표시 확인"을 PowerShell에서 한다(압축 프로그램이 표시를 일부 파일에 남길 수 있다).
 4. 새 `autotrader.exe` 실행 → 시작 점검 → [시작].
 5. 문제가 있으면 old 폴더로 되돌린다. DB 구조가 바뀐 버전이었다면 `backup\`에서 이전 DB를 복원한다.
 

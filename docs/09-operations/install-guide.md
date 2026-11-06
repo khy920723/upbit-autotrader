@@ -64,10 +64,37 @@
 
 ## 3. 설치
 
-1. GitHub Actions에서 받은 zip을 마우스 오른쪽 클릭 → 속성 → "차단 해제" 체크 → 확인.
-2. `C:\Apps\upbit-autotrader\`처럼 쓰기 권한이 있는 폴더에 압축을 푼다(Program Files는 피한다).
-3. `autotrader.exe`를 실행한다. SmartScreen 경고가 뜨면 "추가 정보 → 실행".
-4. Defender가 격리하면: Windows 보안 → 바이러스 및 위협 방지 → 보호 기록에서 복원하고, Microsoft에 오탐으로 제출한다.
+이 장의 명령은 모두 **PowerShell**에서 실행한다.
+
+- 여는 방법: 시작 → "PowerShell" 검색. 또는 폴더 빈 곳에서 Shift + 마우스 오른쪽 클릭 → "여기에 PowerShell 창 열기".
+- 줄 앞이 `PS`로 시작하면 PowerShell이다.
+- 명령 프롬프트(cmd)에서는 실행되지 않는다. `;`나 `|`로 명령을 잇는 것은 PowerShell 문법이다. 2026-11-06 점검 때 cmd에서 실행했다가 "경로를 찾을 수 없습니다"로 실패했다.
+
+1. GitHub Actions에서 받은 zip은 앱을 둘 폴더 **밖**(예: 다운로드 폴더)에 둔다.
+2. 압축을 풀기 **전에** zip의 "인터넷에서 받은 파일" 표시(차단)를 지운다. 둘 중 하나로 한다.
+   - 탐색기: zip을 마우스 오른쪽 클릭 → 속성 → 일반 탭 아래 "차단 해제" 체크 → 확인
+   - PowerShell: `Unblock-File -Path "$env:USERPROFILE\Downloads\<받은 zip 이름>.zip"`(경로는 받은 zip으로 바꾼다)
+3. `C:\Apps\upbit-autotrader\`처럼 쓰기 권한이 있는 폴더에 압축을 푼다(Program Files는 피한다).
+4. 압축을 푼 폴더에 표시가 남은 파일이 없는지 확인하고, 남았으면 지운다(아래 "인터넷 표시 확인"). 2번을 했어도 한다.
+5. `autotrader.exe`를 실행한다. SmartScreen 경고가 뜨면 "추가 정보 → 실행".
+6. Defender가 격리하면: Windows 보안 → 바이러스 및 위협 방지 → 보호 기록에서 복원하고, Microsoft에 오탐으로 제출한다.
+
+### 인터넷 표시 확인
+
+압축 프로그램마다 "인터넷에서 받은 파일" 표시를 푼 파일에 옮기는 범위가 다르다. 2026-11-06 점검에서는 zip을 차단 해제하지 않고 반디집으로 풀었더니 `_internal\base_library.zip` 한 파일에만 표시가 남았고, 첫 실행 때 SmartScreen 경고가 떴다. 그래서 압축 프로그램의 동작에 기대지 않고 아래처럼 직접 확인한다.
+
+1. 압축을 푼 폴더 경로를 넣고 확인한다. 다른 폴더에 풀었으면 첫 줄의 경로만 바꾼다.
+
+```powershell
+$app = 'C:\Apps\upbit-autotrader'
+Get-ChildItem -Recurse $app | Get-Item -Stream Zone.Identifier -ErrorAction SilentlyContinue
+```
+
+2. 아무것도 나오지 않으면 끝이다. 무엇이 나오면 같은 PowerShell 창에서 표시를 지운 뒤 1번의 두 번째 줄을 다시 실행한다.
+
+```powershell
+Get-ChildItem -Recurse $app | Unblock-File
+```
 
 ### 자가 점검
 
@@ -75,7 +102,7 @@
 
 - PR을 병합하기 전에 확인하려면 Actions → build-exe → Run workflow에서 PR 브랜치를 골라 실행하고 `autotrader-windows-<커밋 해시>` zip을 받는다. 병합 뒤에는 main으로 실행한다. main에 `packaging/autotrader.spec`이 없으면 빌드 단계가 모두 건너뛰어져 zip이 생기지 않는다.
 
-1. 압축을 푼 폴더의 빈 곳에서 Shift + 마우스 오른쪽 클릭 → "여기에 PowerShell 창 열기".
+1. 압축을 푼 폴더의 빈 곳에서 Shift + 마우스 오른쪽 클릭 → "여기에 PowerShell 창 열기". 줄 앞이 `PS`로 시작하는지 본다(명령 프롬프트에서는 실행되지 않는다).
 2. 아래 명령을 실행한다(끝날 때까지 몇 초 기다린다).
 
 ```powershell

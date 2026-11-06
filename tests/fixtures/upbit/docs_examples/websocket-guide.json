@@ -1,0 +1,111 @@
+{
+  "source": "https://docs.upbit.com/kr/reference/websocket-guide.md",
+  "retrieved_at": "2026-11-05",
+  "doc_updated_at": "2026-09-23T07:13:53.000Z",
+  "endpoints": {
+    "public": "wss://api.upbit.com/websocket/v1",
+    "private": "wss://api.upbit.com/websocket/v1/private",
+    "info": "wss://api.upbit.com/websocket/v1/info"
+  },
+  "example_title": "연결 관리 - \"PING\" 메시지를 보내면 10초 간격으로 오는 UP 상태 메시지",
+  "example": {
+    "status": "UP"
+  },
+  "auth_header_example": {
+    "name": "Authorization",
+    "value": "Bearer CANARY-PLACEHOLDER"
+  },
+  "request_examples": {
+    "ticker": [
+      {
+        "ticket": "3e2c4a9f-f0a7-457f-945e-4b57bde9f1ec"
+      },
+      {
+        "type": "ticker",
+        "codes": [
+          "KRW-BTC"
+        ]
+      }
+    ],
+    "trade_orderbook_simple": [
+      {
+        "ticket": "9a65cd93-8786-4202-9b13-bd90e0c8b64b"
+      },
+      {
+        "type": "trade",
+        "codes": [
+          "KRW-BTC",
+          "BTC-BCH"
+        ]
+      },
+      {
+        "type": "orderbook",
+        "codes": [
+          "KRW-BTC",
+          "BTC-BCH"
+        ]
+      },
+      {
+        "format": "SIMPLE"
+      }
+    ],
+    "announcement": [
+      {
+        "ticket": "announcement-monitor"
+      },
+      {
+        "type": "announcement"
+      }
+    ],
+    "announcement_categories_body": [
+      {
+        "ticket": "announcement-monitor"
+      },
+      {
+        "type": "announcement",
+        "categories": [
+          "trading",
+          "wallet"
+        ],
+        "include_body": true
+      }
+    ]
+  },
+  "error_examples": [
+    {
+      "title": "Error Response",
+      "body": {
+        "error": {
+          "name": "ERRPR_CODE",
+          "message": "ERROR_MESSAGE"
+        }
+      }
+    },
+    {
+      "title": "Example - INVALID_AUTH",
+      "body": {
+        "error": {
+          "name": "INVALID_AUTH",
+          "message": "인증 정보가 올바르지 않습니다."
+        }
+      }
+    }
+  ],
+  "error_names": [
+    "INVALID_AUTH",
+    "WRONG_FORMAT",
+    "NO_TICKET",
+    "NO_TYPE",
+    "NO_CODES",
+    "INVALID_PARAM"
+  ],
+  "formats": [
+    "DEFAULT",
+    "SIMPLE",
+    "JSON_LIST",
+    "SIMPLE_LIST"
+  ],
+  "replaced_with_placeholder": [
+    "$.auth_header_example.value"
+  ]
+}

@@ -1,7 +1,8 @@
 """업비트 오류 응답을 core 오류 타입으로 바꾼다.
 
-분류 순서(D-088 제안, 오류 분류 세부):
-1. 418 → UpbitBlocked(본문에 이름이 있어도). 본문 원문과 Retry-After(정수 초만)를 담는다.
+분류 순서(D-088, 오류 분류 세부):
+1. 418 → UpbitBlocked(본문에 이름이 있어도). 본문 원문과 Retry-After(정수 초만, 9자리를 넘으면
+   math.inf)를 담는다.
 2. 429 → UpbitRateLimited, 5xx → UpbitServerError. 표에 있는 이름이 함께 와도 상태가 먼저다
    (5xx를 이름으로 주문 거절로 보면 "주문이 안 만들어졌다"고 잘못 판단할 수 있다).
 3. 거래 API의 문자열 error.name이 표에 있으면 그 타입.
@@ -12,6 +13,7 @@ error.message는 바뀔 수 있으므로 분류에 쓰지 않는다.
 """
 
 import json
+import math
 from collections.abc import Mapping
 from decimal import Decimal
 from types import MappingProxyType
@@ -21,6 +23,7 @@ from autotrader.core.errors import (
     UpbitAuthError,
     UpbitBlocked,
     UpbitError,
+    UpbitIdentifierConflict,
     UpbitMarketOffline,
     UpbitNotFound,
     UpbitOrderRejected,
@@ -51,7 +54,7 @@ NAME_TYPES: Mapping[str, type[UpbitError]] = MappingProxyType(
         "invalid_post_only": UpbitOrderRejected,
         "create_bid_error": UpbitOrderRejected,
         "create_ask_error": UpbitOrderRejected,
-        "duplicated_identifier": UpbitOrderRejected,
+        "duplicated_identifier": UpbitIdentifierConflict,  # 결과 불명(D-070, R17-01)
         "notfoundmarket": UpbitOrderRejected,
         "market_offline": UpbitMarketOffline,
         "order_not_found": UpbitNotFound,
@@ -71,19 +74,28 @@ def header_value(headers: Mapping[str, str], name: str) -> str | None:
     return None
 
 
+_MAX_RETRY_AFTER_DIGITS = 9  # 이보다 긴 값(10억 초, 약 31년 이상)은 숫자로 읽지 않는다
+
+
 def parse_retry_after(value: str | None) -> float | None:
     """Retry-After의 양의 정수 초만 읽는다. HTTP 날짜·소수·음수·0·해석 불가는 None.
 
     HTTP 날짜 형식은 PC 시계에 기대야 해서 쓰지 않는다. 0초는 차단을 바로 풀어 차단을 늘릴 수 있어
-    없는 것으로 보고 단계표를 쓰게 한다.
+    없는 것으로 보고 단계표를 쓰게 한다. ASCII 숫자는 앞자리 0을 지운 뒤 9자리를 넘으면 숫자로
+    바꾸지 않고 `math.inf`(상한 초과)를 돌려준다. 한도 장치는 이 값을 24시간 상한으로 기다린다
+    (D-089 보완). 아주 긴 값의 int 변환 오류도 피한다.
     """
     if value is None:
         return None
     text = value.strip()
-    if not (text.isascii() and text.isdigit()) or len(text) > 9:
+    if not (text.isascii() and text.isdigit()):
         return None
-    seconds = int(text)
-    return float(seconds) if seconds > 0 else None
+    digits = text.lstrip("0")
+    if not digits:
+        return None  # 0초
+    if len(digits) > _MAX_RETRY_AFTER_DIGITS:
+        return math.inf
+    return float(int(digits))
 
 
 def _name_and_message(body: bytes) -> tuple[str | None, str | None]:

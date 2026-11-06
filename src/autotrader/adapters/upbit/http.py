@@ -20,12 +20,16 @@
   WriteTimeout)는 RequestTimeout이다. NetworkError는 요청이 안 나갔다는 뜻이 아니다(ReadError·
   RemoteProtocolError는 서버가 받은 뒤일 수 있다). 주문 POST의 NetworkError·RequestTimeout은
   모두 결과 불명으로 다룬다(같은 identifier로 조회, 재전송 금지).
+- TLS: 기본 전송은 앱의 TLS 문맥(autotrader.adapters.tls, certifi 묶음만, 최소 TLS 1.2)을 쓴다
+  (D-093). httpx 기본값과 달리 SSL_CERT_FILE·SSL_CERT_DIR를 읽지 않는다. 전송과 클라이언트 모두
+  trust_env=False다(환경 변수의 프록시·인증서 설정을 읽지 않는다).
 근거: docs/05-integration/upbit-api.md 3~6장·9장, ADR-0006 "지킬 것", INV-07·INV-13·INV-14.
 """
 
 import json
 import logging
 import re
+import ssl
 import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -38,6 +42,7 @@ from typing import Any
 import httpx
 
 from autotrader import __version__
+from autotrader.adapters.tls import check_tls_context, create_tls_context
 from autotrader.adapters.upbit.auth import (
     Credentials,
     Params,
@@ -142,6 +147,12 @@ class UpbitHttp:
     """업비트 REST 호출 한 곳. 한 이벤트 루프에서만 쓴다.
 
     418은 IP 단위이므로 시세·거래 어댑터는 RateLimiter 하나(또는 UpbitHttp 하나)를 함께 쓴다.
+
+    tls_context: 생략하면 `create_tls_context()`로 새로 만든다. 주면 그대로 쓰되 앱 정책보다
+    약하면(check_hostname False, CERT_REQUIRED 아님, 최소 TLS 1.2 미만) ValueError,
+    ssl.SSLContext가 아니면 TypeError다. transport와 함께 주면 ValueError다(말없이 무시하지
+    않는다). 문맥은 이 클라이언트 하나에만 준다. httpcore가 연결마다 ALPN 프로토콜을 문맥에
+    설정해 문맥을 바꾸므로, 다른 클라이언트(웹소켓 등)와 공유하면 서로의 설정을 덮는다.
     """
 
     def __init__(
@@ -154,6 +165,7 @@ class UpbitHttp:
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 10.0,
         user_agent: str = DEFAULT_USER_AGENT,
+        tls_context: ssl.SSLContext | None = None,
     ) -> None:
         # clock은 호출 쪽 호환을 위해 받는다. 시간은 limiter가 같은 시계로 잰다.
         del clock
@@ -164,12 +176,24 @@ class UpbitHttp:
         self._base_url = base_url
         # 기본 전송(retries=0)으로 자동 재시도가 없다. 리다이렉트는 따라가지 않는다.
         # 서버의 Set-Cookie를 저장해 다음 요청에 되돌려 보내지 않는다.
+        # transport를 받으면 TLS 문맥을 만들지 않는다. tls_context와 함께 받으면 거부한다.
+        if tls_context is not None:
+            if transport is not None:
+                raise ValueError("transport와 tls_context는 함께 줄 수 없다")
+            check_tls_context(tls_context)
+        if transport is None:
+            transport = httpx.AsyncHTTPTransport(
+                retries=0,
+                verify=tls_context if tls_context is not None else create_tls_context(),
+                trust_env=False,
+            )
         self._client = httpx.AsyncClient(
-            transport=transport if transport is not None else httpx.AsyncHTTPTransport(retries=0),
+            transport=transport,
             timeout=httpx.Timeout(timeout),
             follow_redirects=False,
             headers={"Accept": "application/json", "User-Agent": user_agent},
             cookies=_no_cookies(),
+            trust_env=False,
         )
 
     def __repr__(self) -> str:
@@ -329,7 +353,9 @@ class UpbitHttp:
 
         error = to_error(status, body, response.headers, group=group)
         if isinstance(error, UpbitBlocked):
-            self._limiter.on_blocked(error.retry_after)
+            # Retry-After가 24시간을 넘어 24시간만 기다리면 이 418의 예외에 표시한다(D-089 보완).
+            # retry_after에는 서버가 준 원래 값을 그대로 둔다.
+            error.retry_after_capped = self._limiter.on_blocked(error.retry_after)
             # 차단 시간 형식을 확인하려고 헤더와 본문 원문을 남긴다(D-078).
             # 응답 헤더에는 비밀이 없다.
             logger.warning(

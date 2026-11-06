@@ -52,8 +52,11 @@ def fmt_decimal(value: Decimal) -> str:
     return format(value.normalize(DECIMAL_CONTEXT), "f")
 
 
-def dumps(value: Any) -> str:
-    """RawNumber는 원문, Decimal은 JSON 숫자, 문자열은 UTF-8 그대로. float는 거부한다."""
+def dumps(value: Any, *, compact: bool = False) -> str:
+    """RawNumber는 원문, Decimal은 JSON 숫자, 문자열은 UTF-8 그대로. float는 거부한다.
+
+    compact=True면 녹화한 웹소켓 메시지처럼 구분자 뒤 공백이 없다.
+    """
     if value is None:
         return "null"
     if value is True:
@@ -70,9 +73,13 @@ def dumps(value: Any) -> str:
         return fmt_decimal(value)
     if isinstance(value, float):
         raise TypeError("float는 쓰지 않는다(Decimal이나 RawNumber를 쓴다)")
+    comma, colon = (",", ":") if compact else (", ", ": ")
     if isinstance(value, dict):
-        items = (f"{json.dumps(str(k), ensure_ascii=False)}: {dumps(v)}" for k, v in value.items())
-        return "{" + ", ".join(items) + "}"
+        items = (
+            f"{json.dumps(str(k), ensure_ascii=False)}{colon}{dumps(v, compact=compact)}"
+            for k, v in value.items()
+        )
+        return "{" + comma.join(items) + "}"
     if isinstance(value, list | tuple):
-        return "[" + ", ".join(dumps(item) for item in value) + "]"
+        return "[" + comma.join(dumps(item, compact=compact) for item in value) + "]"
     raise TypeError(f"직렬화할 수 없는 값: {type(value).__name__}")

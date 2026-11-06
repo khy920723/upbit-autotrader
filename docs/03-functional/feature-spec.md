@@ -93,7 +93,7 @@
 
 ### FR-25 자가 점검
 
-- `autotrader.exe --self-test`: 창 없이 import, Qt(offscreen), keyring 백엔드, SQLite, TLS 인증서, 설정 경로를 점검하고 `self-test-report.txt`를 쓴 뒤 0(성공) 또는 1(실패)로 끝난다. 네트워크와 키는 쓰지 않는다.
+- `autotrader.exe --self-test`: 창 없이 import, Qt(offscreen), keyring 백엔드, SQLite, TLS 인증서(앱이 쓰는 certifi 묶음, D-093), 설정 경로를 점검하고 `self-test-report.txt`를 쓴 뒤 0(성공) 또는 1(실패)로 끝난다. 네트워크와 키는 쓰지 않는다.
 
 ## 2. 주기 작업
 

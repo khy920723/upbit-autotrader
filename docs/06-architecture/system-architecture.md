@@ -131,7 +131,7 @@ upbit-autotrader/
 │  ├─ app/            앱 조립, 수명 주기, GUI ↔ core 브리지
 │  ├─ ui/             PySide6 화면
 │  ├─ core/           결정·규칙·위험·주문·스케줄러, 인터페이스와 오류 타입(Qt 의존 없음)
-│  ├─ adapters/       upbit, gemini, news, discord, public_ip
+│  ├─ adapters/       upbit(REST·웹소켓), tls(REST·웹소켓 공용 TLS 설정, D-093), gemini, news, discord, public_ip
 │  ├─ storage/        SQLite, 마이그레이션(migrations/*.sql)
 │  ├─ platform/       시작 앱, 절전 방지, 전원 이벤트, 단일 인스턴스
 │  └─ config/         설정 스키마, keyring
@@ -189,11 +189,15 @@ class ExchangeApi(Protocol):                         # 비공개 REST(키 필요
     async def list_api_keys(self) -> list[ApiKeyInfo]: ...                     # GET /v1/api_keys(만료일). 전체 Access Key는 담지 않는다(앞 4자, 현재 키 여부, 만료 시각)
 
 class PublicStream(Protocol):                        # wss://api.upbit.com/websocket/v1
-    def ticker(self, markets: Sequence[str]) -> AsyncIterator[TickerEvent]: ...
-    # 끊기면 NetworkError로 끝난다. 재연결과 REST 대조는 호출하는 쪽(감시)이 한다
+    def ticker(self, markets: Sequence[str]) -> AsyncIterator[StreamOpened | TickerEvent]: ...
 
 class PrivateStream(Protocol):                       # wss://api.upbit.com/websocket/v1/private
-    def events(self) -> AsyncIterator[MyOrderEvent | MyAssetEvent | AnnouncementEvent]: ...
+    def events(self) -> AsyncIterator[StreamOpened | MyOrderEvent | MyAssetEvent | AnnouncementEvent]: ...
+    # 두 스트림 공통(3단계 구현, D-091): 구독 요청을 보낸 직후 StreamOpened를 가장 먼저 낸다.
+    # 끝날 때는 core 오류 하나로 끝난다(끊김 StreamClosed, 연결 실패 StreamConnectFailed,
+    # 서버 오류 메시지 StreamError 계열). 재연결·무수신 감시·재연결 뒤 대조는 core/streams.py의
+    # StreamSupervisor가 한다. 이터레이터는 감시가 만든 태스크 하나에서만 소비되고,
+    # PING 프레임은 연결이 가진 별도 태스크가 Clock으로 30초마다 보낸다.
 
 class Broker(Protocol):                              # LiveBroker, ValidateBroker, PaperBroker
     mode: Mode
@@ -307,20 +311,29 @@ AutotraderError
 │  └─ SchemaVersionError       DB가 앱보다 새 버전
 ├─ InvariantViolation          위험 관리·상태 불변식 위반(버그)
 └─ ExternalError               외부 연동 공통. 어댑터가 던진다
-   ├─ NetworkError             DNS 실패, 연결 실패, TLS 오류, 연결 끊김
-   │  └─ RequestTimeout        응답 대기 시간 초과
+   ├─ NetworkError             DNS 실패, 연결 실패, TLS 오류, 연결 끊김(요청이 서버에 닿았을 수 있다)
+   │  ├─ RequestTimeout        응답 대기 시간 초과
+   │  ├─ StreamClosed          웹소켓 연결 끊김(close_code, reason)
+   │  └─ StreamConnectFailed   웹소켓 연결 수립 실패(http_status, reason)
+   ├─ StreamError              웹소켓 서버 오류 메시지(error_name, message, D-080)
+   │  ├─ StreamRateLimited     TOO_MANY_REQUEST(minute_limited)
+   │  ├─ StreamAuthError       INVALID_AUTH, 키 없음
+   │  └─ StreamRequestError    WRONG_FORMAT, NO_TICKET, NO_TYPE, NO_CODES, INVALID_PARAM, 모르는 이름
    ├─ UpbitError               http_status, error_name, message, rate_group, remaining_sec
    │  ├─ UpbitAuthError        no_authorization_ip, expired_access_key, jwt_verification,
    │  │                        invalid_query_payload, nonce_used, no_authorization_token
    │  ├─ UpbitPermissionError  out_of_scope(401 또는 403으로 올 수 있음)
    │  ├─ UpbitOrderRejected    insufficient_funds_bid/ask, under_min_total_bid/ask, over_krw_funds_bid,
    │  │                        invalid_parameter, validation_error, invalid_time_in_force,
-   │  │                        invalid_post_only, duplicated_identifier, create_bid/ask_error, notfoundmarket
+   │  │                        invalid_post_only, create_bid/ask_error, notfoundmarket
+   │  ├─ UpbitIdentifierConflict duplicated_identifier(400). 주문 생성에서는 결과 불명(identifier로 조회해 확정, D-070),
+   │  │                        주문 검증에서는 검증 실패(버그로 기록). UpbitOrderRejected가 아니다
    │  ├─ UpbitMarketOffline    market_offline(403, 점검 중)
    │  ├─ UpbitNotFound         404(order_not_found 등)
    │  ├─ UpbitRateLimited      429
-   │  ├─ UpbitBlocked          418(blocked_until)
-   │  └─ UpbitServerError      5xx
+   │  ├─ UpbitBlocked          418(retry_after, raw_body, retry_after_capped: 24시간 상한 적용, D-089)
+   │  ├─ UpbitServerError      5xx, 2xx인데 본문을 읽을 수 없음
+   │  └─ UpbitRequestError     그 밖의 4xx·3xx·모르는 이름(D-088)
    ├─ NewsError                출처별 실패. 수집기가 건너뛴다
    ├─ LlmError                 SignalProvider 안에서만 쓴다. 밖으로는 SignalResult.status
    └─ NotifyError              Notifier 안에서만 쓴다. 밖으로는 SendResult
@@ -333,11 +346,14 @@ AutotraderError
 |---|---|---|---|---|
 | NetworkError, RequestTimeout | UNKNOWN(매매 로직 명세 9장) | 백오프 후 다시. 계속되면 SUSPENDED | 통신 불가가 이어지면 SUSPENDED | NTF-04 |
 | UpbitAuthError, UpbitPermissionError | REJECTED | 중단 | live 계열은 HALTED, paper·signal-only는 경고. paper에 exit_only 실보유분이 있으면 그 주문만 멈추고 긴급 알림(D-068) | NTF-03(paper의 exit_only는 NTF-23) |
-| UpbitOrderRejected | REJECTED(error_name). `duplicated_identifier`는 UNKNOWN(매매 로직 명세 8장) | - | 유지. 잔고 부족이면 잔고 다시 조회 | NTF-18 |
+| UpbitOrderRejected | REJECTED(error_name) | - | 유지. 잔고 부족이면 잔고 다시 조회 | NTF-18 |
+| UpbitIdentifierConflict | UNKNOWN(매매 로직 명세 8·10장, identifier로 조회해 확정, D-070) | 주문 검증이면 검증 실패(버그로 기록) | 유지 | UNKNOWN 알림과 같음 |
 | UpbitMarketOffline | REJECTED | - | 그 코인 매수만 보류 | NTF-18 |
 | UpbitNotFound | - | 조회면 `None`으로 바꾼다 | 유지 | - |
 | UpbitRateLimited(429) | REJECTED(RATE_LIMIT_429) | 다음 초에 같은 요청 | 유지, 그 그룹 요청 속도를 낮춤 | 반복되면 NTF-19 |
-| UpbitBlocked(418) | REJECTED(RATE_LIMIT_418) | 중단 | 차단 시간 동안 SUSPENDED | NTF-04 |
+| UpbitBlocked(418) | REJECTED(RATE_LIMIT_418) | 중단 | 차단 시간 동안 SUSPENDED | NTF-04. `retry_after_capped`(24시간 상한)가 새로 켜지면 긴급 알림 한 번(D-089) |
+| StreamClosed, StreamConnectFailed | - | 감시가 backoff로 다시 연결(D-091). 공개 시세가 120초 넘게 끊기면 DEGRADED | 공개: DEGRADED, 비공개: 다시 연결 뒤 REST 대조 | 이어지면 NTF-04 |
+| StreamRateLimited, StreamAuthError, StreamRequestError | - | D-080대로: 한도 초과는 기다린 뒤 1번, 인증은 새 JWT로 1번, 형식 오류는 다시 하지 않음(BROKEN) | 공개 BROKEN이면 DEGRADED, AUTH_CHECK이면 REST로 키 확인 | 앱 버그면 NTF-03 |
 | UpbitServerError(5xx) | UNKNOWN | 1회 다시, 실패하면 다음 주기 | 유지 | - |
 | SecretStoreError | - | - | 모든 모드에서 HALTED | NTF-03 |
 | ConfigError, SchemaVersionError | - | - | 매매를 시작하지 않음(SCR-07) | - |

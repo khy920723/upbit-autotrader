@@ -33,7 +33,8 @@ GPL_ONLY_QT_MODULES = frozenset(
     }
 )
 # 쓰지 않기로 한 모듈: WebEngine(Chromium, 크기와 고지 부담), PDF(PDFium),
-# Network(TLS는 Python ssl로 한다).
+# Network·WebSockets(TLS는 Python ssl, 웹소켓은 websockets로 한다. Qt 소켓은 테스트의 네트워크
+# 차단(tests/fakes/network_guard.py)을 거치지 않는다). QtNetworkAuth는 위 GPL 목록에 있다.
 UNUSED_QT_MODULES = frozenset(
     {
         "QtWebEngineCore",
@@ -42,6 +43,7 @@ UNUSED_QT_MODULES = frozenset(
         "QtPdf",
         "QtPdfWidgets",
         "QtNetwork",
+        "QtWebSockets",
     }
 )
 
@@ -280,6 +282,8 @@ FORBIDDEN_CLOCK_USES = frozenset(
 )
 LOOP_GETTERS = frozenset({"get_running_loop", "get_event_loop", "new_event_loop"})
 LOOP_SCHEDULERS = frozenset({"call_later", "call_at"})
+# 시간 상한 인자(timeout=)를 받으면 이벤트 루프 시간으로 재는 asyncio 함수. 인자 없이는 허용한다.
+ASYNCIO_TIMEOUT_ARGUMENT_CALLS = frozenset({"wait", "as_completed"})
 
 
 def _call_name(node: ast.AST) -> str:
@@ -318,6 +322,43 @@ def _loop_holders(tree: ast.AST) -> set[str]:
     return holders
 
 
+def _asyncio_names(tree: ast.AST, names: frozenset[str]) -> set[str]:
+    """`from asyncio import wait`처럼 asyncio에서 바로 가져온 이름(별칭 포함) 중 names에 든 것."""
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "asyncio":
+            found |= {alias.asname or alias.name for alias in node.names if alias.name in names}
+    return found
+
+
+def _timeout_argument_calls(tree: ast.AST) -> list[str]:
+    """`asyncio.wait(..., timeout=5)`·`as_completed(..., timeout=t)`(None이 아닌 timeout)."""
+    imported = _asyncio_names(tree, ASYNCIO_TIMEOUT_ARGUMENT_CALLS)
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "asyncio"
+            and func.attr in ASYNCIO_TIMEOUT_ARGUMENT_CALLS
+        ):
+            name = f"asyncio.{func.attr}"
+        elif isinstance(func, ast.Name) and func.id in imported:
+            name = func.id
+        else:
+            continue
+        for keyword in node.keywords:
+            value = keyword.value
+            if keyword.arg == "timeout" and not (
+                isinstance(value, ast.Constant) and value.value is None
+            ):
+                found.append(f"{name}(timeout=)")
+    return found
+
+
 def direct_clock_uses(path: Path) -> list[str]:
     """시계를 직접 읽거나 기다리는 코드. 별칭 import(`import time as t`)까지는 쫓지 않는다.
 
@@ -325,7 +366,7 @@ def direct_clock_uses(path: Path) -> list[str]:
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     holders = _loop_holders(tree)
-    found: list[str] = []
+    found: list[str] = _timeout_argument_calls(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module in {"time", "asyncio"}:
             found.extend(
@@ -427,6 +468,55 @@ def test_direct_clock_uses_ignores_clock_calls_and_plain_datetimes(tmp_path):
     assert direct_clock_uses(sample) == []
 
 
+def test_direct_clock_uses_finds_timeout_arguments_of_wait_and_as_completed(tmp_path):
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "import asyncio\n"
+        "from asyncio import wait, as_completed as done_in_order\n"
+        "async def f(tasks, limit):\n"
+        "    await asyncio.wait(tasks, timeout=5)\n"
+        "    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=limit)\n"
+        "    for t in asyncio.as_completed(tasks, timeout=1.5):\n"
+        "        await t\n"
+        "    await wait(tasks, timeout=limit)\n"
+        "    for t in done_in_order(tasks, timeout=2):\n"
+        "        await t\n",
+        encoding="utf-8",
+    )
+
+    assert sorted(direct_clock_uses(sample)) == sorted(
+        [
+            "asyncio.wait(timeout=)",
+            "asyncio.wait(timeout=)",
+            "asyncio.as_completed(timeout=)",
+            "wait(timeout=)",
+            "done_in_order(timeout=)",
+        ]
+    )
+
+
+def test_direct_clock_uses_allows_wait_and_as_completed_without_timeout(tmp_path):
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "import asyncio\n"
+        "from asyncio import wait\n"
+        "async def f(tasks, other, clock):\n"
+        "    await asyncio.wait(tasks)\n"
+        "    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)\n"
+        "    await asyncio.wait(tasks, timeout=None)\n"
+        "    await wait(tasks)\n"
+        "    for t in asyncio.as_completed(tasks):\n"
+        "        await t\n"
+        "    await other.wait(tasks, timeout=5)\n"
+        "    await clock.as_completed(tasks, timeout=5)\n"
+        "    event = asyncio.Event()\n"
+        "    await event.wait()\n",
+        encoding="utf-8",
+    )
+
+    assert direct_clock_uses(sample) == []
+
+
 @pytest.mark.parametrize(
     "path",
     [p for p in python_files("core") if p != PACKAGE_DIR / "core" / "clock.py"],
@@ -497,3 +587,82 @@ def test_core_has_no_float_calls(path):
     allowed = FLOAT_CALL_ALLOWLIST.get(str(path.relative_to(PACKAGE_DIR).as_posix()), 0)
 
     assert len(float_calls(path)) == allowed, f"{path}: float( 호출(INV-14): {float_calls(path)}"
+
+
+# D-093: TLS 문맥은 autotrader.adapters.tls 한 곳에서만 만든다. REST·웹소켓·자가 점검은
+# create_tls_context()를 부르기만 한다. 웹소켓 어댑터가 생기면 이 검사가 그 파일도 덮는다.
+TLS_MODULE = PACKAGE_DIR / "adapters" / "tls.py"
+TLS_CONTEXT_FACTORIES = frozenset(
+    {"create_default_context", "SSLContext", "_create_unverified_context"}
+)
+
+
+def tls_context_constructions(path: Path) -> list[tuple[int, str]]:
+    """ssl 문맥을 직접 만드는 곳(줄 번호, 이름).
+
+    `ssl.X(...)`·`import ssl as s`의 `s.X(...)` 호출과 `from ssl import X`(별칭 포함)를 찾는다.
+    타입 표기(`ssl.SSLContext | None`)와 isinstance 검사는 호출이 아니라 세지 않는다.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    ssl_names = {"ssl"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            ssl_names.update(
+                alias.asname for alias in node.names if alias.name == "ssl" and alias.asname
+            )
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "ssl" and not node.level:
+            found += [
+                (node.lineno, alias.name)
+                for alias in node.names
+                if alias.name in TLS_CONTEXT_FACTORIES or alias.name == "*"
+            ]
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in TLS_CONTEXT_FACTORIES
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in ssl_names
+        ):
+            found.append((node.lineno, node.func.attr))
+    return sorted(found)
+
+
+def test_tls_context_constructions_finds_calls_and_imports_but_not_annotations(tmp_path):
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "import ssl\n"
+        "import ssl as s2\n"
+        "from ssl import SSLContext as Ctx, create_default_context\n"
+        "def f(c: ssl.SSLContext | None) -> ssl.SSLContext:\n"
+        "    isinstance(c, ssl.SSLContext)\n"
+        "    ssl.create_default_context()\n"
+        "    s2.SSLContext(ssl.PROTOCOL_TLS_CLIENT)\n"
+        "    ssl._create_unverified_context()\n"
+        "    return ssl.TLSVersion.TLSv1_2\n",
+        encoding="utf-8",
+    )
+
+    assert tls_context_constructions(sample) == [
+        (3, "SSLContext"),
+        (3, "create_default_context"),
+        (6, "create_default_context"),
+        (7, "SSLContext"),
+        (8, "_create_unverified_context"),
+    ]
+
+
+def test_tls_module_is_the_one_that_builds_the_context():
+    assert tls_context_constructions(TLS_MODULE), f"{TLS_MODULE}: 문맥을 만드는 호출이 없다"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [p for p in python_files() if p != TLS_MODULE],
+    ids=lambda p: str(p.relative_to(PACKAGE_DIR)),
+)
+def test_only_the_tls_module_builds_ssl_contexts(path):
+    found = tls_context_constructions(path)
+
+    assert not found, f"{path}: TLS 문맥은 autotrader.adapters.tls에서만 만든다(D-093): {found}"

@@ -16,8 +16,11 @@ import hmac
 import inspect
 import json
 import logging
+import math
 import re
+import ssl
 import traceback
+import warnings
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -29,6 +32,7 @@ from urllib.parse import parse_qsl, unquote
 import httpx
 import pytest
 from fakes.canary import find_canaries, find_secret_shapes, make_upbit_credentials
+from fakes.certs import certifi_cert_count, write_one_cert_bundle
 from fakes.clock import FakeClock
 
 import autotrader
@@ -754,6 +758,183 @@ def test_default_transport_does_not_retry():
 
     assert transport_type is httpx.AsyncHTTPTransport
     assert retries == 0
+
+
+# --- TLS 설정(D-093): 기본 전송은 앱의 TLS 문맥 하나(autotrader.adapters.tls)를 쓴다 ----------
+#
+# UpbitHttp(..., tls_context: ssl.SSLContext | None = None)
+#   transport가 없으면 AsyncHTTPTransport(retries=0, verify=tls_context or create_tls_context(),
+#   trust_env=False). AsyncClient도 trust_env=False다(환경 변수의 프록시·인증서 설정을 읽지 않는다).
+#   tls_context는 그대로 쓰되 검증한다: ssl.SSLContext가 아니면 TypeError, check_hostname True·
+#   CERT_REQUIRED·최소 TLS 1.2 이상이 아니면 ValueError. transport와 함께 주면 ValueError.
+#   transport만 넘기면 TLS 문맥을 만들지 않는다.
+# 문맥은 httpx 내부 속성(_client._transport._pool._ssl_context)으로 확인한다. 연결하지 않는다.
+
+
+def _default_transport_context(**options) -> ssl.SSLContext:
+    async def scenario():
+        clock = FakeClock()
+        http = UpbitHttp(clock=clock, limiter=RateLimiter(clock), **options)
+        try:
+            transport = http._client._transport
+            assert type(transport) is httpx.AsyncHTTPTransport
+            assert transport._pool._retries == 0
+            return transport._pool._ssl_context
+        finally:
+            await http.aclose()
+
+    return run(scenario)
+
+
+def _strict_context(cafile: Path) -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_verify_locations(cafile=str(cafile))
+    return context
+
+
+def test_default_transport_uses_the_app_tls_context(monkeypatch, tmp_path):
+    from autotrader.adapters.tls import create_tls_context
+
+    # httpx 기본값은 SSL_CERT_FILE·SSL_CERT_DIR를 읽는다. 앱 문맥은 certifi 묶음만 읽는다.
+    monkeypatch.setenv("SSL_CERT_FILE", str(write_one_cert_bundle(tmp_path / "one.pem")))
+    monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path))
+
+    context = _default_transport_context()
+    expected = create_tls_context()
+
+    assert context.cert_store_stats()["x509_ca"] == certifi_cert_count()
+    assert context.cert_store_stats() == expected.cert_store_stats()
+    assert context.get_ca_certs(binary_form=True) == expected.get_ca_certs(binary_form=True)
+    assert context.minimum_version == expected.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_default_transport_follows_the_single_ca_source(monkeypatch, tmp_path):
+    from autotrader.adapters import tls
+
+    # CA 출처는 tls 모듈 한 곳에서 정한다. 거기를 바꾸면 기본 전송도 따라간다.
+    one_cert = write_one_cert_bundle(tmp_path / "one.pem")
+    monkeypatch.setattr(tls, "ca_bundle_path", lambda: str(one_cert))
+
+    context = _default_transport_context()
+
+    assert context.cert_store_stats()["x509_ca"] == 1
+
+
+def test_default_transport_and_client_do_not_trust_the_environment(monkeypatch):
+    # 동작은 httpx 기본과 같다(문맥을 직접 주고 transport를 넘긴다). 의도를 코드에 드러낸다.
+    seen: list[dict] = []
+    original = httpx.AsyncHTTPTransport
+
+    class RecordingTransport(original):
+        def __init__(self, *args, **kwargs):
+            seen.append(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", RecordingTransport)
+
+    async def scenario():
+        clock = FakeClock()
+        http = UpbitHttp(clock=clock, limiter=RateLimiter(clock))
+        try:
+            return http._client.trust_env
+        finally:
+            await http.aclose()
+
+    client_trust_env = run(scenario)
+
+    assert len(seen) == 1
+    assert seen[0]["trust_env"] is False
+    assert seen[0]["retries"] == 0
+    assert client_trust_env is False
+
+
+def test_client_with_a_given_transport_does_not_trust_the_environment():
+    async def scenario():
+        async with connect() as h:
+            return h.http._client.trust_env
+
+    assert run(scenario) is False
+
+
+def test_given_tls_context_is_used_as_is(tmp_path):
+    given = _strict_context(write_one_cert_bundle(tmp_path / "one.pem"))
+
+    context = _default_transport_context(tls_context=given)
+
+    assert context is given
+    assert context.cert_store_stats()["x509_ca"] == 1
+
+
+def _weaken(context: ssl.SSLContext, how: str) -> ssl.SSLContext:
+    if how == "no_hostname_check":
+        context.check_hostname = False
+    elif how == "cert_none":
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    elif how == "cert_optional":
+        context.verify_mode = ssl.CERT_OPTIONAL
+    elif how == "minimum_supported":
+        context.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
+    elif how == "tls1_1":
+        with warnings.catch_warnings():  # TLSv1_1은 폐기 예정 경고를 낸다(일부러 약하게 만든다).
+            warnings.simplefilter("ignore", DeprecationWarning)
+            context.minimum_version = ssl.TLSVersion.TLSv1_1
+    return context
+
+
+@pytest.mark.parametrize(
+    "how", ["no_hostname_check", "cert_none", "cert_optional", "minimum_supported", "tls1_1"]
+)
+def test_weak_tls_context_is_rejected(tmp_path, how):
+    weak = _weaken(_strict_context(write_one_cert_bundle(tmp_path / "one.pem")), how)
+    clock = FakeClock()
+
+    with pytest.raises(ValueError, match="tls_context"):
+        UpbitHttp(clock=clock, limiter=RateLimiter(clock), tls_context=weak)
+
+
+@pytest.mark.parametrize("value", [True, "cacert.pem"], ids=["bool", "path"])
+def test_tls_context_must_be_an_ssl_context(value):
+    clock = FakeClock()
+
+    with pytest.raises(TypeError, match="tls_context"):
+        UpbitHttp(clock=clock, limiter=RateLimiter(clock), tls_context=value)
+
+
+def test_tls_context_together_with_transport_is_rejected(tmp_path):
+    # 함께 주면 tls_context를 말없이 버리게 된다. 보내기 전에 거부한다.
+    given = _strict_context(write_one_cert_bundle(tmp_path / "one.pem"))
+    clock = FakeClock()
+
+    with pytest.raises(ValueError, match="tls_context"):
+        UpbitHttp(
+            clock=clock,
+            limiter=RateLimiter(clock),
+            transport=httpx.MockTransport(reply()),
+            tls_context=given,
+        )
+
+
+def test_given_transport_builds_no_tls_context(monkeypatch, tmp_path):
+    from autotrader.adapters import tls
+
+    # transport를 넘기면 TLS 문맥을 만들지 않는다(묶음 파일이 없어도 만들어진다).
+    monkeypatch.setattr(tls, "ca_bundle_path", lambda: str(tmp_path / "missing.pem"))
+
+    async def scenario():
+        async with connect() as h:
+            await h.http.get("/v1/ticker", [("markets", "KRW-BTC")])
+            client = h.http._client
+            return client._transport, dict(client._mounts), len(h.wire.requests)
+
+    transport, mounts, sent = run(scenario)
+
+    assert isinstance(transport, httpx.MockTransport)
+    assert mounts == {}
+    assert sent == 1
 
 
 def test_cookies_from_the_server_are_never_sent_back():
@@ -1589,3 +1770,103 @@ def test_a_success_during_the_block_does_not_reset_the_step():
             await http.aclose()
 
     assert run(scenario) == pytest.approx(600.0)
+
+
+# --- 418 Retry-After 24시간 상한(D-089 보완, QA R17-09) --------------------------------------
+# 사용자 결정: Retry-After가 24시간을 넘으면 24시간만 기다리고, 앱 계층이 긴급 알림을 보낼 수 있게
+# 표시를 남긴 뒤 만기 뒤 확인 요청 1건을 보낸다. 표시: 그 418로 낸 UpbitBlocked.retry_after_capped와
+# RateLimiter.retry_after_capped. UpbitBlocked.retry_after는 서버가 준 원래 값(알림·기록용)이다.
+
+DAY = 86400.0
+
+
+def blocked_for(retry_after: str | None):
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    return reply(418, content=b"", headers=headers, remaining=None)
+
+
+@pytest.mark.parametrize("retry_after", ["90000", "999999999"])
+def test_418_with_retry_after_over_24_hours_waits_24_hours_and_marks_the_error(retry_after):
+    async def scenario():
+        async with gated(blocked_for(retry_after), reply(201)) as (http, wire, clock, limiter):
+            with pytest.raises(UpbitBlocked) as caught:
+                await http.get("/v1/ticker", [("markets", "KRW-BTC")])
+            wait = limiter.blocked_until() - clock.monotonic()
+            marked = limiter.retry_after_capped
+            await advance(clock, DAY - 1.0)
+            local_errors = []
+            for call in FIVE_CALLS:  # 아직 차단: 네트워크로 나가지 않는다
+                with pytest.raises(UpbitBlocked) as local:
+                    await call(http)
+                local_errors.append(local.value)
+            during = len(wire.requests)
+            await advance(clock, 1.0)  # 만기 순간
+            wire.gate.clear()
+            tasks = [asyncio.create_task(call(http)) for call in FIVE_CALLS]
+            await settle()
+            on_wire = len(wire.requests)
+            wire.gate.set()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            return caught.value, wait, marked, during, on_wire, results, limiter, local_errors
+
+    error, wait, marked, during, on_wire, results, limiter, local_errors = run(scenario)
+
+    assert error.http_status == 418
+    assert error.retry_after == float(retry_after)  # 원래 값은 그대로 보존
+    assert error.retry_after_capped is True
+    # 네트워크 없이 낸 UpbitBlocked도 표시를 담는다. retry_after는 남은 시간이다.
+    assert all(e.retry_after_capped is True for e in local_errors)
+    assert all(e.retry_after == pytest.approx(1.0) for e in local_errors)
+    # 만기 뒤 확인 요청을 기다리는 동안 막힌 요청도 같다(retry_after는 없다).
+    waiting = [r for r in results if isinstance(r, UpbitBlocked)]
+    assert len(waiting) == 4
+    assert all(r.retry_after_capped is True and r.retry_after is None for r in waiting)
+    assert wait == pytest.approx(DAY)
+    assert marked is True
+    assert during == 1
+    assert on_wire == 2  # 첫 418 + 만기 뒤 확인 요청 1건
+    assert sum(isinstance(result, UpbitResponse) for result in results) == 1
+    assert all(isinstance(r, UpbitResponse | UpbitBlocked) for r in results), results
+    assert limiter.retry_after_capped is False  # 확인 요청이 성공해 차단 기록이 지워졌다
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "kept"),
+    [("1000000000", math.inf), ("99999999999999", math.inf), ("0000090000", 90000.0)],
+    ids=["10-digits", "14-digits", "zero-padded"],
+)
+def test_418_with_an_overlong_retry_after_waits_24_hours_not_the_step_table(retry_after, kept):
+    # 9자리를 넘는 값은 상한 초과(math.inf)로 보고 24시간 상한을 쓴다(D-089 보완 해석).
+    # 앞자리 0은 지우고 읽는다.
+    async def scenario():
+        async with gated(blocked_for(retry_after)) as (http, _wire, clock, limiter):
+            with pytest.raises(UpbitBlocked) as caught:
+                await http.get("/v1/ticker", [("markets", "KRW-BTC")])
+            return caught.value, limiter.blocked_until() - clock.monotonic(), limiter
+
+    error, measured, limiter = run(scenario)
+
+    assert error.retry_after == kept
+    assert error.retry_after_capped is True
+    assert measured == pytest.approx(DAY)
+    assert limiter.retry_after_capped is True
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "wait"),
+    [(None, 300.0), ("120", 120.0), ("86400", DAY)],
+    ids=["no_header", "120", "exactly-24h"],
+)
+def test_418_up_to_24_hours_is_not_marked_as_capped(retry_after, wait):
+    async def scenario():
+        async with gated(blocked_for(retry_after)) as (http, _wire, clock, limiter):
+            with pytest.raises(UpbitBlocked) as caught:
+                await http.get("/v1/ticker", [("markets", "KRW-BTC")])
+            return caught.value, limiter.blocked_until() - clock.monotonic(), limiter
+
+    error, measured, limiter = run(scenario)
+
+    assert error.retry_after_capped is False
+    assert error.retry_after == (None if retry_after is None else float(retry_after))
+    assert measured == pytest.approx(wait)
+    assert limiter.retry_after_capped is False

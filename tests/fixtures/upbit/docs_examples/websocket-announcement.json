@@ -1,0 +1,122 @@
+{
+  "source": "https://docs.upbit.com/kr/reference/websocket-announcement.md",
+  "retrieved_at": "2026-11-05",
+  "doc_updated_at": "2026-09-22T15:39:30.000Z",
+  "endpoint": "wss://api.upbit.com/websocket/v1/private",
+  "type": "announcement",
+  "example_title": "모든 공지사항 구독 - 수신 메시지 예제(특정 카테고리 구독 예제의 수신 메시지도 같다)",
+  "example": {
+    "type": "announcement",
+    "event_type": "CREATED",
+    "uuid": "562593104",
+    "title": "[거래] 신규 거래 지원 안내 ...",
+    "category": "trade",
+    "url": "https://www.upbit.com/service_center/notice?id=562593104&view=share",
+    "first_listed_at": "2026-07-14T16:36:34+09:00",
+    "listed_at": "2026-07-14T16:36:34+09:00",
+    "timestamp": 1752566400123,
+    "stream_type": "REALTIME"
+  },
+  "other_examples": {
+    "with_body": {
+      "type": "announcement",
+      "event_type": "CREATED",
+      "uuid": "562593104",
+      "title": "[거래] 신규 거래 지원 안내 ...",
+      "category": "trade",
+      "url": "https://www.upbit.com/service_center/notice?id=562593104&view=share",
+      "first_listed_at": "2026-07-14T16:36:34+09:00",
+      "listed_at": "2026-07-14T16:36:34+09:00",
+      "timestamp": 1752566400123,
+      "stream_type": "REALTIME",
+      "body": "공지사항 본문 ..."
+    }
+  },
+  "request_examples": {
+    "all": [
+      {
+        "ticket": "announcement-monitor"
+      },
+      {
+        "type": "announcement",
+        "include_body": false
+      },
+      {
+        "format": "DEFAULT"
+      }
+    ],
+    "trade_only": [
+      {
+        "ticket": "trade-announcement-monitor"
+      },
+      {
+        "type": "announcement",
+        "categories": [
+          "trade"
+        ],
+        "include_body": false
+      },
+      {
+        "format": "DEFAULT"
+      }
+    ],
+    "with_body": [
+      {
+        "ticket": "announcement-subscription"
+      },
+      {
+        "type": "announcement",
+        "include_body": true
+      },
+      {
+        "format": "DEFAULT"
+      }
+    ]
+  },
+  "categories": [
+    "notice",
+    "trade",
+    "wallet",
+    "maintenance",
+    "digital_asset",
+    "nft",
+    "service",
+    "event"
+  ],
+  "event_types": [
+    "CREATED",
+    "UPDATED"
+  ],
+  "error_examples": [
+    {
+      "title": "Error Response",
+      "body": {
+        "error": {
+          "name": "ERRPR_CODE",
+          "message": "ERROR_MESSAGE"
+        }
+      }
+    }
+  ],
+  "error_names": [
+    "INVALID_AUTH",
+    "WRONG_FORMAT",
+    "NO_TICKET",
+    "NO_TYPE",
+    "NO_CODES",
+    "INVALID_PARAM",
+    "TOO_MANY_REQUEST"
+  ],
+  "rate_limits": [
+    {
+      "group": "websocket-connect",
+      "policy": "초당 최대 5회",
+      "unit": "포켓"
+    },
+    {
+      "group": "websocket-message",
+      "policy": "초당 최대 5회, 분당 100회",
+      "unit": "커넥션"
+    }
+  ]
+}

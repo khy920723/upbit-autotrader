@@ -28,6 +28,7 @@ from autotrader.core.errors import UpbitBlocked
 
 # isort: split
 # adapters.upbit는 아직 없어서 ruff가 서드파티로 분류한다. 구현 전후로 정렬이 바뀌지 않게 따로 둔다.
+from autotrader.adapters.upbit import ratelimit as ratelimit_module
 from autotrader.adapters.upbit.ratelimit import (
     GROUP_LIMITS,
     RateLimiter,
@@ -546,7 +547,7 @@ def test_success_after_block_resets_the_wait():
     assert asyncio.run(scenario()) == pytest.approx(300.0)
 
 
-# --- 418 세부(D-089 제안: 오케스트레이터 결정 D·E·F) ---------------------------------------
+# --- 418 세부(D-089: 오케스트레이터 결정 D·E·F를 사용자가 확정) ------------------------------
 
 
 def test_418_arriving_while_already_blocked_does_not_raise_the_step():
@@ -611,13 +612,189 @@ def test_retry_after_longer_than_sixty_minutes_is_kept():
     assert limiter.blocked_until() == pytest.approx(START + 7200.0)
 
 
-@pytest.mark.parametrize("retry_after", [-1.0, 0.0, math.nan, math.inf], ids=str)
-def test_unusable_retry_after_falls_back_to_the_step_table(retry_after):
+# --- 418 Retry-After 24시간 상한(D-089 보완, QA R17-09) --------------------------------------
+# 사용자 결정: Retry-After가 24시간을 넘으면 24시간만 기다린다. 앱 계층이 긴급 알림을 보낼 수 있게
+# 상한을 적용했다는 표시(RateLimiter.retry_after_capped)를 남기고, 만기 뒤에는 확인 요청 1건이다.
+# 정확히 24시간은 "넘는" 값이 아니므로 그대로 기다리고 표시하지 않는다.
+
+DAY = 86400.0
+
+
+def test_retry_after_cap_is_24_hours():
+    assert ratelimit_module.MAX_RETRY_AFTER_WAIT == DAY
+    assert ratelimit_module.MAX_STEP_WAIT == 3600.0  # 단계표 상한(60분)은 그대로
+
+
+@pytest.mark.parametrize("retry_after", [86401.0, 90000.0, 999_999_999.0], ids=str)
+def test_retry_after_over_24_hours_blocks_for_24_hours_then_allows_one_probe(retry_after):
+    # 999,999,999초는 Retry-After 해석이 받는 가장 큰 값(9자리, 약 31년)이다.
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        await advance(clock, 10.0)
+        limiter.on_blocked(retry_after)
+        until = limiter.blocked_until()
+        marked = limiter.retry_after_capped
+        await advance(clock, DAY - 0.5)
+        with pytest.raises(UpbitBlocked):
+            limiter.check_not_blocked()
+        await advance(clock, 0.5)  # 만기 순간
+        probe = limiter.start_send()
+        with pytest.raises(UpbitBlocked):
+            limiter.start_send()  # 확인 요청은 1건만
+        limiter.end_send(probe)
+        return until, marked, probe
+
+    until, marked, probe = asyncio.run(scenario())
+
+    assert until == pytest.approx(START + 10.0 + DAY)
+    assert marked is True
+    assert probe is True
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "wait"),
+    [(None, 300.0), (120.0, 120.0), (7200.0, 7200.0), (DAY, DAY)],
+    ids=["none", "120", "7200", "exactly-24h"],
+)
+def test_waits_up_to_24_hours_are_kept_and_not_marked_as_capped(retry_after, wait):
     limiter = RateLimiter(FakeClock())
+    assert limiter.retry_after_capped is False  # 차단된 적이 없다
 
     limiter.on_blocked(retry_after)
 
+    assert limiter.blocked_until() == pytest.approx(START + wait)
+    assert limiter.retry_after_capped is False
+
+
+def test_capped_418_arriving_while_blocked_extends_the_block_to_at_most_24_hours():
+    # 결정 D와 함께: 차단 중에 온 418은 단계를 올리지 않고 더 늦은 만기만 따른다(24시간 안).
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        limiter.on_blocked(None)  # START+300
+        await advance(clock, 10.0)
+        limiter.on_blocked(90000.0)
+        until = limiter.blocked_until()
+        marked = limiter.retry_after_capped
+        await advance(clock, DAY + 0.5)
+        probe = limiter.start_send()
+        now = clock.monotonic()
+        limiter.on_blocked(None)  # 확인 요청의 418 → 두 번째 단계(10분)
+        limiter.end_send(probe)
+        return until, marked, limiter.blocked_until() - now
+
+    until, marked, next_wait = asyncio.run(scenario())
+
+    assert until == pytest.approx(START + 10.0 + DAY)
+    assert marked is True
+    assert next_wait == pytest.approx(600.0)
+
+
+def test_capped_mark_stays_through_the_probe_and_clears_on_success():
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        limiter.on_blocked(90000.0)
+        await advance(clock, DAY + 0.5)
+        during_probe_wait = limiter.retry_after_capped  # 만기 뒤, 아직 성공 응답이 없다
+        probe = limiter.start_send()
+        limiter.on_success_after_block()
+        limiter.end_send(probe)
+        after_success = limiter.retry_after_capped
+        now = clock.monotonic()
+        limiter.on_blocked(None)
+        return during_probe_wait, after_success, limiter.blocked_until() - now
+
+    during_probe_wait, after_success, next_wait = asyncio.run(scenario())
+
+    assert during_probe_wait is True
+    assert after_success is False
+    assert next_wait == pytest.approx(300.0)  # 성공으로 단계가 처음으로 돌아갔다
+
+
+def test_a_new_block_after_a_capped_one_uses_the_step_table_and_is_not_marked():
+    # 결정 E: 상한을 적용한 Retry-After도 단계를 하나 올린다. 다음 418(헤더 없음)은 10분이다.
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        limiter.on_blocked(90000.0)
+        await advance(clock, DAY + 0.5)
+        probe = limiter.start_send()
+        now = clock.monotonic()
+        limiter.on_blocked(None)  # 확인 요청도 418
+        limiter.end_send(probe)
+        return limiter.blocked_until() - now, limiter.retry_after_capped
+
+    next_wait, marked = asyncio.run(scenario())
+
+    assert next_wait == pytest.approx(600.0)
+    assert marked is False
+
+
+def test_capped_retry_after_is_logged_with_the_original_value(caplog):
+    # 원래 값과 실제로 기다리는 시간을 함께 남겨야 418 형식과 상한 적용을 나중에 확인할 수 있다.
+    limiter = RateLimiter(FakeClock())
+
+    with caplog.at_level(logging.WARNING, logger="autotrader.adapters.upbit.ratelimit"):
+        limiter.on_blocked(90000.0)
+
+    messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("90000" in m and "86400" in m for m in messages), messages
+
+
+@pytest.mark.parametrize("retry_after", [-1.0, 0.0, math.nan, -math.inf], ids=str)
+def test_unusable_retry_after_falls_back_to_the_step_table(retry_after):
+    limiter = RateLimiter(FakeClock())
+
+    capped = limiter.on_blocked(retry_after)
+
     assert limiter.blocked_until() == pytest.approx(START + 300.0)
+    assert capped is False
+    assert limiter.retry_after_capped is False
+
+
+def test_infinite_retry_after_is_over_the_cap_and_waits_24_hours():
+    # parse_retry_after는 9자리를 넘는 값을 math.inf(상한 초과)로 준다. 5분 단계표로 가지 않는다.
+    limiter = RateLimiter(FakeClock())
+
+    capped = limiter.on_blocked(math.inf)
+
+    assert capped is True
+    assert limiter.retry_after_capped is True
+    assert limiter.blocked_until() == pytest.approx(START + DAY)
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "capped"),
+    [(90000.0, True), (math.inf, True), (DAY, False), (None, False)],
+    ids=["90000", "inf", "exactly-24h", "none"],
+)
+def test_blocked_errors_raised_without_network_carry_the_capped_mark(retry_after, capped):
+    # 차단 중(check_not_blocked)과 만기 뒤 확인 요청 대기 중(start_send) 모두 한도 장치 표시를
+    # 담는다.
+    # retry_after는 남은 시간이다(확인 요청 대기 중에는 None).
+    async def scenario():
+        clock = FakeClock()
+        limiter = RateLimiter(clock)
+        limiter.on_blocked(retry_after)
+        wait = limiter.blocked_until() - clock.monotonic()
+        await advance(clock, 100.0)
+        with pytest.raises(UpbitBlocked) as during:
+            limiter.check_not_blocked()
+        await advance(clock, wait - 100.0)  # 만기 순간
+        probe = limiter.start_send()
+        with pytest.raises(UpbitBlocked) as waiting:
+            limiter.start_send()
+        limiter.end_send(probe)
+        return wait, during.value, waiting.value
+
+    wait, during, waiting = asyncio.run(scenario())
+
+    assert during.retry_after == pytest.approx(wait - 100.0)
+    assert during.retry_after_capped is capped
+    assert waiting.retry_after is None
+    assert waiting.retry_after_capped is capped
 
 
 def test_check_not_blocked_raises_blocked_with_the_remaining_wait():

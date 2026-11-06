@@ -16,9 +16,11 @@ classifiers = [
 # 의존성을 바꾸면 docs/07-security-legal/dependency-licenses.md도 갱신한다(테스트가 확인한다).
 dependencies = [
     "PySide6==6.12.0",
+    "certifi==2026.10.23",
     "httpx==0.28.1",
     "keyring==25.7.0",
     "pyjwt==2.15.1",
+    "websockets==17.4",
 ]
 
 [project.gui-scripts]

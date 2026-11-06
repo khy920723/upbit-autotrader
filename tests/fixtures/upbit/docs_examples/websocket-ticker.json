@@ -1,0 +1,138 @@
+{
+  "source": "https://docs.upbit.com/kr/reference/websocket-ticker.md",
+  "retrieved_at": "2026-11-05",
+  "doc_updated_at": "2026-09-22T01:58:15.000Z",
+  "endpoint": "wss://api.upbit.com/websocket/v1",
+  "type": "ticker",
+  "example_title": "KRW-BTC, KRW-ETH 현재가 조회 - 수신 메시지 예제",
+  "example": {
+    "type": "ticker",
+    "code": "KRW-BTC",
+    "opening_price": 109165000.0,
+    "high_price": 110117000.0,
+    "low_price": 108958000.0,
+    "trade_price": 109868000.0,
+    "prev_closing_price": 109165000.0,
+    "acc_trade_price": 59726546304.62442,
+    "change": "RISE",
+    "change_price": 703000.0,
+    "signed_change_price": 703000.0,
+    "change_rate": 0.006439793,
+    "signed_change_rate": 0.006439793,
+    "ask_bid": "BID",
+    "trade_volume": 9.101e-05,
+    "acc_trade_volume": 544.24861805,
+    "trade_date": "20260826",
+    "trade_time": "072400",
+    "trade_timestamp": 1787729040682,
+    "acc_ask_volume": 271.9810004,
+    "acc_bid_volume": 272.26761765,
+    "highest_52_week_price": 179869000.0,
+    "highest_52_week_date": "2025-10-09",
+    "lowest_52_week_price": 88342000.0,
+    "lowest_52_week_date": "2026-08-14",
+    "market_state": "ACTIVE",
+    "is_trading_suspended": false,
+    "delisting_date": null,
+    "market_warning": "NONE",
+    "timestamp": 1787729042606,
+    "acc_trade_price_24h": 198189163442.74924,
+    "acc_trade_volume_24h": 1807.38027625,
+    "stream_type": "SNAPSHOT"
+  },
+  "other_examples": {
+    "KRW-ETH": {
+      "type": "ticker",
+      "code": "KRW-ETH",
+      "opening_price": 3394000.0,
+      "high_price": 3436000.0,
+      "low_price": 3387000.0,
+      "trade_price": 3428000.0,
+      "prev_closing_price": 3394000.0,
+      "acc_trade_price": 29414391716.64815,
+      "change": "RISE",
+      "change_price": 34000.0,
+      "signed_change_price": 34000.0,
+      "change_rate": 0.0100176783,
+      "signed_change_rate": 0.0100176783,
+      "ask_bid": "ASK",
+      "trade_volume": 0.00496157,
+      "acc_trade_volume": 8599.75508773,
+      "trade_date": "20260826",
+      "trade_time": "072402",
+      "trade_timestamp": 1787729042970,
+      "acc_ask_volume": 4252.0770788,
+      "acc_bid_volume": 4347.67800893,
+      "highest_52_week_price": 6793000.0,
+      "highest_52_week_date": "2025-10-07",
+      "lowest_52_week_price": 2300000.0,
+      "lowest_52_week_date": "2026-06-06",
+      "market_state": "ACTIVE",
+      "is_trading_suspended": false,
+      "delisting_date": null,
+      "market_warning": "NONE",
+      "timestamp": 1787729043011,
+      "acc_trade_price_24h": 93243246770.60411,
+      "acc_trade_volume_24h": 27285.16598231,
+      "stream_type": "SNAPSHOT"
+    }
+  },
+  "request_examples": {
+    "default": [
+      {
+        "ticket": "ticker-monitor"
+      },
+      {
+        "type": "ticker",
+        "codes": [
+          "KRW-BTC",
+          "KRW-ETH"
+        ]
+      },
+      {
+        "format": "DEFAULT"
+      }
+    ]
+  },
+  "market_states": [
+    "PREVIEW",
+    "ACTIVE",
+    "DELISTED"
+  ],
+  "deprecated_fields": [
+    "is_trading_suspended",
+    "market_warning"
+  ],
+  "error_examples": [
+    {
+      "title": "Error Response",
+      "body": {
+        "error": {
+          "name": "ERRPR_CODE",
+          "message": "ERROR_MESSAGE"
+        }
+      }
+    }
+  ],
+  "error_names": [
+    "INVALID_AUTH",
+    "WRONG_FORMAT",
+    "NO_TICKET",
+    "NO_TYPE",
+    "NO_CODES",
+    "INVALID_PARAM",
+    "TOO_MANY_REQUEST"
+  ],
+  "rate_limits": [
+    {
+      "group": "websocket-connect",
+      "policy": "초당 최대 5회",
+      "unit": "IP"
+    },
+    {
+      "group": "websocket-message",
+      "policy": "초당 최대 5회, 분당 100회",
+      "unit": "커넥션"
+    }
+  ]
+}

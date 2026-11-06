@@ -3,11 +3,13 @@
 Windows 러너의 exe 점검(build-exe.yml)과 같은 흐름을 Linux에서 먼저 확인한다.
 """
 
+import importlib.metadata
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+import certifi
 import pytest
 
 REPORT = "self-test-report.txt"
@@ -83,3 +85,23 @@ def test_failing_check_gives_exit_code_1(tmp_path, clean_env):
     report = report_text(tmp_path)
     assert "[실패] 설정 경로" in report
     assert "결과: 실패 (5/6)" in report
+
+
+def test_tls_line_reports_the_certifi_bundle_whatever_the_ssl_environment(tmp_path, clean_env):
+    # D-093: REST·웹소켓·자가 점검은 certifi 묶음만 쓴다. SSL_CERT_FILE·SSL_CERT_DIR가 엉뚱한 곳을
+    # 가리켜도 TLS 점검은 통과하고 certifi 묶음의 CA 수를 보고한다. 연결은 하지 않는다.
+    clean_env["SSL_CERT_FILE"] = str(tmp_path / "missing.pem")
+    clean_env["SSL_CERT_DIR"] = str(tmp_path / "missing-dir")
+    bundle = Path(certifi.where())
+    ca_count = bundle.read_text(encoding="utf-8").count("-----BEGIN CERTIFICATE-----")
+
+    result = run(["-m", "autotrader", "--self-test"], tmp_path, clean_env)
+
+    assert result.returncode == 0, describe(result, tmp_path)
+    report = report_text(tmp_path)
+    tls_lines = [line for line in report.splitlines() if line.startswith("[통과] TLS 인증서: ")]
+    assert len(tls_lines) == 1, report
+    assert f"certifi {importlib.metadata.version('certifi')}" in tls_lines[0]
+    assert f"CA 인증서 {ca_count}개" in tls_lines[0]
+    assert "최소 TLSv1_2" in tls_lines[0]
+    assert str(bundle) not in report

@@ -1,0 +1,64 @@
+{
+  "source": "https://docs.upbit.com/kr/reference/websocket-myasset.md",
+  "retrieved_at": "2026-11-05",
+  "doc_updated_at": "2026-09-22T02:00:30.000Z",
+  "endpoint": "wss://api.upbit.com/websocket/v1/private",
+  "type": "myAsset",
+  "example_title": "내 자산 변동 구독 - 수신 메시지 예제",
+  "example": {
+    "type": "myAsset",
+    "asset_uuid": "e635f223-1609-4969-8fb6-4376937baad6",
+    "assets": [
+      {
+        "currency": "KRW",
+        "balance": 1386929.37231066771348207123,
+        "locked": 10329.670127489597585685
+      }
+    ],
+    "asset_timestamp": 1710146517259,
+    "timestamp": 1710146517267,
+    "stream_type": "REALTIME"
+  },
+  "request_examples": {
+    "default": [
+      {
+        "ticket": "my-asset-monitor"
+      },
+      {
+        "type": "myAsset"
+      }
+    ]
+  },
+  "error_examples": [
+    {
+      "title": "Error Response",
+      "body": {
+        "error": {
+          "name": "ERRPR_CODE",
+          "message": "ERROR_MESSAGE"
+        }
+      }
+    }
+  ],
+  "error_names": [
+    "INVALID_AUTH",
+    "WRONG_FORMAT",
+    "NO_TICKET",
+    "NO_TYPE",
+    "NO_CODES",
+    "INVALID_PARAM",
+    "TOO_MANY_REQUEST"
+  ],
+  "rate_limits": [
+    {
+      "group": "websocket-connect",
+      "policy": "초당 최대 5회",
+      "unit": "포켓"
+    },
+    {
+      "group": "websocket-message",
+      "policy": "초당 최대 5회, 분당 100회",
+      "unit": "커넥션"
+    }
+  ]
+}

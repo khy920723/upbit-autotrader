@@ -4,6 +4,7 @@
 Decimal 필드에 float·int·bool·str이 오면 만들 때 TypeError다(`Decimal | None` 필드는 None 허용).
 응답에 없는 선택 필드는 None(모름)으로 둔다.
 비밀(UpbitCredentials)은 dataclass가 아니다. repr/str에 값이 없고 복제·피클이 안 된다(INV-07).
+웹소켓 이벤트(3b)는 파일 끝에 있다. 공식 문서 필드 이름을 앱 이름으로 바꾸는 일은 어댑터가 한다.
 근거: docs/06-architecture/system-architecture.md 6장, docs/08-quality/fakes-spec.md 2.2절.
 """
 
@@ -12,7 +13,7 @@ import hmac
 import types
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from functools import cache
 from typing import Literal, NoReturn
@@ -281,3 +282,186 @@ class UpbitCredentials:
     __copy__ = _refuse_copy
     __deepcopy__ = _refuse_copy
     __getstate__ = _refuse_copy
+
+
+# ── 웹소켓 이벤트(3단계 3b) ───────────────────────────────
+# 근거: 공식 문서 websocket-ticker·myorder·myasset·announcement(2026-11-05 확인),
+# docs/06-architecture/system-architecture.md 6장.
+# 정한 필드는 tests/unit/test_core_stream_models.py.
+
+StreamName = Literal["public", "private"]
+"""스트림 이름. public은 시세(ticker), private는 내 주문·자산·공지."""
+
+StreamStatusKind = Literal["CONNECTING", "OPEN", "RECONNECTING", "DEGRADED", "BROKEN", "AUTH_CHECK"]
+
+
+@cache
+def _millisecond_fields(cls: type) -> tuple[tuple[str, bool], ...]:
+    """cls의 `*_ms` int 필드 (이름, None 허용 여부)."""
+    found: list[tuple[str, bool]] = []
+    for f in dataclasses.fields(cls):
+        if not f.name.endswith("_ms"):
+            continue
+        if f.type is int:
+            found.append((f.name, False))
+        elif isinstance(f.type, types.UnionType) and int in f.type.__args__:
+            found.append((f.name, type(None) in f.type.__args__))
+    return tuple(found)
+
+
+def _check_milliseconds(obj: object) -> None:
+    """타임스탬프(ms) 필드가 int가 아니면(bool·float·Decimal·str) TypeError."""
+    for name, optional in _millisecond_fields(type(obj)):
+        value = getattr(obj, name)
+        if value is None and optional:
+            continue
+        if type(value) is not int:
+            raise TypeError(f"{type(obj).__name__}.{name}는 int여야 한다: {type(value).__name__}")
+
+
+def _check_stream_event(obj: object) -> None:
+    """웹소켓 이벤트 공통 검사: Decimal 필드와 타임스탬프(ms) 필드."""
+    _check_decimals(obj)
+    _check_milliseconds(obj)
+
+
+def _check_aware(obj: object, *names: str) -> None:
+    """시각 필드가 시간대 없는(naive, utcoffset()이 None) datetime이면 ValueError."""
+    for name in names:
+        value = getattr(obj, name)
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError(f"{type(obj).__name__}.{name}는 시간대가 있는 시각이어야 한다")
+
+
+@dataclass(frozen=True, slots=True)
+class StreamOpened:
+    """어댑터가 구독 요청을 보낸 직후 가장 먼저 내는 표시(문서 필드 아님).
+
+    감시(StreamSupervisor)는 이것으로 "열림·다시 열림"을 안다. connection_no는 1부터.
+    """
+
+    stream: StreamName
+    connection_no: int
+
+
+@dataclass(frozen=True, slots=True)
+class TickerEvent:
+    """시세 웹소켓 ticker. market←code, timestamp_ms←timestamp.
+
+    폐기 필드 is_trading_suspended·market_warning은 읽지 않는다.
+    market_state(PREVIEW·ACTIVE·DELISTED)·delisting_date는 없으면 None(모름).
+    """
+
+    market: str
+    trade_price: Decimal
+    signed_change_rate: Decimal
+    acc_trade_price_24h: Decimal
+    acc_trade_volume_24h: Decimal
+    market_state: str | None
+    delisting_date: date | None
+    timestamp_ms: int
+    stream_type: Literal["SNAPSHOT", "REALTIME"]
+
+    __post_init__ = _check_stream_event
+
+
+@dataclass(frozen=True, slots=True)
+class MyOrderEvent:
+    """비공개 웹소켓 myOrder. market←code, side←ask_bid(소문자 bid·ask), ord_type←order_type.
+
+    문서에 trade_price·trade_volume이 없다. state=trade면 price·volume이 체결 가격·체결량이다.
+    체결이 아닌 이벤트는 trade_* 필드와 is_maker가 None이다. 앱 밖 주문은 identifier가 None이다.
+    """
+
+    market: str
+    uuid: str
+    identifier: str | None
+    side: str
+    ord_type: str
+    state: str
+    """wait·watch·trade·done·cancel·prevented."""
+    price: Decimal | None
+    avg_price: Decimal | None
+    volume: Decimal | None
+    remaining_volume: Decimal | None
+    executed_volume: Decimal
+    executed_funds: Decimal
+    trade_uuid: str | None
+    trade_fee: Decimal | None
+    is_maker: bool | None
+    smp_type: str | None
+    prevented_volume: Decimal | None
+    order_timestamp_ms: int
+    trade_timestamp_ms: int | None
+    timestamp_ms: int
+
+    __post_init__ = _check_stream_event
+
+
+@dataclass(frozen=True, slots=True)
+class AssetBalance:
+    currency: str
+    balance: Decimal
+    locked: Decimal
+
+    __post_init__ = _check_decimals
+
+
+@dataclass(frozen=True, slots=True)
+class MyAssetEvent:
+    """비공개 웹소켓 myAsset. asset_uuid로 중복 이벤트를 거른다.
+
+    assets는 만들 때 튜플로 바꾼다(해시·비교가 되게). 원소가 AssetBalance가 아니면 TypeError.
+    """
+
+    asset_uuid: str
+    assets: tuple[AssetBalance, ...]
+    asset_timestamp_ms: int
+    timestamp_ms: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "assets", tuple(self.assets))
+        for asset in self.assets:
+            if not isinstance(asset, AssetBalance):
+                raise TypeError(
+                    f"MyAssetEvent.assets의 원소는 AssetBalance여야 한다: {type(asset).__name__}"
+                )
+        _check_milliseconds(self)
+
+
+@dataclass(frozen=True, slots=True)
+class AnnouncementEvent:
+    """비공개 웹소켓 announcement(공지). 종목 코드 필드가 없어 글자로만 판단한다(core/notices.py).
+
+    listed_at·first_listed_at은 문서에서 KST 문자열이다. 시간대 없는 시각은 ValueError.
+    body는 요청했을 때만 오고 크면 None이다.
+    """
+
+    uuid: str
+    title: str
+    category: str
+    url: str
+    event_type: Literal["CREATED", "UPDATED"]
+    listed_at: datetime
+    first_listed_at: datetime
+    body: str | None
+    timestamp_ms: int
+
+    def __post_init__(self) -> None:
+        _check_aware(self, "listed_at", "first_listed_at")
+        _check_milliseconds(self)
+
+
+@dataclass(frozen=True, slots=True)
+class StreamStatus:
+    """감시(StreamSupervisor)가 알리는 스트림 상태.
+
+    error_name은 서버 오류 이름(error.name), 재연결 훅 실패면 예외 클래스 이름, 없으면 None.
+    retry_in은 다시 열기 전에 기다릴 초(RECONNECTING), 없으면 None.
+    """
+
+    stream: StreamName
+    kind: StreamStatusKind
+    reason: str
+    error_name: str | None
+    retry_in: float | None

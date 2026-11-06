@@ -8,8 +8,12 @@
   초당 1건이 안 되는 그룹(order-cancel-all)은 앞 요청에서 최소 간격을 둔다.
 - Remaining-Req는 sec만 읽는다(min은 폐기). sec=0이거나 429면 그 그룹만
   `max(floor(now)+1, now+1)`까지(최소 1초) 멈춘다.
-- 418(D-078, D-089 제안): 모든 요청을 멈춘다. Retry-After가 있으면 그 시간,
+- 418(D-078, D-089): 모든 요청을 멈춘다. Retry-After가 있으면 그 시간,
   없으면 5·10·20·40·60분. 차단 중에 도착한 418(함께 나갔던 요청)은 단계를 올리지 않는다.
+  Retry-After가 24시간을 넘으면(9자리를 넘어 math.inf로 읽은 값 포함) 24시간만 기다리고
+  `retry_after_capped`로 표시한다(D-089 보완, QA R17-09). 표시는 만기 뒤 확인 요청이 성공할
+  때까지 남고, 성공하거나 새 차단이 오면 지운다. 긴급 알림은 앱 계층이 이 표시(또는
+  UpbitBlocked.retry_after_capped)가 False에서 True로 바뀔 때 한 번 보낸다.
 - 418 만기 뒤 반개방: 성공 응답을 받기 전까지는 처리 중인 확인 요청을 1건만 허용하고,
   그동안 다른 요청은 네트워크 없이 UpbitBlocked다. 확인 요청이 성공(2xx)이면 단계를 처음으로
   돌리고, 418이면 다음 단계로 차단하며, 그 밖의 결과(다른 오류, 타임아웃, 연결 오류, 취소)면
@@ -75,6 +79,7 @@ _ROUTES: MappingProxyType[tuple[str, str], tuple[str, bool]] = MappingProxyType(
 
 FIRST_BLOCK_WAIT = 300.0  # 5분
 MAX_STEP_WAIT = 3600.0  # 단계표의 상한 60분(Retry-After에는 적용하지 않는다)
+MAX_RETRY_AFTER_WAIT = 86400.0  # Retry-After 대기의 상한 24시간(D-089 보완, QA R17-09)
 _MAX_STEP_EXPONENT = 4  # 300 * 2**4 = 4800 > 60분. 그보다 큰 지수는 쓰지 않는다(오버플로 방지)
 _MAX_SEC_DIGITS = 6  # Remaining-Req sec 값의 길이 상한. 더 길면 읽지 않는다
 _PAUSE = 1.0  # 429·sec=0 멈춤의 최소 길이(초)
@@ -168,6 +173,7 @@ class RateLimiter:
         self._blocked_until: float | None = None
         self._block_steps = 0
         self._probe_in_flight = False
+        self._retry_after_capped = False
 
     def _bucket(self, group: str) -> _Bucket:
         try:
@@ -207,24 +213,54 @@ class RateLimiter:
         """429를 받았다. 그 그룹만 멈춘다(최소 1초)."""
         self._pause_group(group)
 
-    def on_blocked(self, retry_after: float | None) -> None:
-        """418을 받았다. 모든 요청을 차단 시간 동안 멈춘다(D-078, D-089 제안)."""
-        if retry_after is not None and not (math.isfinite(retry_after) and retry_after > 0):
+    @property
+    def retry_after_capped(self) -> bool:
+        """지금 차단 중에 24시간을 넘는 Retry-After를 24시간으로 줄였는지(D-089 보완).
+
+        만기 뒤 확인 요청이 성공할 때까지 남는다. 성공하거나 새 차단(만기 뒤 418)이 오면 그 418의
+        값으로 다시 정한다(줄이지 않았으면 지운다).
+
+        긴급 알림: 동시에 나간 요청 여러 개가 같은 차단으로 418을 받으면 그 UpbitBlocked마다
+        retry_after_capped가 참일 수 있고, 차단 중에 네트워크 없이 낸 UpbitBlocked도 이 표시를
+        담는다. 앱 계층은 예외마다 알리지 말고 이 표시가 False에서 True로 바뀔 때 한 번만 알린다.
+        """
+        return self._retry_after_capped
+
+    def on_blocked(self, retry_after: float | None) -> bool:
+        """418을 받았다. 모든 요청을 차단 시간 동안 멈춘다(D-078, D-089).
+
+        Retry-After가 24시간을 넘으면 24시간만 기다린다. 이번 Retry-After를 줄였으면 True다.
+        `math.inf`는 parse_retry_after가 9자리를 넘는 값에 주는 "상한 초과"이므로 24시간 상한을
+        쓴다. 0 이하·NaN은 없는 것으로 보고 단계표를 쓴다.
+        """
+        if retry_after is not None and not retry_after > 0:  # NaN도 여기서 걸러진다
             retry_after = None
+        capped = retry_after is not None and retry_after > MAX_RETRY_AFTER_WAIT
+        if capped:
+            logger.warning(
+                "업비트 418 Retry-After %.0f초가 상한을 넘어 %.0f초만 기다린다",
+                retry_after,
+                MAX_RETRY_AFTER_WAIT,
+            )
+            retry_after = MAX_RETRY_AFTER_WAIT
         now = self._clock.monotonic()
         if self._blocked_until is not None and now < self._blocked_until:
             # 차단 전에 함께 나갔던 요청의 418이다. 단계는 그대로 두고 더 늦은 만기만 따른다.
+            # 표시는 이 차단 동안 한 번이라도 줄였으면 남긴다.
             if retry_after is not None:
                 self._blocked_until = max(self._blocked_until, now + retry_after)
-            return
+            self._retry_after_capped = self._retry_after_capped or capped
+            return capped
         if retry_after is None:
             exponent = min(self._block_steps, _MAX_STEP_EXPONENT)
             wait = min(FIRST_BLOCK_WAIT * 2**exponent, MAX_STEP_WAIT)
         else:
-            wait = retry_after  # 거래소 지시가 우선이므로 상한을 두지 않는다
+            wait = retry_after  # 거래소 지시가 우선이다(24시간 상한만 둔다)
         self._block_steps = min(self._block_steps + 1, _MAX_STEP_EXPONENT)
         self._blocked_until = now + wait
+        self._retry_after_capped = capped
         logger.warning("업비트 418 차단: %.0f초 동안 모든 요청을 멈춘다", wait)
+        return capped
 
     def blocked_until(self) -> float | None:
         """차단이 풀리는 monotonic 시각. 차단 중이 아니면 None."""
@@ -233,7 +269,11 @@ class RateLimiter:
         return self._blocked_until
 
     def check_not_blocked(self) -> None:
-        """차단 중이거나 만기 뒤 확인 요청이 처리 중이면 네트워크 없이 UpbitBlocked를 던진다."""
+        """차단 중이거나 만기 뒤 확인 요청이 처리 중이면 네트워크 없이 UpbitBlocked를 던진다.
+
+        그 retry_after는 남은 시간(확인 요청 처리 중이면 None)이고, retry_after_capped는 한도 장치의
+        표시(`retry_after_capped` 속성)다.
+        """
         until = self.blocked_until()
         if until is not None:
             raise UpbitBlocked(
@@ -242,6 +282,7 @@ class RateLimiter:
                 message="418 차단 중이라 요청을 보내지 않았다",
                 retry_after=until - self._clock.monotonic(),
                 raw_body="",
+                retry_after_capped=self._retry_after_capped,
             )
         if self._probe_in_flight:
             raise UpbitBlocked(
@@ -250,6 +291,7 @@ class RateLimiter:
                 message="418 차단이 풀렸는지 확인하는 요청이 처리 중이라 보내지 않았다",
                 retry_after=None,
                 raw_body="",
+                retry_after_capped=self._retry_after_capped,
             )
 
     def start_send(self) -> bool:
@@ -279,3 +321,4 @@ class RateLimiter:
         if self.blocked_until() is None:
             self._block_steps = 0
             self._blocked_until = None
+            self._retry_after_capped = False

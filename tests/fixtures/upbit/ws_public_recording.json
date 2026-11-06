@@ -1,0 +1,102 @@
+{
+  "source": "업비트 공개 시세 웹소켓 wss://api.upbit.com/websocket/v1 (키 없음)",
+  "recorded_at_utc": "2026-11-05T12:32:24Z",
+  "recorded_by": "Claude 클라우드 세션(3단계 3b). 연결 3번, 연결 사이 1.5초, 연결마다 요청 메시지 1개",
+  "client": "websockets 17.4, User-Agent qa-fixture-recorder, Origin 없음, 라이브러리 PING 끔",
+  "note": "frames[].text는 받은 프레임을 UTF-8로 푼 원문이다(숫자 표기 그대로). frame은 프레임 종류(binary/text)다. 응답 헤더는 Date와 sec-websocket-extensions만 남겼다.",
+  "sessions": [
+    {
+      "name": "ticker_snapshot_btc_eth",
+      "url": "wss://api.upbit.com/websocket/v1",
+      "connected_at_utc": "2026-11-05T12:32:24.967385Z",
+      "request": [
+        {
+          "ticket": "qa-b661b270-4ab1-47b3-9e84-43cda8f1d0e5"
+        },
+        {
+          "type": "ticker",
+          "codes": [
+            "KRW-BTC",
+            "KRW-ETH"
+          ]
+        },
+        {
+          "format": "DEFAULT"
+        }
+      ],
+      "frames": [
+        {
+          "frame": "binary",
+          "received_at_utc": "2026-11-05T12:32:25.991860Z",
+          "text": "{\"type\":\"ticker\",\"code\":\"KRW-BTC\",\"opening_price\":108328000.00000000,\"high_price\":108903000.00000000,\"low_price\":107769000.00000000,\"trade_price\":107770000.00000000,\"prev_closing_price\":108327000.00000000,\"acc_trade_price\":44216351009.9575500000000000,\"change\":\"FALL\",\"change_price\":557000.00000000,\"signed_change_price\":-557000.00000000,\"change_rate\":0.0051418391,\"signed_change_rate\":-0.0051418391,\"ask_bid\":\"BID\",\"trade_volume\":0.00009279,\"acc_trade_volume\":408.30649131,\"trade_date\":\"20261105\",\"trade_time\":\"123225\",\"trade_timestamp\":1793881945395,\"acc_ask_volume\":179.53509411,\"acc_bid_volume\":228.77139720,\"highest_52_week_price\":159150000.00000000,\"highest_52_week_date\":\"2025-11-11\",\"lowest_52_week_price\":88342000.00000000,\"lowest_52_week_date\":\"2026-08-14\",\"market_state\":\"ACTIVE\",\"is_trading_suspended\":false,\"delisting_date\":null,\"market_warning\":\"NONE\",\"timestamp\":1793881945452,\"acc_trade_price_24h\":106364882496.57117,\"acc_trade_volume_24h\":985.73949208,\"stream_type\":\"SNAPSHOT\"}"
+        },
+        {
+          "frame": "binary",
+          "received_at_utc": "2026-11-05T12:32:25.991953Z",
+          "text": "{\"type\":\"ticker\",\"code\":\"KRW-ETH\",\"opening_price\":3263000.00000000,\"high_price\":3280000.00000000,\"low_price\":3236000.00000000,\"trade_price\":3242000.00000000,\"prev_closing_price\":3263000.00000000,\"acc_trade_price\":31533930583.0818000000000000,\"change\":\"FALL\",\"change_price\":21000.00000000,\"signed_change_price\":-21000.00000000,\"change_rate\":0.0064357953,\"signed_change_rate\":-0.0064357953,\"ask_bid\":\"BID\",\"trade_volume\":0.00154225,\"acc_trade_volume\":9675.74199672,\"trade_date\":\"20261105\",\"trade_time\":\"123222\",\"trade_timestamp\":1793881942695,\"acc_ask_volume\":4989.00453985,\"acc_bid_volume\":4686.73745687,\"highest_52_week_price\":5430000.00000000,\"highest_52_week_date\":\"2025-11-10\",\"lowest_52_week_price\":2300000.00000000,\"lowest_52_week_date\":\"2026-06-06\",\"market_state\":\"ACTIVE\",\"is_trading_suspended\":false,\"delisting_date\":null,\"market_warning\":\"NONE\",\"timestamp\":1793881944603,\"acc_trade_price_24h\":81906681243.79573,\"acc_trade_volume_24h\":25227.8744478,\"stream_type\":\"SNAPSHOT\"}"
+        }
+      ],
+      "closed": {
+        "by": "client",
+        "at_utc": "2026-11-05T12:32:25.991962Z"
+      },
+      "response_headers": {
+        "Date": "Thu, 05 Nov 2026 12:32:26 GMT",
+        "sec-websocket-extensions": "permessage-deflate"
+      }
+    },
+    {
+      "name": "error_no_codes",
+      "url": "wss://api.upbit.com/websocket/v1",
+      "connected_at_utc": "2026-11-05T12:32:27.695061Z",
+      "request": [
+        {
+          "ticket": "qa-7d320bbe-4044-4589-abb3-43a81aa6fa74"
+        },
+        {
+          "type": "ticker"
+        },
+        {
+          "format": "DEFAULT"
+        }
+      ],
+      "frames": [
+        {
+          "frame": "binary",
+          "received_at_utc": "2026-11-05T12:32:28.517018Z",
+          "text": "{\"error\":{\"name\":\"NO_CODES\",\"message\":\"codes 필드가 존재하지 않습니다.\"}}"
+        }
+      ],
+      "closed": {
+        "code": 1000,
+        "reason": "",
+        "at_utc": "2026-11-05T12:32:28.789836Z"
+      },
+      "response_headers": {
+        "Date": "Thu, 05 Nov 2026 12:32:28 GMT",
+        "sec-websocket-extensions": "permessage-deflate"
+      }
+    },
+    {
+      "name": "ping_text_status_up",
+      "url": "wss://api.upbit.com/websocket/v1",
+      "connected_at_utc": "2026-11-05T12:32:30.291833Z",
+      "request": null,
+      "frames": [
+        {
+          "frame": "binary",
+          "received_at_utc": "2026-11-05T12:32:35.441310Z",
+          "text": "{\"status\":\"UP\"}"
+        }
+      ],
+      "closed": {
+        "by": "client",
+        "at_utc": "2026-11-05T12:32:35.441354Z"
+      },
+      "response_headers": {
+        "Date": "Thu, 05 Nov 2026 12:32:31 GMT",
+        "sec-websocket-extensions": "permessage-deflate"
+      }
+    }
+  ]
+}

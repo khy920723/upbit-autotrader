@@ -2,6 +2,12 @@
 
 오류 표(7장)는 타입으로 처리를 나눈다. 예: live 주문 생성 중 NetworkError는 UNKNOWN,
 UpbitOrderRejected는 REJECTED. 그래서 형제 타입이 서로를 상속하면 안 된다.
+
+UpbitIdentifierConflict(`duplicated_identifier`)는 거절이 아니라 결과 불명이다. 같은 요청이 한 번 더
+전달돼 주문이 이미 접수됐을 수 있어 identifier로 조회해 확정한다(D-070, 매매 로직 명세 8·10장,
+INV-03·INV-04, QA R17-01). 그래서 UpbitOrderRejected의 하위가 아닌 형제 타입이다. 하위로 두면
+`except UpbitOrderRejected`가 잡아 REJECTED로 닫고, 거래소에 있을 수 있는 주문을 놓친 채 같은 코인에
+새 주문을 낼 수 있다.
 """
 
 import copy
@@ -16,6 +22,7 @@ UPBIT_SUBCLASSES = (
     errors.UpbitAuthError,
     errors.UpbitPermissionError,
     errors.UpbitOrderRejected,
+    errors.UpbitIdentifierConflict,
     errors.UpbitMarketOffline,
     errors.UpbitNotFound,
     errors.UpbitRateLimited,
@@ -27,7 +34,8 @@ UPBIT_SUBCLASSES = (
 ALL_UPBIT_ERRORS = [errors.UpbitError, *UPBIT_SUBCLASSES]
 
 UPBIT_FIELDS = ("http_status", "error_name", "message", "rate_group", "remaining_sec")
-BLOCKED_FIELDS = (*UPBIT_FIELDS, "retry_after", "raw_body")
+# retry_after_capped: Retry-After가 24시간을 넘어 24시간만 기다린다는 표시(D-089 보완, R17-09).
+BLOCKED_FIELDS = (*UPBIT_FIELDS, "retry_after", "raw_body", "retry_after_capped")
 
 
 def upbit_kwargs(**overrides):
@@ -175,11 +183,108 @@ def test_upbit_blocked_retry_after_may_be_unknown():
     assert err.raw_body == ""
 
 
+def test_upbit_blocked_is_not_marked_as_capped_by_default():
+    # 대부분의 418(헤더 없음, 24시간 이하)은 상한과 무관하다. 기존 생성 경로는 그대로 동작한다.
+    err = make_error(errors.UpbitBlocked)
+
+    assert err.retry_after_capped is False
+
+
+def test_upbit_blocked_keeps_the_capped_mark_and_the_original_retry_after():
+    # 앱 계층이 이 표시로 긴급 알림을 보낸다. retry_after는 서버가 준 원래 값이다(D-089 보완).
+    err = errors.UpbitBlocked(
+        **upbit_kwargs(http_status=418, error_name=None, message=None, rate_group="default"),
+        retry_after=90000.0,
+        raw_body="",
+        retry_after_capped=True,
+    )
+
+    assert err.retry_after_capped is True
+    assert err.retry_after == 90000.0
+
+
+@pytest.mark.parametrize(
+    "clone",
+    [copy.copy, copy.deepcopy, lambda e: pickle.loads(pickle.dumps(e))],
+    ids=["copy", "deepcopy", "pickle"],
+)
+def test_upbit_blocked_capped_mark_survives_copy_and_pickle(clone):
+    err = errors.UpbitBlocked(
+        **upbit_kwargs(http_status=418, error_name=None, message=None, rate_group="ticker"),
+        retry_after=999_999_999.0,
+        raw_body="blocked",
+        retry_after_capped=True,
+    )
+
+    cloned = clone(err)
+
+    assert type(cloned) is errors.UpbitBlocked
+    assert cloned.retry_after_capped is True
+    assert vars(cloned) == vars(err)
+
+
 def test_str_names_the_error_for_logs():
     # 오류 이벤트·로그만 보고도 무슨 오류인지 알 수 있어야 한다.
     text = str(errors.UpbitOrderRejected(**upbit_kwargs()))
 
     assert "under_min_total_bid" in text
+    assert "400" in text
+
+
+# ── duplicated_identifier: 거절이 아니라 결과 불명(R17-01) ──
+
+
+def conflict(**overrides):
+    values = {"error_name": "duplicated_identifier", "message": "문구는 바뀔 수 있다", **overrides}
+    return errors.UpbitIdentifierConflict(**upbit_kwargs(**values))
+
+
+def test_identifier_conflict_is_an_upbit_error_but_not_an_order_rejection():
+    # D-070·INV-03: 주문이 이미 접수됐을 수 있다. REJECTED로 닫는 타입으로 잡히면 안 된다.
+    err = conflict()
+
+    assert isinstance(err, errors.UpbitError)
+    assert isinstance(err, errors.ExternalError)
+    assert not isinstance(err, errors.UpbitOrderRejected)
+    assert not issubclass(errors.UpbitIdentifierConflict, errors.UpbitOrderRejected)
+    assert not issubclass(errors.UpbitOrderRejected, errors.UpbitIdentifierConflict)
+
+
+def test_identifier_conflict_is_a_direct_child_of_upbit_error():
+    # 다른 분류(거절·요청 오류·없음 등)를 거쳐 물려받으면 그 분류의 처리(REJECTED 등)를 탄다.
+    assert errors.UpbitIdentifierConflict.__bases__ == (errors.UpbitError,)
+
+
+def test_identifier_conflict_is_not_a_network_error():
+    # 결과 불명이지만 서버가 답했다. 연결 실패(NetworkError)의 백오프·SUSPENDED 처리와는 다르다.
+    assert not issubclass(errors.UpbitIdentifierConflict, errors.NetworkError)
+    assert not isinstance(conflict(), errors.NetworkError)
+
+
+def test_except_order_rejected_does_not_catch_an_identifier_conflict():
+    # 5단계 주문 관리가 `except UpbitOrderRejected`로 REJECTED를 만들어도 이 오류는 빠져나와야 한다.
+    def close_as_rejected():
+        try:
+            raise conflict()
+        except errors.UpbitOrderRejected:
+            return "REJECTED"
+
+    with pytest.raises(errors.UpbitIdentifierConflict) as caught:
+        close_as_rejected()
+
+    assert caught.value.error_name == "duplicated_identifier"
+
+
+def test_identifier_conflict_keeps_the_error_name_and_status():
+    err = conflict()
+
+    assert err.http_status == 400
+    assert err.error_name == "duplicated_identifier"
+    assert err.message == "문구는 바뀔 수 있다"
+    assert (err.rate_group, err.remaining_sec) == ("order", 7)
+    text = str(err)
+    assert "UpbitIdentifierConflict" in text
+    assert "duplicated_identifier" in text
     assert "400" in text
 
 

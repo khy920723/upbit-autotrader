@@ -2,6 +2,28 @@
 
 세션이 끝날 때마다 맨 위에 추가한다. 형식: 날짜 — 단계 / 한 일 / 결정 / 남은 일 / 다음 단계.
 
+## 2026-11-06 — 3단계 3b: 업비트 웹소켓, 재연결 감시, 가짜 웹소켓, QA 권장 반영 (클라우드 세션)
+
+- 한 일:
+  - 런타임 의존성 `websockets==17.4`(ADR-0006)와 `certifi==2026.10.23`(직접 의존성으로, D-093)을 고정하고 uv.lock·의존성 라이선스 목록을 갱신했다.
+  - core: 웹소켓 이벤트 모델(`StreamOpened`, `TickerEvent`, `MyOrderEvent`, `MyAssetEvent`, `AnnouncementEvent`, `StreamStatus`), 스트림 오류(`StreamClosed`, `StreamConnectFailed`, `StreamError` 계열), 포트(`PublicStream`·`PrivateStream`과 어댑터 계약), 재연결 감시 `core/streams.py`의 `StreamSupervisor`(backoff 1~60초, 60초 유지 뒤 처음으로, 공개 시세 120초 무수신·끊긴 채 재연결 실패 때 DEGRADED, D-080 오류 처리, 재연결 뒤 대조 자리, 대조가 끝난 뒤 OPEN), 공지·시세 상태로 매수 막기 `core/notices.py`(D-079, D-092 제안 A).
+  - 어댑터: `adapters/upbit/websocket.py`(공개 ticker·비공개 myOrder·myAsset·announcement, 연결마다 새 JWT, PING 프레임 30초, 연결·메시지 한도 절반, 리다이렉트 금지, 라이브러리 예외를 core 오류로, 라이브러리 DEBUG 로그 차단, 깨진 메시지 안전 처리), `adapters/tls.py`(REST·웹소켓 공용 TLS 설정, certifi 묶음만, 약한 설정 거부, D-093). 자가 점검의 TLS 항목은 이 설정을 만들어 확인하고 import 점검에 `anyio._backends._asyncio`를 더했다(QA R17-03).
+  - 가짜: 업비트 웹소켓 와이어 가짜 `tests/fakes/upbit_ws.py`(엄격 검사 16개 규칙, 주입, `make_fake_upbit_ws` 픽스처). 공개 시세 웹소켓을 실제로 녹화했다(`tests/fixtures/upbit/ws_public_recording.json`, 키 없음, 연결 3번): 서버 프레임은 모두 바이너리, 형식 오류 뒤 서버가 close 1000으로 끊음, 문자열 PING에 `{"status":"UP"}`. 공식 문서 웹소켓 예시 6개를 `docs_examples/`에 더했다.
+  - QA 권장(PR #17 검토): R17-01 `duplicated_identifier` → 결과 불명 타입 `UpbitIdentifierConflict`(UpbitOrderRejected가 아님), R17-02 테스트 중 실제 네트워크 차단(루트 conftest의 hook, 세션 전체, 넓은 except가 삼켜도 실패, 덮어쓸 수 없음), R17-03 위 TLS·자가 점검. R17-04·06·07은 3b 뒤 정리 PR, R17-05는 인프라 몫으로 남겼다.
+  - 사용자 결정 반영: D-088·D-089(A, 유효), D-089 보완(Retry-After 24시간 상한: 넘으면 24시간만 기다리고 상한 표시, 만기 뒤 확인 1건 — 3b에 구현), D-093(TLS 인증서는 certifi 묶음, 유효). 결정 번호는 main의 D-086과 겹치지 않게 3a의 D-086~D-089를 D-087~D-090으로 옮겼다.
+  - 문서: 결정 로그 D-091(웹소켓 재연결·감시 세부, 유효(초안))·D-092(공지·시세 상태 판단 세부, 대기)·D-093, 업비트 API 연동 명세 2·4·5·9장, 시스템 구성도 5~7장(포트 계약, 오류 트리·처리 표), 가짜 구현 명세 2.3·2.5·5·7장, 보안 정책서, 테스트 시나리오 TS-137, Windows 수동 점검 M-10, 기능 명세서, 빌드·릴리스 7절(certifi 갱신), ADR-0006, 녹화 README, CI 변경안 2번.
+  - 테스트 3763개 통과(9개 건너뜀: IPv6 소켓 없음 8, Windows 전용 1), 커버리지 96%, ruff 통과. 업비트 비공개 API·웹소켓은 부르지 않았다. 공개 시세 웹소켓만 녹화용으로 3번 연결했다.
+  - 진행 방식(D-077): 작업 5개(B1 웹소켓 가짜, B2 웹소켓 어댑터, B3 core 감시·공지 판단, B4 TLS, B5 QA 권장·24시간 상한)마다 테스터 → 워커 → 리뷰어 → 수정 1회. 작업별 모델·노력은 PR 설명에 있다. 중간에 사용량 한도로 에이전트가 멈춰 한도가 풀린 뒤 이어서 했고, 컨테이너 재시작으로 리뷰어 하나를 재개했다.
+- 결정: D-091 유효(초안), D-092 대기(사용자 선택: 공지 글자 판단 세부와 PREVIEW 매수 차단), D-093 유효, D-088·D-089 유효(D-089 보완 포함).
+- 남은 일:
+  - 사용자: D-092 선택.
+  - 사용자(로컬): CI 변경안 2번(Windows 작업에서 네트워크 차단·웹소켓 루프백 테스트). Windows 전용 차단 경로(`IocpProactor.connect`·`sendto`)는 아직 Windows에서 돌려 보지 못했다.
+  - 5단계(조립): 시세·거래 어댑터가 RateLimiter 하나를 공유, 스트림 객체는 앱 수명 동안 하나씩 재사용, 재연결 뒤 대조 내용(잔고·미체결·종목 갱신), OPEN·DEGRADED·BROKEN·AUTH_CHECK를 매매 상태로 옮기기, 24시간 상한 표시가 켜질 때 긴급 알림 한 번, 마켓별 시세 신선도, 418 확인 요청을 가벼운 조회로.
+  - 정리 PR(3b 뒤): QA R17-04(테스트 docstring 첫 줄의 TS·INV ID), R17-06(보내기 전 검사 분기 테스트), R17-07(order_types 폐기 예정 표시).
+  - 인프라: QA R17-05(라이선스 목록 4장 문구, 새 제외 항목), PyInstaller 묶음에 websockets가 들어가는지 Windows 빌드로 확인(리눅스 빌드에서는 self-test 6/6, TLS 줄 "certifi 2026.10.23 묶음, CA 인증서 118개").
+  - 알려진 한계: `SSLKEYLOGFILE`이 있으면 문맥을 만들 때 빈 키 로그 파일이 생길 수 있다(세션 키는 쓰지 않는다). 공지 판단은 한글 이름 부분 문자열이라 "이더리움 클래식" 공지가 이더리움 매수도 막을 수 있다(D-079에서 받아들인 오탐).
+- 다음 단계: 3단계 완료 확인(QA 검토) 뒤 4단계(뉴스 + LLM 시그널). 3b 뒤 정리 PR.
+
 ## 2026-11-06 — QA: Windows 10 수동 점검 0~2절(2단계 빌드) 결과 기록 (클라우드 세션)
 
 - 한 일:

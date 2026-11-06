@@ -59,6 +59,8 @@
 - 한도: 연결 초당 5회(인증 없으면 IP, 있으면 포켓 단위), 메시지는 연결마다 초당 5회·분당 100회. 웹소켓은 남은 요청 수를 알려 주지 않으므로 앱이 센다.
 - 120초 동안 주고받은 데이터가 없으면 서버가 연결을 끊는다. PING 프레임을 보내거나 "PING" 문자열을 보낸다(그러면 서버가 10초마다 `{"status":"UP"}`를 보낸다). 업비트 예제는 30초 간격 PING을 쓴다.
 - 비공개 웹소켓은 연결을 많이 유지하면 새 연결이 거절될 수 있다. 연결 하나에서 필요한 타입을 함께 구독한다.
+- 공식 안내 문서에는 세 번째 주소 `wss://api.upbit.com/websocket/v1/info`(지표)가 있다. 앱은 쓰지 않는다. myAsset 구독에 `codes`를 넣으면 `WRONG_FORMAT`이고, 최초 구독 뒤 몇 분 동안 데이터가 늦을 수 있다(myAsset 문서). 안내 문서의 공지 구독 예시는 category `"trading"`을 쓰지만 공지 문서의 값은 `trade`다(앱은 카테고리 필터 없이 모두 받고 `trade`로 판단한다). myOrder 필드 이름은 REST와 다르다(`code`, `ask_bid`(대문자 BID·ASK), `order_type`). 출처: 2026-11-05 받은 문서 예시(`tests/fixtures/upbit/docs_examples/websocket-*.json`).
+- **구현(3단계 3b):** `adapters/upbit/websocket.py`. 공개는 `[{ticket}, {type: ticker, codes}, {format: DEFAULT}]`, 비공개는 연결마다 새 JWT(HS512, `access_key`·`nonce`만)를 `Authorization` 헤더로 보내고 한 메시지에 myOrder(codes 없음)·myAsset·announcement(`include_body: true`)를 구독한다. PING 프레임은 앱이 30초마다 보낸다. 연결은 초당 2회, 구독 메시지는 스트림마다 초당 2회·분당 50회(한도의 절반, 슬라이딩 창)로 앱이 센다. websockets 라이브러리의 DEBUG 로그(요청 헤더·프레임 원문)는 앱 로그에 남기지 않는다. 깨진 서버 메시지는 그 메시지만 건너뛰고 경고로 기록한다(원문 없이).
 - myOrder는 주문·체결이 있을 때만 데이터가 온다. 상태값은 `wait`, `watch`, `trade`, `done`, `cancel`, `prevented`다([매매 로직 명세](../03-functional/trading-logic.md) 10장).
 - 웹소켓 숫자는 JSON 숫자(Double)로 오고 지수 표기(`9.101e-05`)도 온다. 시세 REST(ticker, orderbook, candles)도 JSON 숫자다. 거래 REST만 문자열이다. 모두 `Decimal`로 파싱한다([데이터 모델](../04-data/data-model.md) 2장, D-071).
 - 재연결 후에는 REST로 잔고·미체결·종목을 다시 대조한다(그동안 놓친 이벤트가 있을 수 있음). 공지(announcement)는 실시간 전용이라 놓친 공지는 다시 오지 않는다.

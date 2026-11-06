@@ -167,7 +167,9 @@
 - `assert_clean()`: 위반이 있으면 목록을 보여 주며 실패한다. `tests/conftest.py`의 `make_fake_upbit(clock=None, credentials=None, **options)`·`fake_upbit` 픽스처가 정리 단계에서 부른다(1.2절 3번).
 - 기록한 요청의 repr은 `Authorization` 값을 가린다.
 
-**3단계 구현 범위(REST):** 위 표의 주입 중 통신(`slow` 제외), 한도, 인증·권한, 주문 거절, `fill(identifier, ratio, price, trades, state)`(이미 있는 주문에도 적용), `not_found_for`, `validate`, 시장 정보(`market_event`, `market_removed`, `chance`, `orderbook`, `candles`, `server_time_offset`, `api_keys`, `set_accounts`)를 만들었다. `slow`, `lookup_error`, `cancel_error`, `manual_order`, `exchange_only_order`, `balance_drift`, SMP `prevented`, 웹소켓 주입은 남은 일이다(웹소켓은 3b, 나머지는 5단계 브로커·대조 시험 때).
+**3단계 구현 범위(REST):** 위 표의 주입 중 통신(`slow` 제외), 한도, 인증·권한, 주문 거절, `fill(identifier, ratio, price, trades, state)`(이미 있는 주문에도 적용), `not_found_for`, `validate`, 시장 정보(`market_event`, `market_removed`, `chance`, `orderbook`, `candles`, `server_time_offset`, `api_keys`, `set_accounts`)를 만들었다. `slow`, `lookup_error`, `cancel_error`, `manual_order`, `exchange_only_order`, `balance_drift`, SMP `prevented`는 남은 일이다(5단계 브로커·대조 시험 때).
+
+**3단계 3b 구현(웹소켓):** `tests/fakes/upbit_ws.py`의 `FakeUpbitWs(clock, credentials=None, *, seed=0, random_message=False, markets=None)`(앱의 `WsConnector` 자리에 꽂는다, 픽스처 `make_fake_upbit_ws`). 실제 녹화(`tests/fixtures/upbit/ws_public_recording.json`)대로 서버 프레임은 기본이 바이너리이고 오류 메시지 뒤 close 1000으로 끊는다. 120초 무송수신이면 1001로 끊고, 문자열 `PING`에는 10초마다 `{"status":"UP"}`를 보낸다. 주입: `push_ticker`, `ws_ticker_state`, `ws_my_order`, `ws_my_asset`, `ws_announcement`, `ws_error(name, times=)`, `ws_drop`, `ws_silence`, `ws_binary`, `ws_reject_connect(times, status=)`, `ws_raw`(깨진 프레임). 엄격 검사 규칙: `url`, `origin`, `duplicate_header`, `public_auth`, `auth`, `jwt_alg`, `nonce`, `query_hash`, `concurrent_connections`(종류마다 열린 연결 하나), `concurrent_recv`, `subscribe_format`, `rate_limit_half`, `rate_limit`, `rate_limit_pause`(TOO_MANY_REQUEST·429 뒤 1초), `repeat_after_error`(형식 오류 뒤 같은 구독 반복, D-080), `secret_leak`. 위 표의 `ws_status_up`은 주입이 아니라 기본 동작이다. 가짜 하나는 `asyncio.run` 하나 안에서 `FakeClock`(auto_advance 아님)과 `await clock.run_for(...)`로 쓴다.
 
 ### 2.7 녹화 응답과 문서 예시
 

@@ -1198,6 +1198,15 @@ def test_proxy_endpoints_skips_no_proxy_lists_and_unrelated_variables():
     assert network_guard.proxy_endpoints(env) == frozenset({("127.0.0.1", 2006)})
 
 
+def test_proxy_endpoints_reads_the_cloudsdk_address_and_port_pair_only_when_both_exist():
+    pair = {"CLOUDSDK_PROXY_ADDRESS": "127.0.0.1", "CLOUDSDK_PROXY_PORT": "4001"}
+    assert network_guard.proxy_endpoints(pair) == frozenset({("127.0.0.1", 4001)})
+    assert network_guard.proxy_endpoints({"CLOUDSDK_PROXY_ADDRESS": "127.0.0.1"}) == frozenset()
+    assert network_guard.proxy_endpoints({"CLOUDSDK_PROXY_PORT": "4001"}) == frozenset()
+    bad_port = {"CLOUDSDK_PROXY_ADDRESS": "127.0.0.1", "CLOUDSDK_PROXY_PORT": "port"}
+    assert network_guard.proxy_endpoints(bad_port) == frozenset()
+
+
 def test_proxy_endpoints_keeps_valid_values_next_to_invalid_ones_and_merges_duplicates():
     env = {
         "HTTP_PROXY": "http://127.0.0.1:3128",

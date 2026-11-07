@@ -15,6 +15,7 @@ tests/conftest.py의 hook이 `pytest_configure`에서 `install`을 부르고 `py
   그 밖의 주소 체계, `socket.socketpair`. 역방향 조회는 루프백과 이 PC 이름
   (`socket.gethostname()`)만.
   "127.0.0.1%lo"처럼 IPv4에 %를 붙인 값은 주소가 아니므로 이름으로 보고 막는다.
+  단 비우기 전 프록시 주소로의 루프백 연결은 허용에서 뺀다.
 - 막으면 `RealNetworkBlocked`(AssertionError 하위)를 낸다. OSError면 asyncio·anyio·httpcore·앱이
   "연결 실패"로 바꿔 삼켜 테스트가 통과해 버릴 수 있다. 막힌 소켓은 연결을 시도하지 않은 상태다.
 - 막을 때마다 기록한다. conftest의 hook이 테스트의 정리 단계에서 기록이 남아 있으면 그 테스트를
@@ -22,7 +23,9 @@ tests/conftest.py의 hook이 `pytest_configure`에서 `install`을 부르고 `py
   테스트는 `expect_blocked()`로 감싼다.
 - 프록시 설정을 비운다(`*_proxy` 환경 변수, Windows 레지스트리·macOS 시스템 설정 읽기). 클라우드
   세션의 프록시는 127.0.0.1에 있어 루프백 허용을 타고 밖으로 나갈 수 있다(httpx trust_env,
-  websockets proxy=True 기본값).
+  websockets proxy=True 기본값). 비우기 전 프록시 주소(호스트, 포트)를 기록해 두고
+  (`blocked_proxy_endpoints()`) 그 주소로의 루프백 연결도 막는다(QA R22-06). 같은 루프백의 다른
+  포트는 허용한다.
 
 한계(막지 못하는 것): C 타입 `_socket.socket`(= `socket.SocketType`)을 직접 만들어 쓰는 코드,
 Python `socket`을 거치지 않는 확장 모듈(예: QtNetwork. 앱은 쓰지 않는다, test_architecture),
@@ -35,9 +38,10 @@ import socket
 import sys
 import threading
 import urllib.request
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -47,6 +51,10 @@ _REPORT_LIMIT = 10  # 보고 문구에 적는 시도 수
 _lock = threading.Lock()
 _attempts: list[str] = []  # 막은 시도(문구). 정리 단계에서 비운다
 _installed: dict[tuple[object, str], object] = {}  # install이 바꿔 놓은 (대상, 이름) → 감싼 함수
+# install이 비우기 전에 읽은 프록시 주소(호스트, 포트). 자격 증명은 담지 않는다.
+# patch.setattr로 바꾸므로 patch를 되돌리면 비워진다.
+_proxy_endpoints: frozenset[tuple[str, int]] = frozenset()
+_DEFAULT_PROXY_PORTS = {"http": 80, "https": 443, "socks5": 1080, "socks5h": 1080}
 
 
 class RealNetworkBlocked(AssertionError):
@@ -108,10 +116,79 @@ def _blocked(what: str, target: object) -> RealNetworkBlocked:
     )
 
 
+def _endpoint(value: str) -> tuple[str, int] | None:
+    """프록시 URL의 (호스트, 포트). 자격 증명은 버린다. 주소가 아니면 예외 없이 None."""
+    text = value.strip()
+    if not text:
+        return None
+    if "://" not in text:
+        text = "http://" + text  # 스킴이 없으면 http(curl·requests와 같다)
+    try:
+        parts = urlsplit(text)
+        port = parts.port
+        host = parts.hostname  # 소문자, IPv6는 대괄호 없이
+    except ValueError:
+        return None
+    if not host:
+        return None
+    if port is None:
+        port = _DEFAULT_PROXY_PORTS.get(parts.scheme.lower())
+    if port is None or not 0 < port < 65536:
+        return None
+    return host, port
+
+
+def proxy_endpoints(env: Mapping[str, str]) -> frozenset[tuple[str, int]]:
+    """환경 변수 모양의 매핑에서 프록시 주소 (호스트, 포트)를 읽는다.
+
+    install이 지우는 변수(이름이 `_proxy`로 끝남, `no_proxy`류 제외)를 모두 읽고,
+    `CLOUDSDK_PROXY_ADDRESS`·`CLOUDSDK_PROXY_PORT`가 둘 다 있으면 그 쌍도 읽는다(gcloud).
+    """
+    found: set[tuple[str, int]] = set()
+    cloudsdk: dict[str, str] = {}
+    for name, value in env.items():
+        lower = name.lower()
+        if lower in ("cloudsdk_proxy_address", "cloudsdk_proxy_port"):
+            cloudsdk[lower] = value
+            continue
+        if not lower.endswith("_proxy") or lower.endswith("no_proxy"):
+            continue
+        endpoint = _endpoint(value)
+        if endpoint is not None:
+            found.add(endpoint)
+    if len(cloudsdk) == 2:
+        port_text = cloudsdk["cloudsdk_proxy_port"].strip()
+        if port_text.isascii() and port_text.isdigit():
+            endpoint = _endpoint(f"{cloudsdk['cloudsdk_proxy_address'].strip()}:{port_text}")
+            if endpoint is not None:
+                found.add(endpoint)
+    return frozenset(found)
+
+
+def is_proxy_target(address: Any, endpoints: Iterable[tuple[str, int]]) -> bool:
+    """루프백 프록시의 포트로 가는 루프백 대상이면 True. 외부 프록시는 외부 차단 몫이다."""
+    if not isinstance(address, tuple) or len(address) < 2 or not is_local_host(address[0]):
+        return False
+    return any(port == address[1] and is_local_host(host) for host, port in endpoints)
+
+
+def blocked_proxy_endpoints() -> frozenset[tuple[str, int]]:
+    """install이 비우기 전에 읽어 둔 프록시 주소 (호스트, 포트). 자격 증명은 없다."""
+    return _proxy_endpoints
+
+
 def check_address(family: int, address: Any, what: str = "연결") -> None:
-    """IP 소켓의 대상 주소가 루프백·미지정 주소가 아니면 RealNetworkBlocked. 기록하지 않는다."""
+    """IP 소켓의 대상 주소가 루프백·미지정 주소가 아니거나 기록된 프록시면 RealNetworkBlocked.
+
+    기록하지 않는다.
+    """
     if family not in _INET_FAMILIES:
         return
+    if is_proxy_target(address, _proxy_endpoints):
+        raise RealNetworkBlocked(
+            f"테스트 중 프록시(포트 {address[1]}) 주소로의 {what}을 막았다: {address[0]!r}."
+            " 가짜 구현(tests/fakes/)을 쓴다"
+        )
     if isinstance(address, tuple) and address and not is_local_host(address[0]):
         raise _blocked(what, address)
     if isinstance(address, str | bytes) and not is_local_host(address):
@@ -205,6 +282,14 @@ def _set(patch: pytest.MonkeyPatch, owner: object, name: str, wrapper: Any, trac
 
 
 def _without_proxies(patch: pytest.MonkeyPatch) -> None:
+    # 비우기 전에 기록한다. OS 설정은 환경 변수가 있어도 따로 읽는다.
+    endpoints = set(proxy_endpoints(os.environ))
+    for reader in ("getproxies_registry", "getproxies_macosx_sysconf"):
+        read = getattr(urllib.request, reader, None)
+        if read is not None:
+            settings = {f"{key}_proxy": str(value) for key, value in read().items()}
+            endpoints |= proxy_endpoints(settings)
+    patch.setattr(sys.modules[__name__], "_proxy_endpoints", frozenset(endpoints))
     for name in list(os.environ):
         if name.lower().endswith("_proxy") and name.lower() != "no_proxy":
             patch.delenv(name, raising=False)
@@ -279,6 +364,9 @@ def install(patch: pytest.MonkeyPatch) -> None:
     def create_connection(address: Any, *args: Any, **kwargs: Any) -> socket.socket:
         if not is_local_host(address[0]):
             _enforce(_blocked("연결", address))
+        _enforce(
+            _address_problem(socket.AF_INET, address)
+        )  # 기록된 프록시면 소켓을 만들기 전에 막는다
         return original_create_connection(address, *args, **kwargs)
 
     _set(patch, socket.socket, "connect", connect, True)

@@ -9,7 +9,7 @@
 - 결과를 저장소(진행 기록, 이슈, PR)에 남길 때 IP 주소, 잔고, 주문 내역, 계정 정보, 사용자 이름이 든 경로를 적지 않는다. 화면 캡처는 이 정보를 가린 뒤 쓴다.
 - 이 점검에는 실제 주문이 필요 없다. 7절의 M-34만 live-validate(주문 검증 API, 실제 체결 없음)를 쓴다.
 - 일부 항목(시계 변경, `powercfg /requests`)은 관리자 권한이 필요하다. 해당 항목에 적었다.
-- PowerShell 명령은 시작 → "PowerShell" 검색 → 실행한다. 관리자 권한이 필요하면 마우스 오른쪽 클릭 → 관리자 권한으로 실행.
+- PowerShell 명령은 시작 → "PowerShell" 검색 → 실행한다. 관리자 권한이 필요하면 마우스 오른쪽 클릭 → 관리자 권한으로 실행. 명령 프롬프트(cmd)에서는 실행되지 않는다(2026-11-06 점검에서 cmd로 실행해 "경로를 찾을 수 없습니다"로 실패했다). 줄 앞이 `PS`로 시작하는지 확인한다.
 
 ## 언제 하나
 
@@ -36,10 +36,10 @@
 | ID | 절차 | 기대 결과 |
 |---|---|---|
 | M-05 | GitHub Actions의 build-exe 실행 결과에서 받은 zip 이름을 본다 | `autotrader-windows-<커밋 해시>`이고, 해시가 시험하려는 main 커밋과 같다(보안 정책: 본인 저장소의 결과물만 사용) |
-| M-06 | 압축을 풀기 전에 zip 파일을 마우스 오른쪽 클릭 → 속성 → 일반 탭 아래 "차단 해제" 체크 → 확인 | 다시 열면 차단 해제 체크 상자가 사라져 있다 |
-| M-07 | `C:\Apps\upbit-autotrader\`처럼 쓰기 권한이 있는 폴더에 압축을 푼다(Program Files는 피한다). PowerShell에서 `Get-ChildItem -Recurse C:\Apps\upbit-autotrader \| Get-Item -Stream Zone.Identifier -ErrorAction SilentlyContinue` | 아무것도 나오지 않는다(인터넷에서 받은 파일 표시가 남은 파일 없음) |
-| M-08 | `autotrader.exe`를 더블클릭 | SmartScreen 경고가 뜨면 "추가 정보 → 실행"으로 실행되고 게시자는 "알 수 없는 게시자". 차단 해제를 했으면 경고 없이 실행될 수도 있다. 어느 쪽이었는지 적는다 |
-| M-09 | Windows 보안 → 바이러스 및 위협 방지 → 보호 기록 | 앱 파일이 격리된 기록이 없다. 격리됐으면 설치 가이드 3장 4번 절차로 복원하고 오탐을 제출한 뒤 결과를 적는다 |
+| M-06 | zip을 앱 폴더 밖(예: 다운로드 폴더)에 받는다. 압축을 풀기 전에 차단 해제한다: zip을 마우스 오른쪽 클릭 → 속성 → 일반 탭 아래 "차단 해제" 체크 → 확인. 또는 PowerShell에서 `Unblock-File -Path <zip 경로>` | 속성을 다시 열면 차단 해제 체크 상자가 사라져 있다. PowerShell에서 `Get-Item -Path <zip 경로> -Stream Zone.Identifier -ErrorAction SilentlyContinue`가 아무것도 내지 않는다 |
+| M-07 | 쓰기 권한이 있는 폴더(예: `C:\Apps\upbit-autotrader\`, Program Files는 피한다)에 압축을 푼다. PowerShell에서 `Get-ChildItem -Recurse <설치 폴더> \| Get-Item -Stream Zone.Identifier -ErrorAction SilentlyContinue`. 무엇이 나오면 `Get-ChildItem -Recurse <설치 폴더> \| Unblock-File`로 지우고 같은 확인을 다시 한다. `<설치 폴더>`는 실제로 푼 폴더로 바꾼다(설치 가이드 3장 "인터넷 표시 확인") | 처음부터 아무것도 나오지 않으면 통과. 남은 파일이 있었고 Unblock-File 뒤 0개면 "조치 후 통과"로 적고, 남았던 파일과 압축 프로그램 이름을 적는다 |
+| M-08 | M-07을 마친 뒤 `autotrader.exe`를 더블클릭 | SmartScreen 경고가 뜨면 "추가 정보 → 실행"으로 실행되고 게시자는 "알 수 없는 게시자". 차단 해제를 했으면 경고 없이 실행될 수도 있다. 어느 쪽이었는지 적는다 |
+| M-09 | Windows 보안 → 바이러스 및 위협 방지 → 보호 기록 | 앱 파일이 격리된 기록이 없다. 격리됐으면 설치 가이드 3장 6번 절차로 복원하고 오탐을 제출한 뒤 결과를 적는다 |
 
 ## 2. `--self-test`
 

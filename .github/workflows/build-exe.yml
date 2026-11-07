@@ -50,6 +50,12 @@ jobs:
         if: steps.spec.outputs.exists == 'true'
         run: uv sync --locked
 
+      - name: Windows-only tests (network guard, websocket loopback)
+        if: steps.spec.outputs.exists == 'true'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run pytest -q tests/unit/test_network_guard.py tests/integration/test_websocket_loopback.py
+
       - name: Build with PyInstaller
         if: steps.spec.outputs.exists == 'true'
         run: uv run pyinstaller packaging/autotrader.spec --noconfirm --clean

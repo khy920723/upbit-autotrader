@@ -33,12 +33,12 @@
 | | [알림 정의서](03-functional/notifications.md) | 초안 |
 | | [설정 항목 정의서](03-functional/settings.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [분할 매수·매도 설계](03-functional/split-trading.md) | 확정(D-082~D-086) |
-| | [4단계 시작 전 결정 묶음](03-functional/stage4-decisions.md) | 사용자 결정 대기(D-095~D-102 등) |
+| | [4단계 시작 전 결정 묶음](03-functional/stage4-decisions.md) | 일부 결정(D-095~D-097, D-103), 나머지 대기 |
 | 04 데이터 | [데이터 모델](04-data/data-model.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [로그·감사 기록 정의서](04-data/logging-audit.md) | 초안 |
 | 05 연동 | [업비트 API 연동 명세](05-integration/upbit-api.md) | 확정(2026-11 기준 사실, 2026-11-05 재확인, 결정 대기 있음) |
 | | [LLM 시그널 명세](05-integration/llm-signal.md) | 초안(1단계 확인 반영, 결정 대기 있음) |
-| | [뉴스 수집 명세](05-integration/news-collection.md) | 초안 |
+| | [뉴스 수집 명세](05-integration/news-collection.md) | 쓰지 않음(약관, D-097). 이전 설계 기록 |
 | | [디스코드 연동 명세](05-integration/discord.md) | 확정(D-081) |
 | 06 아키텍처 | [시스템 구성도](06-architecture/system-architecture.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [기술 스택·버전 정책](06-architecture/tech-stack.md) | 확정(1단계 제안 반영, 결정 대기 있음) |

@@ -8,7 +8,7 @@ TIME_LIMIT). 스트림 어댑터와 함께 붙을 때는 url만 루프백 주소
 - 요청 헤더: Origin 없음, 이름마다 한 번, User-Agent는 앱 값("upbit-autotrader/<버전>", 바꿀 수
   있음), 비공개용 Authorization은 받은 값 그대로.
 - 연결 객체: 텍스트 프레임은 str, 바이너리 프레임은 bytes로 받는다. send는 텍스트 프레임이다.
-  ping은 PING 프레임을 보내고 PONG 대기 awaitable을 돌려준다(PONG에 끝나고, PONG 없이 끊기면
+  ping은 PING 프레임을 보내고 PONG 대기 Future를 돌려준다(PONG에 끝나고, PONG 없이 끊기면
   StreamClosed, R22-01). 서버가 1000으로 닫으면 recv가 StreamClosed(close_code=1000)이고
   그 뒤 send·ping도 StreamClosed다. close 프레임 없이 끊기면 StreamClosed(1006 또는 None).
   1 MiB를 넘는 메시지는 받지 않고 StreamClosed다(max_size).
@@ -355,7 +355,9 @@ def test_ping_gives_a_pong_wait_that_ends_on_the_pong():
     async def scenario() -> int:
         async with loopback(wait_for_close) as server:
             conn = await make_connector().connect(server.url(), headers=[])
-            await asyncio.wait_for(await conn.ping(), 1.0)
+            first = await conn.ping()
+            assert isinstance(first, asyncio.Future)  # WsConnection.ping 계약(Future)
+            await asyncio.wait_for(first, 1.0)
             await asyncio.wait_for(await conn.ping(), 1.0)
             await conn.close()
             return len(server.connections[0].pings)

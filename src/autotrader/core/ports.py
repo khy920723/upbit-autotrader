@@ -114,8 +114,10 @@ class PublicStream(Protocol):
     - PING은 연결이 가진 별도 태스크가 Clock으로 보낸다. 그 태스크는 연결을 닫을 때(finally)
       정리한다. 그 태스크가 실패하면 연결을 끊고 이터레이터를 core 오류로 끝낸다.
     - PONG 상한(반쯤 열린 연결, R22-01): PING을 보낸 시각부터 pong_timeout(Clock) 안에 그 PING의
-      PONG이 오지 않으면 연결을 닫고 StreamClosed(reason "pong_timeout")로 끝낸다. 감시는 이것을
-      다른 끊김처럼 다시 연다. 비공개 스트림은 무수신 감시가 없어 이것이 끊김을 알아채는 길이다.
+      PONG이 오지 않으면 연결을 닫고 StreamClosed(reason "pong_timeout")로 끝낸다. 나중 PING의
+      PONG이 오면 앞선 PING들도 확인된 것으로 본다(서버가 최신 PING에만 답해도 끊지 않는다).
+      PING 보내기(호출) 자체가 끝나지 않아도 그 PING의 상한에 끊는다. 감시는 이것을 다른
+      끊김처럼 다시 연다. 비공개 스트림은 무수신 감시가 없어 이것이 끊김을 알아채는 길이다.
     - StreamOpened까지 걸리는 시간에 상한(open_timeout)을 둔다. 감시는 StreamOpened 전에는
       무수신을 재지 않는다.
     """

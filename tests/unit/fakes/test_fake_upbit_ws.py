@@ -24,8 +24,9 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
   bytes, ws_binary(False)면 str), `await ping()`, `await close(code=1000)`, `close_code`(열려
   있으면 None).
   - `await ping()`(3단계 정리 R22-01, websockets 17.4의 ping과 같은 모양): PING 프레임을 보내고
-    "PONG 대기" awaitable을 돌려준다. 서버가 PONG으로 답하면 끝나고(결과 값은 쓰지 않는다),
-    답하기 전에 연결이 끊기면(어느 쪽이 닫든) 그 awaitable은 `StreamClosed`로 끝난다. 기본은
+    "PONG 대기" Future를 돌려준다(어댑터 WsConnection.ping 계약). 서버가 PONG으로 답하면
+    끝나고(결과 값은 쓰지 않는다), 답하기 전에 연결이 끊기면(어느 쪽이 닫든) 그 Future는
+    `StreamClosed`로 끝난다. 기본은
     PING을 받은 그 가상 시각에 바로 답한다(ws_no_pong이면 답하지 않는다). PONG은 서버 메시지가
     아니다(recv로 오지 않고 delivered에 남지 않는다). 기다리지 않고 버려도 이벤트 루프 경고
     (exception was never retrieved)나 RuntimeWarning(never awaited)이 없다. 이미 끊긴 연결의
@@ -1760,8 +1761,10 @@ def test_ws_drop_stream_filter(env):
 
 
 async def pong_wait(conn: Any) -> asyncio.Future[Any]:
-    """PING을 보내고 돌려받은 PONG 대기 awaitable을 Future로 감싼다(완료 여부를 보려고)."""
-    return asyncio.ensure_future(await conn.ping())
+    """PING을 보내고 돌려받은 PONG 대기(Future, 어댑터 계약)를 준다."""
+    waiting = await conn.ping()
+    assert isinstance(waiting, asyncio.Future)
+    return waiting
 
 
 async def assert_answered(waiting: asyncio.Future[Any]) -> None:

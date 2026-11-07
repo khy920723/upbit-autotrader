@@ -84,11 +84,15 @@ open_stream을 부를 때마다 다음 줄의 async generator를 준다. 줄이 
     독점하지 않는다).
 16. 핸드셰이크 HTTP 상태(3단계 정리 R22-02): 연결 실패(StreamConnectFailed)에
     http_status가 있으면 그 끊김의 RECONNECTING 상태 error_name이 `"HTTP_<상태>"`
-    (예: "HTTP_401")다. 이터레이터가 내든 open_stream()이 바로 내든 같다. http_status가
-    None이면 지금처럼 None이다. kind·reason("connect_failed")·retry_in·backoff 진행은
-    바뀌지 않는다(429도 backoff 그대로). 다른 끊김(StreamClosed, NetworkError, 오류 없이
-    끝남, 무수신)의 RECONNECTING error_name은 None 그대로다. 앱은 이것으로 인증·한도
-    문제와 네트워크 끊김을 구분한다(401·403이 이어질 때의 처리는 5단계).
+    (예: "HTTP_401")다. 접두어는 공개 상수 `streams.HANDSHAKE_STATUS_PREFIX`("HTTP_"),
+    이름은 공개 도우미 `streams.handshake_status_name(http_status) -> str | None`(None이면
+    None)이 만든다. 이터레이터가 내든 open_stream()이 바로 내든 같다. http_status가
+    None이면 지금처럼 None이다. kind·reason("connect_failed")·backoff 진행은 바뀌지 않는다.
+    429만은 다시 연결 대기가 `max(backoff 값, RATE_LIMIT_RETRY_SECONDS(1초))`다(backoff
+    표에 0이 있어도 429 뒤 1초 멈춤을 지킨다. retry_in도 그 값). 다른 끊김(StreamClosed,
+    NetworkError, 오류 없이 끝남, 무수신)의 RECONNECTING error_name은 None 그대로다. 앱은
+    이것으로 인증·한도 문제와 네트워크 끊김을 구분한다(401·403·418·429가 이어질 때의 처리는
+    5단계).
 """
 
 import asyncio
@@ -1067,7 +1071,7 @@ def test_reconnecting_names_the_handshake_http_status(stream, status):
     )
 
     assert result == "running"
-    name = f"HTTP_{status}"
+    name = streams.handshake_status_name(status)
     assert reconnecting_fields(rec) == [
         ("connect_failed", name, 1),
         ("connect_failed", name, 2),
@@ -1136,29 +1140,73 @@ def test_connect_failure_raised_by_open_stream_itself_names_the_status(stream):
     rec, calls = asyncio.run(scenario())
 
     assert calls == [T0, T0 + 1]
-    assert reconnecting_fields(rec) == [("connect_failed", "HTTP_403", 1)]
+    assert reconnecting_fields(rec) == [("connect_failed", streams.handshake_status_name(403), 1)]
     assert [s.kind for _, s in rec.statuses()] == ["CONNECTING", "RECONNECTING", "OPEN"]
+
+
+def test_handshake_status_name_and_prefix_are_public():
+    """R22-02: 접두어와 이름 도우미는 core/streams.py가 내보낸다(앱·시험이 같은 값을 쓴다)."""
+    assert streams.HANDSHAKE_STATUS_PREFIX == "HTTP_"
+    assert streams.handshake_status_name(401) == "HTTP_401"
+    assert streams.handshake_status_name(429) == "HTTP_429"
+    assert streams.handshake_status_name(None) is None
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+@pytest.mark.parametrize(
+    ("backoff", "status", "delays"),
+    [
+        ((0,), 429, [1, 1, 1]),
+        ((0, 0.5, 3), 429, [1, 1, 3]),
+        ((0,), 503, [0, 0, 0]),
+        ((0,), None, [0, 0, 0]),
+        ((0.5, 3), 401, [0.5, 3, 3]),
+    ],
+)
+def test_handshake_429_waits_at_least_one_second_whatever_the_backoff(
+    stream, backoff, status, delays
+):
+    """TS-41: 핸드셰이크 429 뒤 대기는 max(backoff, 1초)다. 다른 상태는 backoff 그대로다."""
+    script, rec, result = simulate(
+        stream, *([handshake_failed(status)] for _ in delays), [OPEN], seconds=10, backoff=backoff
+    )
+
+    assert result == "running"
+    name = streams.handshake_status_name(status)
+    assert reconnecting_fields(rec) == [("connect_failed", name, d) for d in delays]
+    assert gaps(script) == pytest.approx(delays)
 
 
 @settings(max_examples=40, deadline=None)
 @given(
     stream=st.sampled_from(["public", "private"]),
     statuses=st.lists(
-        st.one_of(st.none(), st.integers(min_value=100, max_value=599)), min_size=1, max_size=8
+        st.one_of(st.none(), st.sampled_from([401, 418, 429]), st.integers(100, 599)),
+        min_size=1,
+        max_size=8,
     ),
+    backoff=st.sampled_from([DEFAULT_BACKOFF, (0.0, 0.5, 2.0), (0.0,)]),
 )
-def test_handshake_status_model(stream, statuses):
-    """TS-41: 연속 연결 실패마다 그 실패의 HTTP 상태를 싣고 backoff 표는 그대로 내려간다."""
+def test_handshake_status_model(stream, statuses, backoff):
+    """TS-41: 연속 연결 실패마다 그 실패의 HTTP 상태를 싣고 backoff 표는 그대로 내려간다
+    (429만 1초 이상 기다린다)."""
     expected_delays = [
-        DEFAULT_BACKOFF[min(i, len(DEFAULT_BACKOFF) - 1)] for i in range(len(statuses))
+        max(table, streams.RATE_LIMIT_RETRY_SECONDS) if status == 429 else table
+        for status, table in zip(
+            statuses,
+            (backoff[min(i, len(backoff) - 1)] for i in range(len(statuses))),
+            strict=True,
+        )
     ]
     connections = [[handshake_failed(status)] for status in statuses]
 
-    script, rec, result = simulate(stream, *connections, [OPEN], seconds=sum(expected_delays) + 1)
+    script, rec, result = simulate(
+        stream, *connections, [OPEN], seconds=sum(expected_delays) + 1, backoff=backoff
+    )
 
     assert result == "running"
     assert reconnecting_fields(rec) == [
-        ("connect_failed", None if status is None else f"HTTP_{status}", delay)
+        ("connect_failed", streams.handshake_status_name(status), delay)
         for status, delay in zip(statuses, expected_delays, strict=True)
     ]
     assert gaps(script) == pytest.approx(expected_delays)

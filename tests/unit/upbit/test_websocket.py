@@ -1779,6 +1779,161 @@ def test_too_many_request_says_whether_the_minute_budget_was_reached(env, nth, m
     assert len(env.fake.connections) == nth
 
 
+# ── 한도: 같은 스트림 객체의 동시 연결(R22-05) ─────────────
+
+
+class DelayedConnector:
+    """핸드셰이크가 Clock으로 delay초 걸린 뒤 안쪽 연결기(FakeUpbitWs)에 붙는 연결기(R22-05).
+
+    핸드셰이크 동안 같은 스트림 객체의 다른 연결이 예산을 보는 경합을 만든다. connect를 부른
+    시각을 calls에 남긴다. 가짜는 종류마다 열린 연결 하나만 받으므로(concurrent_connections)
+    시험은 StreamOpened를 받자마자 같은 태스크에서 닫는다(open_then_close): 겹치는 것은
+    핸드셰이크이고 열린 연결은 겹치지 않는다.
+    """
+
+    def __init__(self, inner: Any, clock: FakeClock, delay: float) -> None:
+        self.inner = inner
+        self.clock = clock
+        self.delay = delay
+        self.calls: list[float] = []
+
+    async def connect(self, url: str, *, headers: Sequence[tuple[str, str]]) -> Any:
+        self.calls.append(self.clock.monotonic())
+        await self.clock.sleep(self.delay)
+        return await self.inner.connect(url, headers=headers)
+
+
+async def open_then_close(iterator: Any) -> Any:
+    """한 태스크에서 첫 항목(StreamOpened)을 받고 곧바로 닫는다(그 사이 루프를 놓지 않는다)."""
+    try:
+        return await anext(iterator)
+    finally:
+        await iterator.aclose()
+
+
+def subscription_times(fake: FakeUpbitWs) -> list[float]:
+    """가짜가 받은 구독 메시지의 시각(모든 연결)."""
+    return sorted(t for record in fake.connections for t, _ in record.received)
+
+
+def earliest_slots(arrivals: Sequence[float]) -> list[float]:
+    """연결 초당 2회·구독 메시지 초당 2개·분당 50개(슬라이딩 창)를 지키며 가장 이르게 연결을 시작할
+    수 있는 시각들. 연결과 구독 메시지 예약은 같은 시각이라 두 예산이 한 줄이 된다. 도착 순서대로
+    탐욕적으로 고른다(같은 일을 하는 연결이라 누가 먼저 가든 시각의 모임은 같다)."""
+    slots: list[float] = []
+    for arrival in sorted(arrivals):
+        t = max([arrival, *slots[-1:]])
+        while True:
+            wait = 0.0
+            for window, count in ((1.0, 2), (60.0, 50)):
+                inside = [s for s in slots if s > t - window + 1e-9]
+                if len(inside) >= count:
+                    wait = max(wait, inside[-count] + window - t)
+            if wait <= 1e-9:
+                break
+            t += wait
+        slots.append(t)
+    return slots
+
+
+def _stream_opener(kind: str, connector: Any, clock: FakeClock, fake: FakeUpbitWs) -> Callable:
+    """같은 스트림 객체 하나에서 새 연결 이터레이터를 주는 함수."""
+    if kind == "public":
+        public = make_public_stream(connector, clock)
+        return lambda: public.ticker(["KRW-BTC"])
+    private = make_private_stream(connector, clock, lambda: fake.credentials)
+    return private.events
+
+
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_concurrent_handshakes_reserve_the_minute_budget_before_connecting(
+    make_fake_upbit_ws, kind
+):
+    """INV-13: 핸드셰이크 중인 연결도 구독 메시지 예산(분당 50개)을 차지한다(R22-05)."""
+    clock = FakeClock()
+    fake = make_fake_upbit_ws(clock=clock)
+    connector = DelayedConnector(fake, clock, delay=0.0)
+    new = _stream_opener(kind, connector, clock, fake)
+
+    async def scenario(e: Env) -> None:
+        async def warm_up() -> None:
+            for _ in range(48):
+                await open_then_close(new())
+
+        warming = asyncio.ensure_future(warm_up())
+        await e.clock.run_for(30)
+        assert warming.done()
+        warming.result()  # 1000~1023초에 초당 2개씩 48개
+        connector.delay = 3.0  # 이제 핸드셰이크가 3초 걸린다
+        racing = [asyncio.ensure_future(open_then_close(new())) for _ in range(4)]  # 1030초
+        await e.clock.run_for(40)
+        assert all(task.done() for task in racing)
+        assert sorted(task.result().connection_no for task in racing) == [49, 50, 51, 52]
+
+    Env(clock, connector).run(scenario)
+    sent = subscription_times(fake)
+    assert len(sent) == 52
+    assert sent[:48] == pytest.approx([START + i // 2 for i in range(48)])
+    assert max_in_window(sent, 60.0) <= 50
+    assert max_in_window(sent, 1.0) <= 2
+    late = sent[48:]
+    assert late[:2] == pytest.approx([START + 33] * 2)  # 49·50번째는 예산 안이라 바로 연결
+    # 51·52번째는 처음 두 개(1000초)가 창을 벗어난 1060초에야 연결을 시작한다(필요한 만큼만).
+    assert all(START + 63 - EPS <= t <= START + 64 for t in late[2:])
+    assert max_in_window(connector.calls, 1.0) <= 2
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    kind=st.sampled_from(["public", "private"]),
+    delay=st.sampled_from([0.0, 0.5, 1.0, 2.5, 5.0]),
+    quarters=st.lists(st.integers(min_value=0, max_value=240), min_size=1, max_size=80),
+)
+@example(kind="public", delay=2.5, quarters=[0] * 60)
+@example(kind="private", delay=5.0, quarters=[0] * 30 + [100] * 30 + [236] * 10)
+def test_concurrent_connections_stay_within_the_websocket_limits(kind, delay, quarters):
+    """INV-13: 동시 연결의 수·시점·핸드셰이크 시간과 상관없이 연결 초당 2회, 구독 메시지 초당
+    2개·분당 50개를 넘지 않고, 필요한 만큼만 기다린다(R22-05)."""
+    clock = FakeClock()
+    fake = FakeUpbitWs(clock)
+    connector = DelayedConnector(fake, clock, delay)
+    new = _stream_opener(kind, connector, clock, fake)
+    arrivals = sorted(q * 0.25 for q in quarters)
+    problems: list[dict[str, Any]] = []
+
+    async def one(arrival: float) -> Any:
+        await clock.sleep(arrival)
+        return await open_then_close(new())
+
+    async def main() -> list[Any]:
+        asyncio.get_running_loop().set_exception_handler(lambda _l, ctx: problems.append(ctx))
+        tasks = [asyncio.ensure_future(one(arrival)) for arrival in arrivals]
+        await clock.run_for(arrivals[-1] + delay + 200)
+        unfinished = [task for task in tasks if not task.done()]
+        for task in unfinished:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        assert unfinished == [], f"{len(unfinished)}개 연결이 끝나지 않았다"
+        await settle()
+        assert adapter_tasks() == []
+        return [task.result() for task in tasks]
+
+    opened = asyncio.run(main())
+
+    assert problems == []
+    assert sorted(item.connection_no for item in opened) == list(range(1, len(arrivals) + 1))
+    sent = subscription_times(fake)
+    assert len(sent) == len(arrivals)
+    assert max_in_window(sent, 60.0) <= 50
+    assert max_in_window(sent, 1.0) <= 2
+    assert max_in_window(connector.calls, 1.0) <= 2
+    expected = [START + slot for slot in earliest_slots(arrivals)]
+    assert sorted(connector.calls) == pytest.approx(expected, abs=1e-6)
+    assert sent == pytest.approx([t + delay for t in expected], abs=1e-6)
+    assert [v.rule for v in fake.violations] == []  # rate_limit_half 0건(가짜의 엄격 검사)
+    fake.assert_clean()
+
+
 # ── 비공개: 인증과 구독 ───────────────────────────────────
 
 
@@ -2262,6 +2417,109 @@ def test_traceback_locals_of_adapter_frames_hold_no_secrets(env):
     assert BEARER_VALUE.search(blob) is None
 
 
+# ── 감시(StreamSupervisor)와 함께: PONG 상한·핸드셰이크 상태(R22-01·R22-02) ──
+
+
+@dataclass
+class Watch:
+    """감시 콜백 기록(가상 시각과 함께)."""
+
+    clock: FakeClock
+    statuses: list[tuple[float, Any]] = field(default_factory=list)
+    events: list[Any] = field(default_factory=list)
+    hooks: list[float] = field(default_factory=list)
+
+    async def on_event(self, event: Any) -> None:
+        self.events.append(event)
+
+    async def on_status(self, status: Any) -> None:
+        self.statuses.append((self.clock.monotonic(), status))
+
+    async def on_reconnected(self) -> None:
+        self.hooks.append(self.clock.monotonic())
+
+    def summary(self) -> list[tuple[float, str, str, str | None, float | None]]:
+        return [(t, s.kind, s.reason, s.error_name, s.retry_in) for t, s in self.statuses]
+
+
+async def supervise(e: Env, kind: str, open_stream: Callable[[], Any], seconds: float) -> Watch:
+    """어댑터 스트림을 감시로 seconds초 돌리고 취소한다(감시가 만든 태스크는 남지 않는다)."""
+    watch = Watch(e.clock)
+    supervisor = StreamSupervisor(
+        stream=kind,
+        open_stream=open_stream,
+        clock=e.clock,
+        on_event=watch.on_event,
+        on_status=watch.on_status,
+        on_reconnected=watch.on_reconnected,
+    )
+    task = asyncio.ensure_future(supervisor.run())
+    try:
+        await e.clock.run_for(seconds)
+        assert not task.done(), task
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    return watch
+
+
+def _opener(e: Env, kind: str) -> Callable[[], Any]:
+    if kind == "public":
+        public = e.public()
+        return lambda: public.ticker(["KRW-BTC"])
+    return e.private().events
+
+
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_supervisor_reconnects_after_a_pong_timeout(env, kind):
+    """TS-41, TS-106: 반쯤 열린 연결은 PONG 상한(30초) 뒤 끊기고 감시가 다시 연결한다(R22-01)."""
+    watched: list[Watch] = []
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_no_pong(stream=kind)  # 첫 연결만 PONG이 없다
+        watched.append(await supervise(e, kind, _opener(e, kind), 100))
+
+    env.run(scenario)
+    (watch,) = watched
+    first, second = env.fake.connections
+    assert first.pings == pytest.approx([START + 30])
+    assert first.pongs == []
+    assert first.closed_at == pytest.approx(START + 60)  # PING 30초 뒤 어댑터가 끊었다
+    assert second.opened_at == pytest.approx(START + 61)  # backoff 1초 뒤 다시 연결
+    assert second.pings == pytest.approx([START + 91])
+    assert second.pongs == second.pings
+    assert watch.summary() == [
+        (START, "CONNECTING", "start", None, None),
+        (START, "OPEN", "opened", None, None),
+        (START + 60, "RECONNECTING", "closed", None, 1.0),
+        (START + 61, "OPEN", "opened", None, None),
+    ]
+    assert watch.hooks == [START + 61]  # 재연결 뒤 대조 자리
+
+
+@pytest.mark.parametrize("status", [401, 403, 429, 503])
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_supervisor_reports_the_handshake_status_while_reconnecting(env, kind, status):
+    """TS-41: 핸드셰이크 거절의 HTTP 상태가 RECONNECTING error_name "HTTP_<상태>"로 간다(R22-02)."""
+    watched: list[Watch] = []
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_reject_connect(2, stream=kind, status=status)
+        watched.append(await supervise(e, kind, _opener(e, kind), 10))
+
+    env.run(scenario)
+    (watch,) = watched
+    name = f"HTTP_{status}"
+    assert watch.summary() == [
+        (START, "CONNECTING", "start", None, None),
+        (START, "RECONNECTING", "connect_failed", name, 1.0),
+        (START + 1, "RECONNECTING", "connect_failed", name, 2.0),
+        (START + 3, "OPEN", "opened", None, None),
+    ]
+    assert [r.accepted for r in env.fake.connections] == [False, False, True]
+
+
 # ── WebsocketsConnector(websockets connect를 바꿔 끼워 인자만 본다) ─────
 
 
@@ -2540,6 +2798,92 @@ def test_connection_maps_other_library_errors_to_stream_closed(monkeypatch, erro
         return found
 
     assert all(e.reason == type(failure).__name__ for e in asyncio.run(main()))
+
+
+class _PongWs:
+    """ping()이 PONG 대기 Future를 돌려주는 ClientConnection 대역(websockets 17.4의 ping처럼).
+
+    시험이 waits의 Future를 직접 끝낸다: PONG이면 set_result(지연 초), 끊기면 라이브러리처럼
+    set_exception(ConnectionClosed) 뒤 cancel()(terminate_pending_pings와 같다).
+    """
+
+    close_code = None
+
+    def __init__(self) -> None:
+        self.waits: list[asyncio.Future[float]] = []
+
+    async def ping(self) -> asyncio.Future[float]:
+        waiting: asyncio.Future[float] = asyncio.get_running_loop().create_future()
+        self.waits.append(waiting)
+        return waiting
+
+    async def close(self, code: int = 1000) -> None:
+        return None
+
+    def lose(self, waiting: asyncio.Future[float], error: BaseException) -> None:
+        waiting.set_exception(error)
+        waiting.cancel()
+
+
+def test_connection_ping_maps_the_library_pong_wait(monkeypatch):
+    """TS-106: 기본 연결의 PONG 대기는 PONG에 끝나고, 끊기면 StreamClosed(받은 close 코드)다."""
+    from websockets.exceptions import ConnectionClosedError
+    from websockets.frames import Close
+
+    ws = _PongWs()
+    spy_on_websockets_connect(monkeypatch, None, ws=ws)
+
+    async def main() -> StreamClosed:
+        conn = await make_connector().connect("ws://127.0.0.1:9/x", headers=[])
+        answered = asyncio.ensure_future(await conn.ping())
+        lost = asyncio.ensure_future(await conn.ping())
+        await settle()
+        assert not answered.done()
+        assert not lost.done()
+        ws.waits[0].set_result(0.001)  # PONG
+        ws.lose(ws.waits[1], ConnectionClosedError(Close(4000, "srv"), None))
+        await settle()
+        assert answered.done()
+        assert answered.exception() is None
+        with pytest.raises(StreamClosed) as info:
+            await lost
+        return info.value
+
+    error = asyncio.run(main())
+    assert error.close_code == 4000
+    assert error.__cause__ is None  # 라이브러리 예외를 잇지 않는다(recv·send와 같다)
+
+
+@pytest.mark.parametrize("ending", ["pong", "closed"])
+def test_dropped_pong_waits_of_the_default_connection_leave_no_warnings(monkeypatch, ending):
+    """버린 PONG 대기(PONG을 받았든 끊겨 실패했든)는 루프 경고·RuntimeWarning을 남기지 않는다."""
+    from websockets.exceptions import ConnectionClosedError
+
+    ws = _PongWs()
+    spy_on_websockets_connect(monkeypatch, None, ws=ws)
+    problems: list[dict[str, Any]] = []
+
+    async def main() -> None:
+        asyncio.get_running_loop().set_exception_handler(lambda _l, ctx: problems.append(ctx))
+        conn = await make_connector().connect("ws://127.0.0.1:9/x", headers=[])
+        for _ in range(3):
+            await conn.ping()  # 돌려받은 대기를 쓰지 않고 버린다
+        for waiting in ws.waits:
+            if ending == "pong":
+                waiting.set_result(0.001)
+            else:
+                ws.lose(waiting, ConnectionClosedError(None, None))
+        await settle()
+        gc.collect()
+        await settle()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        asyncio.run(main())
+        gc.collect()
+
+    assert problems == []
+    assert [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)] == []
 
 
 def test_connector_user_agent_and_open_timeout_options(monkeypatch):

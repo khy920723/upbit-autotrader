@@ -2,6 +2,25 @@
 
 세션이 끝날 때마다 맨 위에 추가한다. 형식: 날짜 — 단계 / 한 일 / 결정 / 남은 일 / 다음 단계.
 
+## 2026-11-07 — 기획/문서: 4단계 결정 묶음 검증 결과 12건 반영 (클라우드 세션)
+
+- 한 일:
+  - 지휘 세션의 독립 검증 결과 12건([PR #27](https://github.com/khy920723/upbit-autotrader/pull/27) 대상)을 원문으로 다시 확인한 뒤 [4단계 시작 전 결정 묶음](../03-functional/stage4-decisions.md), [매매 로직 명세](../03-functional/trading-logic.md) 5장, [LLM 시그널 명세](../05-integration/llm-signal.md) 3·4·6장, [뉴스 수집 명세](../05-integration/news-collection.md) 3장, [결정 로그](decision-log.md), [로드맵](roadmap.md) 외부 사실 표에 반영했다. 결정 상태는 모두 "대기" 그대로다.
+  - 원문 대조 결과(2026-11-07):
+    - google-genai 2.34.0·3.0.0 sdist 비교: 기본 API 버전(2.34.0 v1beta 고정, 3.0.0 v1과 환경 변수 `GOOGLE_GENAI_API_VERSION`), 코드의 `HttpOptions`가 우선, Interactions 재시도 계산(2.34.0은 attempts = 재시도 횟수, 3.0.0은 재시도 = attempts − 1), 전송 예외의 httpx2 타입, httpx2 전송의 SSL(Windows에서 truststore, 2.34.0은 certifi)을 소스로 확인했다. httpx2·httpcore2 2.16.0 wheel로 truststore 사용도 확인했다. 3.0.0 변경 기록(CHANGELOG)은 GitHub 접근이 안 돼 읽지 못했다.
+    - 12번 항목: Interactions 오류 클래스가 `APIError` 하위가 아니라는 점은 두 버전 소스로 다시 확인돼 "미재확인" 대신 확인 날짜를 적었다. 응답 `model` 필드는 v1 API 레퍼런스를 다시 읽었고, 넘겨진 모델의 값은 여전히 문서에 없어 "확인 필요"로 남겼다.
+    - 공식 문서: api-versions의 "SDKs default to v1beta" 문구, interactions-overview REST 예시의 `/v1beta`, 업비트 현재가 문서(`signed_change_rate`는 전일 종가(UTC 0시) 대비, 24시간 이동 변동률 필드 없음), 업비트 분 캔들 문서(4시간봉 경계 명시 없음).
+    - 저장소: 규칙 조건 리포트 1·5·6.5장(R 중복 6.5~18.9%, 마감 시각 평가 가정, B 청산 하루 최대 19건), 4시간봉 녹화 픽스처(시작 KST 01·05·09·21시), `market/all` 응답(Hive, Safe, Sign, Cap, Kite, Ark, Blur 등 영문명 = 티커).
+    - 원문을 읽지 못한 것(우회하지 않음): CoinDesk 약관(자동 접근 검사 화면, 두 번), NAVER API HUB 가이드(자동 접근 보안 필터)와 상품 페이지(연결 끊김). 지휘 세션이 읽은 값(CoinDesk 2026-10-30 시행·자동 접근·비상업 조항, HUB 한시적 무료·검색 월 775,000건·키당 50 RPS)은 "이 세션 미확인"으로 표시해 적었다.
+  - 이 클라우드 환경의 네트워크 허용 목록에 www.ncloud.com, guide.ncloud-docs.com을 더했다(사용자 승인).
+  - 상대 링크와 표 열 수 검사 문제 0건.
+- 결정: 없음(모두 대기)
+- 남은 일:
+  - 사용자: [결정 묶음](../03-functional/stage4-decisions.md) 1장 질문에 답한다. C-1은 이제 CoinDesk 약관의 자동 접근·비상업 조항을 어떻게 볼지 판단하는 항목이다.
+  - 인프라: D-102가 3.0.x로 정해지면 truststore가 D-093(certifi 통일), `--self-test` TLS 점검, PyInstaller 묶음에 주는 영향을 확인한다.
+  - 기획/문서: D-102 결과에 맞춰 D-055의 `attempts` 값과 LLM 시그널 명세 3장의 예외 서술을 고친다. R22-01이 병합되면 D-091 (4)를 보완한다.
+- 다음 단계: 사용자 결정 뒤 4단계(뉴스 + LLM 시그널).
+
 ## 2026-11-07 — 기획/문서: 4단계 시작 전 결정 묶음 (클라우드 세션)
 
 - 한 일:

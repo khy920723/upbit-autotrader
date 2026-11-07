@@ -17,12 +17,12 @@
 
 ## 3. SDK
 
-- `google-genai`(`from google import genai`, Python 3.11 이상)를 정확한 버전으로 고정한다(2026-10-29 기준 2.34.0). 2026-11-06에 3.0.0이 나왔고 HTTP 전송 기본값이 httpx2로 바뀌었다. 어느 버전으로 고정할지는 D-102(대기)이고, 이 장의 분석은 2.34.0 기준이다.
+- `google-genai`(`from google import genai`, Python 3.11 이상)를 정확한 버전으로 고정한다(2026-10-29 기준 2.34.0). 2026-11-06에 3.0.0이 나왔고 HTTP 전송 기본값이 httpx2로 바뀌었다. 어느 버전으로 고정할지는 D-102(대기)이고, 이 장의 분석은 2.34.0 기준이다. 3.0.0에서 바뀐 점(기본 API 버전, 재시도 횟수 계산, 전송 예외 타입, 인증서 저장소)은 [4단계 시작 전 결정 묶음](../03-functional/stage4-decisions.md) 4.1절에 있다.
 - 2026-05~06에 API 스키마가 바뀐 적이 있으므로 버전을 올릴 때는 테스트를 먼저 돌린다.
-- **호출 API(제안, D-054 대기):** 공식 문서는 Interactions API(`client.aio.interactions.create`)를 모든 신규 개발의 기본으로 권하고, `generateContent`는 "legacy이지만 완전 지원"이라고 한다(폐지 일정 공지 없음). Interactions는 2026-06 GA, v1에서 구조화 출력과 thinking이 GA다. 추천: Interactions API, 비동기 경로(`client.aio`)만 쓴다. 클라이언트는 `HttpOptions(api_version="v1")`로 만든다. SDK 기본은 v1beta이고, v1beta 기능은 바뀔 수 있다고 문서가 밝힌다(서버 쪽 변경은 SDK 버전을 고정해도 막지 못함). Interactions와 이 앱이 쓰는 구조화 출력·thinking·system instruction은 v1에서 지원된다. 출처: aistudio.google.com/llms.txt, /docs/interactions-overview, /docs/migrate-to-interactions, /api-reference/api-versions, python-genai v2.34.0 `_api_client.py`.
-- **SDK 자동 재시도(확인 결과):** google-genai 2.34.0에서 Interactions 경로는 재시도가 기본으로 켜져 있다(408·409·429·5xx, 최대 3회 재시도, 0.5→1→2초, `Retry-After`가 오면 상한 없이 그만큼 기다림). `models`(generateContent) 경로는 기본으로 꺼져 있다. 공식 문제 해결 문서의 "Python SDK는 최대 4회 자동 재시도" 설명과 다르다. 앱이 재시도를 직접 정하려고 클라이언트에 `HttpRetryOptions(attempts=1, http_status_codes=[500, 502, 503, 504])`를 준다. 그러면 429·408·409는 SDK가 다시 보내지 않고, 5xx와 연결 오류·요청 타임아웃(httpx `NetworkError`·`TimeoutException`)만 SDK가 1회 다시 보낸다. 연결 오류·타임아웃 재시도는 설정으로 끌 수 없다(`retry_connection_errors`가 항상 참). 앱은 그 위에 재시도를 더하지 않는다. Interactions 경로는 `attempts`를 "재시도 횟수"로 쓰고(`attempts=N`이면 N회 재시도), `attempts=0`도 1회 재시도가 될 수 있다(소스 분석, 실행 검증 전). 실제 전송 횟수(5xx·429·타임아웃·연결 오류 1건당)는 가짜 transport 테스트로 확인한다. 호출 전체는 `asyncio.wait_for`로 시간 상한(`llm.timeout_sec`) 안에 묶는다. 요청 단위 타임아웃(`HttpOptions.timeout`)은 `llm.timeout_sec`보다 짧게 두지 않는다. 그래야 응답이 늦을 때 `asyncio.wait_for`가 먼저 끊고 SDK의 타임아웃 재시도가 나가지 않는다. 출처: python-genai v2.34.0 `google/genai/_gaos/google_genai.py`, `_gaos/utils/retries.py`, `types.py`, aistudio.google.com/docs/troubleshooting.
+- **호출 API(제안, D-054 대기):** 공식 문서는 Interactions API(`client.aio.interactions.create`)를 모든 신규 개발의 기본으로 권하고, `generateContent`는 "legacy이지만 완전 지원"이라고 한다(폐지 일정 공지 없음). Interactions는 2026-06 GA, v1에서 구조화 출력과 thinking이 GA다. 추천: Interactions API, 비동기 경로(`client.aio`)만 쓴다. 클라이언트는 `HttpOptions(api_version="v1")`로 만든다. SDK 기본은 2.34.0이 v1beta, 3.0.0부터 v1이다(환경 변수 `GOOGLE_GENAI_API_VERSION`으로 바꿀 수 있다). 코드에 적은 `HttpOptions` 값이 둘보다 우선하므로 SDK 버전과 상관없이 v1을 적는다. v1beta 기능은 바뀔 수 있다고 문서가 밝힌다(서버 쪽 변경은 SDK 버전을 고정해도 막지 못함). 공식 interactions-overview의 REST 예시는 `/v1beta`를 쓴다. Interactions와 이 앱이 쓰는 구조화 출력·thinking·system instruction은 v1에서 지원된다. 출처: aistudio.google.com/llms.txt, /docs/interactions-overview, /docs/migrate-to-interactions, /api-reference/api-versions, python-genai v2.34.0 `_api_client.py`.
+- **SDK 자동 재시도(확인 결과):** google-genai 2.34.0에서 Interactions 경로는 재시도가 기본으로 켜져 있다(408·409·429·5xx, 최대 3회 재시도, 0.5→1→2초, `Retry-After`가 오면 상한 없이 그만큼 기다림). `models`(generateContent) 경로는 기본으로 꺼져 있다. 공식 문제 해결 문서의 "Python SDK는 최대 4회 자동 재시도" 설명과 다르다. 앱이 재시도를 직접 정하려고 클라이언트에 `HttpRetryOptions(attempts=1, http_status_codes=[500, 502, 503, 504])`를 준다. 그러면 429·408·409는 SDK가 다시 보내지 않고, 5xx와 연결 오류·요청 타임아웃(httpx `NetworkError`·`TimeoutException`)만 SDK가 1회 다시 보낸다. 이 값과 예외 타입은 2.34.0 기준이다. 3.0.x에서는 `attempts`가 원래 요청을 포함한 횟수라 `attempts=1`이면 재시도가 없고, 기본 전송(httpx2)의 예외는 httpx2 타입이다(D-102, 결정 묶음 4.1절). 연결 오류·타임아웃 재시도는 설정으로 끌 수 없다(`retry_connection_errors`가 항상 참). 앱은 그 위에 재시도를 더하지 않는다. Interactions 경로는 `attempts`를 "재시도 횟수"로 쓰고(`attempts=N`이면 N회 재시도), `attempts=0`도 1회 재시도가 될 수 있다(소스 분석, 실행 검증 전). 실제 전송 횟수(5xx·429·타임아웃·연결 오류 1건당)는 가짜 transport 테스트로 확인한다. 호출 전체는 `asyncio.wait_for`로 시간 상한(`llm.timeout_sec`) 안에 묶는다. 요청 단위 타임아웃(`HttpOptions.timeout`)은 `llm.timeout_sec`보다 짧게 두지 않는다. 그래야 응답이 늦을 때 `asyncio.wait_for`가 먼저 끊고 SDK의 타임아웃 재시도가 나가지 않는다. 출처: python-genai v2.34.0 `google/genai/_gaos/google_genai.py`, `_gaos/utils/retries.py`, `types.py`, aistudio.google.com/docs/troubleshooting.
 - **타임아웃 단위:** 클라이언트 `HttpOptions.timeout`은 밀리초, `interactions.create(timeout=)`는 초다. SDK 기본은 타임아웃 없음이라 반드시 정한다.
-- **예외 계층:** Interactions 경로의 오류(`RateLimitError` 등, `google.genai._interactions`)는 `google.genai.errors.APIError`의 하위 클래스가 아니다. 어댑터 한 곳에서 두 계층을 모두 잡고, 비공개 모듈 경로에 의존하므로 버전을 고정하고 올릴 때 회귀 테스트를 한다.
+- **예외 계층:** Interactions 경로의 오류(`RateLimitError` 등, `google.genai._interactions`)는 `google.genai.errors.APIError`의 하위 클래스가 아니다(2026-11-07 2.34.0·3.0.0 소스로 다시 확인, 고른 SDK 버전으로 4단계 구현 때 다시 확인). 어댑터 한 곳에서 두 계층을 모두 잡고, 비공개 모듈 경로에 의존하므로 버전을 고정하고 올릴 때 회귀 테스트를 한다.
 - **의존성:** google-genai 2.34.0은 websockets <18, httpx ≥0.28.1, pydantic ≥2.12.5, anyio ≥4.8, google-auth, requests, tenacity를 요구한다.
 - 지원이 끝난 구 SDK(`google-generativeai`)는 쓰지 않는다.
 - PyInstaller로 묶었을 때 문제가 없는지 2단계 빌드에서 확인한다.
@@ -46,6 +46,8 @@
 </headlines>
 ```
 
+- `24시간 변동률`이 어느 값인지는 아직 정하지 않았다. 업비트 현재가 응답의 `signed_change_rate`는 전일 종가(UTC 0시 기준) 대비 변화율이고, 24시간 이동 기준 변동률 필드는 없다(24시간 값은 `acc_trade_price_24h`·`acc_trade_volume_24h` 누적 거래 금액·거래량뿐, docs.upbit.com/kr/reference/list-tickers 2026-11-07 확인). 4단계 구현 전에 정한다(D-099, [4단계 시작 전 결정 묶음](../03-functional/stage4-decisions.md) 6.1절).
+- 제목을 번역할지는 정하지 않았다(D-100, 결정 묶음 6.2절).
 - 프롬프트 문안은 `prompt_version`으로 관리하고, 바꾸면 버전을 올려 시그널 기록에 남긴다.
 - 평가용으로 코인 이름을 가리는 옵션을 둘 수 있다(기본 끔).
 
@@ -77,7 +79,7 @@ class Signal(BaseModel):
 | 안전 정책에 따른 거절 | 중립. 우회를 시도하지 않음 |
 | 3회 연속 실패 | NTF-11 알림 |
 
-- 응답한 모델 이름을 기록하고, 설정과 다르면 알린다(NTF-12). Interactions 응답의 `model` 필드가 실제로 응답한 모델(자동으로 넘겨진 모델)을 알려 주는지는 문서에 없다(확인 필요, 4단계 실호출로 확인). `generateContent`는 `modelVersion`이 있다.
+- 응답한 모델 이름을 기록하고, 설정과 다르면 알린다(NTF-12). Interactions 응답의 `model` 필드가 실제로 응답한 모델(자동으로 넘겨진 모델)을 알려 주는지는 문서에 없다. v1 API 레퍼런스(create-interaction, 2026-11-07 확인)는 응답 `model`을 "The name of the `Model` used for generating the interaction"으로만 설명한다(확인 필요, 고른 SDK 버전으로 4단계 실호출에서 확인). `generateContent`는 `modelVersion`이 있다.
 - `status`가 `completed`가 아니면(`incomplete` 등) 형식 오류와 같이 중립으로 처리한다.
 
 ### 429 구분 방법 (2026-11-05 확인, D-055)

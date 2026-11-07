@@ -163,7 +163,7 @@ exit 0
 | 검색 연동 | Gemini 3 이상은 무료 등급에서 Google 검색 연동 불가 | aistudio.google.com/docs/pricing |
 | 뉴스 | 네이버 검색 API 하루 25,000회 무료, CryptoPanic 무료 플랜 없음, Google 뉴스 RSS는 개인 리더 용도로 제한 | developers.naver.com, cryptopanic.com |
 | 뉴스 약관 | 네이버 검색 API 특약 2.3: 데이터를 AI에 입력·학습·평가 등에 쓰는 행위와 2.4 범위(기기 24시간 또는 새 질의까지, 서버 이력 조회 21일)를 넘는 저장 금지. 개발자센터 검색 API 신규 신청은 2026-07-30 종료, 기존 이용자는 2027-06-30까지, 그 뒤 NAVER API HUB. Cointelegraph 약관 3절: 서면 동의 없는 AI·LLM 이용(학습, 운영 등) 금지. CoinDesk 약관은 자동 접근 검사 화면 때문에 읽지 못함(2026-11-07 확인) | developers.naver.com/products/terms(2026-10-07 개정), cointelegraph.com/terms-and-privacy |
-| Gemini SDK 3.0 | google-genai 3.0.0(2026-11-06): HTTP 전송 기본값이 httpx2로 바뀌어 httpx2가 필수 의존성, httpx는 선택 extra. Python 3.11 이상(2026-11-07 확인) | pypi.org/project/google-genai, 3.0.0 sdist |
+| Gemini SDK 3.0 | google-genai 3.0.0(2026-11-06): HTTP 전송 기본값이 httpx2로 바뀌어 httpx2가 필수 의존성, httpx는 선택 extra. Python 3.11 이상. 기본 API 버전 v1(2.34.0은 v1beta), Interactions 재시도 = attempts − 1(2.34.0은 attempts = 재시도 횟수), httpx2 전송은 Windows에서 truststore로 인증서 검증(2.34.0은 certifi)(2026-11-07 소스로 확인) | pypi.org/project/google-genai, 3.0.0 sdist |
 | 법 | 가상자산이용자보호법 불공정거래 처벌, API 고빈도 반복 주문을 시세조종으로 수사 의뢰한 사례(2025-11-05) | fsc.go.kr |
 | Windows 10 | 지원 종료 2025-10-14, 개인용 ESU는 2027-10-12까지 | microsoft.com/windows/extended-security-updates |
 | 백테스트 | LLM 감성 시그널에는 look-ahead bias가 있음 | arxiv.org/abs/2309.17322 |

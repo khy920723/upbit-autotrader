@@ -226,6 +226,7 @@ def _root_conftest_hookimpls(config: pytest.Config, name: str) -> list[Any]:
 
 
 def test_guard_is_installed_by_hooks_of_the_root_conftest(pytestconfig):
+    """fakes-spec 2.3: 실제 네트워크 차단은 루트 conftest의 hook으로 건다."""
     # 루트 conftest의 hook이어야 tests/ 아래 모든 수집·픽스처·테스트(unit·integration·gui)에 걸린다.
     tree = ast.parse(ROOT_CONFTEST.read_text(encoding="utf-8"))
     defined = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
@@ -241,6 +242,7 @@ def test_guard_is_installed_by_hooks_of_the_root_conftest(pytestconfig):
 
 
 def test_guard_was_installed_during_collection():
+    """fakes-spec 2.3: 차단은 수집 중에도 걸려 있다."""
     assert GUARD_INSTALLED_AT_IMPORT is True
 
 
@@ -255,6 +257,7 @@ def module_scope_view() -> Iterator[list[str]]:
 
 
 def test_guard_covers_module_scope_fixtures(module_scope_view):
+    """fakes-spec 2.3: module 범위 픽스처에서도 차단된다."""
     assert any("api.upbit.com" in item for item in module_scope_view), module_scope_view
 
 
@@ -266,11 +269,13 @@ def _block_real_network() -> None:
 
 @pytest.mark.usefixtures("_block_real_network")
 def test_a_fixture_named_like_the_old_guard_does_not_turn_it_off():
+    """fakes-spec 2.3: 같은 이름의 픽스처로 차단을 끌 수 없다."""
     assert network_guard.is_installed()
     assert_blocked(lambda: socket.create_connection(("203.0.113.10", 443), timeout=SHORT))
 
 
 def test_guard_has_no_opt_out(pytestconfig):
+    """fakes-spec 2.3: 차단을 끄는 마커·옵션이 없다."""
     # 끄는 마커·명령줄 옵션을 두지 않는다(R17-02). --strict-markers라 등록되지 않은 마커는 못 쓴다.
     markers = " ".join(pytestconfig.getini("markers")).lower()
     for word in ("network", "socket", "internet", "네트워크"):
@@ -282,12 +287,14 @@ def test_guard_has_no_opt_out(pytestconfig):
 
 
 def test_blocked_error_fails_the_test_and_is_not_an_os_error():
+    """fakes-spec 2.3: 막힘 오류는 OSError가 아니라 테스트를 실패시키는 AssertionError다."""
     # OSError면 asyncio·anyio·httpcore·앱이 연결 실패로 바꿔 삼킨다.
     assert issubclass(RealNetworkBlocked, AssertionError)
     assert not issubclass(RealNetworkBlocked, OSError)
 
 
 def test_no_proxy_is_configured_during_tests():
+    """fakes-spec 2.3: 테스트 동안 프록시 설정이 없다."""
     assert_no_proxy()
 
 
@@ -295,6 +302,8 @@ def test_no_proxy_is_configured_during_tests():
 
 
 def test_a_blocked_attempt_is_recorded_even_when_the_error_is_swallowed():
+    """fakes-spec 2.3: 오류를 삼켜도 막은 시도는 기록되어 테스트가 실패한다."""
+
     def app_like() -> str:
         try:
             socket.create_connection(("203.0.113.10", 443), timeout=SHORT)
@@ -310,6 +319,8 @@ def test_a_blocked_attempt_is_recorded_even_when_the_error_is_swallowed():
 
 
 def test_a_blocked_attempt_swallowed_by_an_asyncio_datagram_transport_is_recorded():
+    """fakes-spec 2.3: asyncio 데이터그램 transport가 삼켜도 막은 시도는 기록된다."""
+
     # transport.sendto는 OSError가 아닌 예외를 _fatal_error로 넘겨 로그만 남기고 삼킨다.
     async def main() -> None:
         loop = asyncio.get_running_loop()
@@ -519,6 +530,7 @@ def child_outcomes(root: Path) -> dict[str, tuple[str, str]]:
 
 
 def test_a_swallowed_blocked_attempt_fails_the_test_even_through_overrides(tmp_path):
+    """fakes-spec 2.3: 하위 conftest가 덮어써도 삼킨 막힘은 테스트를 실패시킨다."""
     # 정리 단계 실패는 바깥 pytest만 볼 수 있어 따로 돌린다. 외부 주소는 문서용(203.0.113.0/24)만.
     result = run_child_pytest(
         tmp_path,
@@ -545,6 +557,7 @@ def test_a_swallowed_blocked_attempt_fails_the_test_even_through_overrides(tmp_p
 
 
 def test_a_blocked_attempt_swallowed_during_collection_fails_the_run(tmp_path):
+    """fakes-spec 2.3: 수집 중 삼킨 막힘은 실행을 실패시킨다."""
     result = run_child_pytest(tmp_path, {"test_collect.py": CHILD_COLLECTION_TESTS})
     output = result.stdout + result.stderr
 
@@ -1044,6 +1057,7 @@ HTTPX_TARGETS = ["https://api.upbit.com/v1/market/all", "https://203.0.113.10/v1
 
 @pytest.mark.parametrize("url", HTTPX_TARGETS, ids=["name", "ip"])
 def test_httpx_client_with_default_settings_is_blocked(url):
+    """fakes-spec 2.3: 기본 설정의 httpx 클라이언트는 외부로 나가지 못한다."""
     assert_no_proxy()
     # 기본값(trust_env=True)으로 만든다. 프록시 설정이 남아 있으면 그쪽으로 나간다.
     with (
@@ -1058,6 +1072,7 @@ def test_httpx_client_with_default_settings_is_blocked(url):
 
 @pytest.mark.parametrize("url", HTTPX_TARGETS, ids=["name", "ip"])
 def test_httpx_async_client_with_default_settings_is_blocked(url):
+    """fakes-spec 2.3: 기본 설정의 httpx 비동기 클라이언트는 외부로 나가지 못한다."""
     assert_no_proxy()
 
     async def main() -> BaseException:
@@ -1098,6 +1113,7 @@ WS_TARGETS = ["wss://api.upbit.com/websocket/v1", "wss://203.0.113.10/websocket/
 
 @pytest.mark.parametrize("url", WS_TARGETS, ids=["name", "ip"])
 def test_websockets_connect_with_default_settings_is_blocked(url):
+    """fakes-spec 2.3: 기본 설정의 websockets 연결은 외부로 나가지 못한다."""
     assert_no_proxy()
 
     async def main() -> BaseException:

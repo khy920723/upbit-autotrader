@@ -246,6 +246,8 @@ async def wait_for_close(connection: RecordingConnection, state: Loopback) -> No
 
 
 def test_public_handshake_headers():
+    """INV-13: 공개 핸드셰이크에는 Origin이 없고 헤더 이름은 하나씩이다."""
+
     async def scenario() -> list[tuple[str, str]]:
         async with loopback(wait_for_close) as server:
             conn = await make_connector().connect(server.url(), headers=[])
@@ -332,6 +334,8 @@ def test_text_and_binary_frames_then_server_close_1000():
 
 
 def test_ping_sends_a_ping_frame():
+    """TS-106: 실제 연결에서 PING 프레임이 서버에 닿는다."""
+
     async def handler(connection: RecordingConnection, state: Loopback) -> None:
         state.received.append(await connection.recv())  # PING 프레임 뒤에 보낸 메시지
         state.received.append(len(connection.pings))
@@ -547,6 +551,7 @@ def test_redirects_are_not_followed(case, status):
 
 
 def test_private_stream_does_not_follow_a_redirect():
+    """INV-07: 비공개 연결은 리다이렉트를 따라가 Authorization을 넘기지 않는다."""
     creds = make_upbit_credentials()
 
     async def scenario() -> dict[str, Any]:
@@ -609,6 +614,7 @@ def restore_autotrader_loggers() -> Any:
 def test_library_debug_log_never_carries_the_handshake_headers(
     reconfigure, caplog, restore_autotrader_loggers
 ):
+    """INV-07: 라이브러리 DEBUG 로그에 핸드셰이크 헤더가 없다."""
     caplog.set_level(logging.DEBUG)
     if reconfigure:
         # 앱이 나중에 autotrader 로거를 DEBUG로 다시 설정하는 경우: 하위 로거 단계가 NOTSET으로
@@ -860,6 +866,7 @@ async def _silent(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
 
 @pytest.mark.parametrize("failure", ["refused", "http-401", "http-301", "open-timeout"])
 def test_failed_private_connection_keeps_secrets_out_of_errors_and_locals(failure):
+    """INV-07: 실패한 비공개 연결의 오류와 지역 변수에 비밀이 없다."""
     creds = make_upbit_credentials()
 
     async def scenario() -> tuple[BaseException, str]:

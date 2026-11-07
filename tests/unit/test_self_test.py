@@ -56,6 +56,7 @@ def failing(message: str = "망가짐"):
 
 
 def test_default_checks_follow_the_ci_contract():
+    """TS-137: 점검 항목은 import, qt, keyring, sqlite, tls, paths 6개다."""
     assert [check.key for check in DEFAULT_CHECKS] == [
         "import",
         "qt",
@@ -67,12 +68,14 @@ def test_default_checks_follow_the_ci_contract():
 
 
 def test_report_file_name_follows_the_ci_contract():
+    """TS-137: 보고서 이름은 self-test-report.txt다."""
     assert REPORT_FILE_NAME == "self-test-report.txt"
 
 
 def test_self_test_passes_here_and_writes_the_report_to_the_current_folder(
     isolated_app_home, tmp_path, monkeypatch
 ):
+    """TS-137: 통과하면 0으로 끝나고 현재 폴더에 보고서를 쓴다."""
     monkeypatch.chdir(tmp_path)
 
     code = run_self_test()
@@ -85,6 +88,7 @@ def test_self_test_passes_here_and_writes_the_report_to_the_current_folder(
 
 
 def test_self_test_uses_no_network_and_no_credentials(isolated_app_home, tmp_path, monkeypatch):
+    """TS-137: 네트워크 연결도 keyring 읽기·쓰기도 하지 않는다."""
     original_connect = socket.socket.connect
 
     def guarded_connect(sock, address):
@@ -107,6 +111,7 @@ def test_self_test_uses_no_network_and_no_credentials(isolated_app_home, tmp_pat
 
 
 def test_failed_check_gives_exit_code_1_and_later_checks_still_run(tmp_path):
+    """TS-137: 점검이 실패하면 1로 끝나고 뒤 점검은 계속 돈다."""
     checks = (
         Check("a", "첫째", passing()),
         Check("b", "둘째", failing("원인 설명")),
@@ -124,6 +129,8 @@ def test_failed_check_gives_exit_code_1_and_later_checks_still_run(tmp_path):
 
 
 def test_unexpected_exception_is_reported_as_a_failure():
+    """TS-137: 처리하지 못한 예외도 실패(1)로 보고한다."""
+
     def broken():
         raise ValueError("뜻밖의 오류")
 
@@ -148,6 +155,7 @@ def test_unwritable_report_path_gives_exit_code_1(tmp_path):
 
 
 def test_report_starts_with_a_utf8_bom_for_windows_tools(tmp_path):
+    """TS-137: 보고서는 UTF-8 BOM으로 시작한다."""
     # Windows PowerShell 5.1의 Get-Content는 BOM이 없으면 UTF-8 한글을 깨뜨린다.
     run_self_test(tmp_path / "report.txt", (Check("a", "첫째", passing()),))
 
@@ -209,6 +217,7 @@ def test_import_check_covers_the_asyncio_backend_httpx_loads_on_first_request(mo
 
 
 def test_qt_check_builds_the_main_window_without_showing_it(qapp, monkeypatch):
+    """TS-137: Qt 점검은 창을 만들기만 하고 띄우지 않는다."""
     from PySide6.QtWidgets import QApplication
 
     from autotrader.ui import main_window
@@ -231,6 +240,7 @@ def test_qt_check_builds_the_main_window_without_showing_it(qapp, monkeypatch):
 
 
 def test_qt_check_fails_when_the_main_window_appears(qapp, monkeypatch):
+    """TS-137: 창이 뜨면 Qt 점검이 실패한다."""
     from autotrader.ui import main_window
 
     class ShownWindow(main_window.MainWindow):
@@ -400,6 +410,7 @@ def test_tls_check_does_not_show_where_the_bundle_lives():
 
 
 def test_tls_check_uses_the_app_tls_context_and_ignores_ssl_environment(monkeypatch, tmp_path):
+    """TS-137: TLS 점검은 앱이 쓰는 설정을 쓰고 SSL_CERT_* 환경 변수는 무시한다."""
     # 예전 동작(ssl.create_default_context())은 SSL_CERT_FILE을 읽어 CA 1개를 보고한다.
     one_cert = write_one_cert_bundle(tmp_path / "one-cert.pem")
     cert_dir = tmp_path / "cert-dir"
@@ -419,6 +430,8 @@ def test_tls_check_reads_no_operating_system_store(monkeypatch):
 
 
 def test_tls_check_makes_no_connection(monkeypatch):
+    """TS-137: TLS 점검은 연결하지 않는다."""
+
     def forbidden(*args, **kwargs):
         raise AssertionError("TLS 점검이 연결하려 했다")
 
@@ -559,6 +572,7 @@ def test_paths_check_creates_the_runtime_folders(isolated_app_home):
 
 
 def test_paths_check_hides_the_user_profile_on_windows(monkeypatch):
+    """TS-137: 경로 점검은 사용자 폴더를 %LOCALAPPDATA%로 가린다."""
     # 리눅스에서 Windows 경로를 흉내 내므로 실제 폴더 만들기와 쓰기 확인은 건너뛴다.
     monkeypatch.setattr(self_test, "_probe_writable", lambda folder: None)
     monkeypatch.setattr(AppPaths, "ensure", lambda self: None)

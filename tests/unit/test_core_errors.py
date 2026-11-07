@@ -240,6 +240,7 @@ def conflict(**overrides):
 
 
 def test_identifier_conflict_is_an_upbit_error_but_not_an_order_rejection():
+    """INV-03·TS-89: 식별자 충돌은 UpbitError지만 주문 거절이 아니다."""
     # D-070·INV-03: 주문이 이미 접수됐을 수 있다. REJECTED로 닫는 타입으로 잡히면 안 된다.
     err = conflict()
 
@@ -262,6 +263,8 @@ def test_identifier_conflict_is_not_a_network_error():
 
 
 def test_except_order_rejected_does_not_catch_an_identifier_conflict():
+    """INV-03·TS-89: 식별자 충돌은 주문 거절 처리로 잡히지 않는다."""
+
     # 5단계 주문 관리가 `except UpbitOrderRejected`로 REJECTED를 만들어도 이 오류는 빠져나와야 한다.
     def close_as_rejected():
         try:

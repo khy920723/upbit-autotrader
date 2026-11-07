@@ -301,6 +301,7 @@ def test_signature_does_not_verify_with_another_secret():
 
 
 def test_token_does_not_carry_the_secret_key():
+    """INV-07: 토큰에는 Secret Key가 들어 있지 않다."""
     creds = make_upbit_credentials()
 
     token = make_token(creds, hash_input=OPEN_ORDERS_INPUT)
@@ -315,6 +316,7 @@ def test_token_does_not_carry_the_secret_key():
 
 
 def test_credentials_repr_and_str_hide_both_keys():
+    """INV-07: 자격 증명의 repr·str은 두 키를 가린다."""
     made = make_upbit_credentials()
     creds = Credentials(access_key=made.access_key, secret_key=made.secret_key)
 

@@ -370,6 +370,7 @@ VALID_REQUESTS = {
 
 @pytest.mark.parametrize(("req", "fields"), VALID_REQUESTS.values(), ids=VALID_REQUESTS.keys())
 def test_create_order_moves_the_request_to_the_wire_as_is(exchange, req, fields):
+    """INV-06·TS-13: 주문 생성 요청에는 항상 smp_type=cancel_maker가 실려 한 번 나간다."""
     exchange.run(lambda api: api.create_order(req))
 
     [post] = exchange.sent("POST", "/v1/orders")
@@ -454,6 +455,7 @@ def test_snapshot_without_price_or_volume_keys_is_parsed(exchange):
     ],
 )
 def test_amounts_are_sent_as_plain_strings(exchange, req, key, value):
+    """INV-14: 금액·수량은 지수 표기 없는 문자열로 나간다."""
     exchange.run(lambda api: api.create_order(req))
 
     body = exchange.body(exchange.sent("POST", "/v1/orders")[0])
@@ -608,6 +610,7 @@ VALID_REQUEST_STRATEGY = st.one_of(
 )
 @given(req=VALID_REQUEST_STRATEGY)
 def test_any_valid_request_goes_out_once_with_smp_type_and_plain_numbers(make_exchange_api, req):
+    """INV-06·INV-03·TS-13: 어떤 유효한 주문이든 smp_type과 함께 한 번만 나간다."""
     env = make_exchange_api()
 
     snapshot = env.run(lambda api: api.create_order(req))
@@ -657,6 +660,7 @@ FAILURES = {
     ("inject", "expected", "unexpected"), FAILURES.values(), ids=FAILURES.keys()
 )
 def test_a_failed_order_is_sent_exactly_once_and_reported(exchange, inject, expected, unexpected):
+    """INV-03: 실패한 주문 요청은 정확히 한 번만 나간다."""
     inject(exchange.server)
 
     async def scenario(api):
@@ -675,6 +679,7 @@ def test_a_failed_order_is_sent_exactly_once_and_reported(exchange, inject, expe
 
 
 def test_an_order_whose_answer_was_lost_can_be_confirmed_by_identifier(exchange):
+    """INV-03: 응답을 잃은 주문은 다시 보내지 않고 identifier 조회로 확인한다."""
     exchange.server.orderbook("KRW-BTC", THIN_BOOK)
     exchange.server.timeout_after_accept()
 
@@ -693,6 +698,7 @@ def test_an_order_whose_answer_was_lost_can_be_confirmed_by_identifier(exchange)
 
 
 def test_blocked_order_raises_blocked_and_is_not_resent(exchange):
+    """INV-03: 418로 막힌 주문은 오류로 알리고 다시 보내지 않는다."""
     exchange.server.blocked(30)
 
     async def scenario(api):
@@ -1300,6 +1306,7 @@ def test_other_keys_never_expose_their_full_access_key(exchange, caplog):
 
 
 def test_exchange_calls_and_failures_leave_no_secrets_in_logs_or_errors(exchange, caplog):
+    """INV-07: 거래소 호출과 실패가 로그·오류에 비밀을 남기지 않는다."""
     caplog.set_level(logging.DEBUG)
     exchange.server.orderbook("KRW-BTC", THIN_BOOK)
 
@@ -1338,6 +1345,7 @@ def test_exchange_calls_and_failures_leave_no_secrets_in_logs_or_errors(exchange
 
 
 def test_long_price_keeps_its_last_digit():
+    """INV-14: 긴 가격도 끝 자리를 잃지 않는다."""
     from autotrader.adapters.upbit.exchange import order_body
 
     # 28자리(기본 정밀도)를 넘어도 끝 자리를 잃지 않는다(반올림해 다른 값을 보내지 않는다).
@@ -1347,6 +1355,7 @@ def test_long_price_keeps_its_last_digit():
 
 
 def test_volume_with_8_decimals_beyond_28_digits_is_kept_exactly():
+    """INV-14: 28자리를 넘는 수량도 정확히 보낸다."""
     from autotrader.adapters.upbit.exchange import order_body
 
     req = request(side="ask", ord_type="market", volume=D("123456789012345678901.12345678"))
@@ -1367,6 +1376,7 @@ def test_volume_with_8_decimals_beyond_28_digits_is_kept_exactly():
     ids=["40-digits", "40-digits-fraction", "exp-40-digits", "trailing-zeros", "frac-zero", "exp"],
 )
 def test_plain_number_keeps_values_up_to_40_digits(value, expected):
+    """INV-14: 40자리까지의 값은 정확히 문자열이 된다."""
     from autotrader.adapters.upbit.exchange import plain_number as to_wire
 
     assert to_wire(D(value), "price") == expected
@@ -1378,6 +1388,7 @@ def test_plain_number_keeps_values_up_to_40_digits(value, expected):
     ids=["41-digits", "41-digits-fraction", "exp-41-digits", "huge-exp", "tiny-exp", "100-digits"],
 )
 def test_plain_number_rejects_more_than_40_digits_with_value_error(value):
+    """INV-14: 40자리를 넘는 값은 반올림하지 않고 거부한다."""
     from autotrader.adapters.upbit.exchange import plain_number as to_wire
 
     # ArithmeticError(decimal 신호)가 새지 않고 ValueError다.
@@ -1391,6 +1402,7 @@ def test_plain_number_rejects_more_than_40_digits_with_value_error(value):
     exponent=st.integers(min_value=-19, max_value=19),
 )
 def test_plain_number_round_trips_exactly(digits, exponent):
+    """INV-14: Decimal을 문자열로 바꿨다 읽어도 같은 값이다."""
     from autotrader.adapters.upbit.exchange import plain_number as to_wire
 
     value = D((0, tuple(int(c) for c in str(digits)), exponent))
@@ -1439,6 +1451,7 @@ def _set(key, value):
     ids=["created-at-overflow", "created-at-naive", "nan", "trades-count-fraction", "no-uuid"],
 )
 def test_created_order_with_a_bad_answer_is_a_server_error_sent_once(exchange, edit):
+    """INV-03: 응답을 읽을 수 없는 주문도 한 번만 나간 것으로 남는다."""
     error = _shape_error(
         exchange, "/v1/orders", edit, lambda api: api.create_order(market_buy(ID1))
     )
@@ -1771,6 +1784,7 @@ API_KEY_BREAKAGES = {
 
 @pytest.mark.parametrize("breakage", API_KEY_BREAKAGES.values(), ids=API_KEY_BREAKAGES.keys())
 def test_api_key_shape_errors_leave_no_key_in_the_traceback(exchange, caplog, breakage):
+    """INV-07: API 키 목록 오류의 traceback에도 키가 남지 않는다."""
     caplog.set_level(logging.DEBUG)
     other = make_upbit_credentials()
     edit = breakage(exchange.creds.access_key, other.access_key)

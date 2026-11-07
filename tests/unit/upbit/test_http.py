@@ -342,6 +342,7 @@ def test_paths_with_trailing_or_double_slashes_are_rejected_before_sending(metho
 
 @pytest.mark.parametrize("kind", sorted(CALLS))
 def test_every_header_name_is_sent_once_and_origin_never(kind):
+    """INV-13·TS-72: 헤더 이름은 하나씩만 가고 Origin은 어떤 요청에도 없다."""
     request, _ = send_one(kind)
     names = header_names(request)
 
@@ -658,6 +659,8 @@ ORDER_CALLS = {
     ids=[name for name, _, _ in FAILURES],
 )
 def test_a_failed_request_is_sent_exactly_once(call, failure, expected):
+    """INV-03·TS-72: 실패한 요청은 정확히 한 번만 나가고 몰래 다시 보내지 않는다."""
+
     async def scenario():
         async with connect(failure, reply(201)) as h:
             with pytest.raises(expected):
@@ -745,6 +748,8 @@ def test_timeout_setting_reaches_the_transport(options, expected):
 
 
 def test_default_transport_does_not_retry():
+    """INV-03·TS-72: 기본 전송은 자동 재시도 0회다."""
+
     # 실제 전송(네트워크는 쓰지 않는다): httpx·httpcore 기본 재시도 0을 그대로 쓴다.
     async def scenario():
         clock = FakeClock()
@@ -962,6 +967,7 @@ OK_FIXTURES = [entry for entry in MANIFEST if entry["status"] == 200]
 
 @pytest.mark.parametrize("entry", OK_FIXTURES, ids=[entry["file"] for entry in OK_FIXTURES])
 def test_recorded_quotation_responses_parse_to_decimal_without_floats(entry, caplog):
+    """INV-14: 녹화 시세 응답의 숫자는 float 없이 Decimal로 읽힌다."""
     path, _, query = entry["path"].partition("?")
     params = parse_qsl(query, keep_blank_values=True)
     body = (FIXTURES / entry["file"]).read_bytes()
@@ -987,6 +993,7 @@ def test_recorded_quotation_responses_parse_to_decimal_without_floats(entry, cap
 
 
 def test_long_acc_trade_price_keeps_every_recorded_digit():
+    """INV-14: 긴 숫자도 녹화된 자릿수를 그대로 Decimal로 지킨다."""
     body = (FIXTURES / "ticker_krw_btc_eth_xrp.json").read_bytes()
 
     async def scenario():
@@ -1005,6 +1012,7 @@ def test_long_acc_trade_price_keeps_every_recorded_digit():
 
 
 def test_exponent_notation_numbers_become_decimal():
+    """INV-14: 지수 표기 숫자도 Decimal이 된다."""
     body = b'[{"trade_volume": 9.101e-05, "trade_price": 1.5E+3, "timestamp": 1793844124280}]'
 
     async def scenario():
@@ -1144,6 +1152,8 @@ LIMITED = [
     ("call", "half"), [case[1:] for case in LIMITED], ids=[case[0] for case in LIMITED]
 )
 def test_requests_wait_for_the_half_budget_of_their_path_group(call, half):
+    """INV-13: 요청은 경로 그룹의 한도 절반 예산을 기다려 나간다."""
+
     async def scenario():
         async with connect(reply(remaining=None)) as h:
             for _ in range(half + 1):
@@ -1223,6 +1233,7 @@ ALL_KINDS = sorted(CALLS)
     ("retry_after", "wait"), [(None, 300.0), ("120", 120.0)], ids=["no_header", "retry_after"]
 )
 def test_418_stops_every_request_without_network_until_the_wait_is_over(body, retry_after, wait):
+    """INV-13·TS-05: 418이면 대기가 끝날 때까지 모든 요청이 네트워크로 나가지 않는다."""
     headers = {} if retry_after is None else {"Retry-After": retry_after}
 
     async def scenario():
@@ -1248,6 +1259,7 @@ def test_418_stops_every_request_without_network_until_the_wait_is_over(body, re
 
 
 def test_418_again_on_the_check_doubles_the_wait_and_a_success_resets_it():
+    """INV-13·TS-05: 확인 요청이 또 418이면 대기가 두 배가 되고 성공하면 처음으로 돌아간다."""
     blocked = reply(418, content=b"", remaining=None)
 
     async def scenario():
@@ -1281,6 +1293,7 @@ def test_418_again_on_the_check_doubles_the_wait_and_a_success_resets_it():
 
 
 def test_a_request_queued_by_the_rate_limit_does_not_go_out_after_a_418():
+    """INV-13·TS-05: 한도 때문에 기다리던 요청도 418 뒤에는 나가지 않는다."""
     # INV-13: 418이면 차단 시간 동안 요청이 0건이다. 한도 때문에 기다리던 요청도 나가지 않는다.
     blocked = reply(418, content=b"", remaining=None)
 
@@ -1330,6 +1343,7 @@ def without_source_lines(text: str) -> str:
 
 
 def test_secrets_never_reach_logs_or_exception_text(caplog):
+    """INV-07: 비밀이 로그와 예외 문구에 나오지 않는다."""
     caplog.set_level(logging.DEBUG)
     calls = [
         lambda http: http.get("/v1/accounts", auth=True),
@@ -1575,6 +1589,8 @@ LOCALS_CALLS = {
     "failure", [f for _, f in LOCALS_FAILURES], ids=[n for n, _ in LOCALS_FAILURES]
 )
 def test_traceback_locals_of_failed_requests_hold_no_secrets(call, failure):
+    """INV-07: 실패한 요청의 traceback 지역 변수에도 비밀이 없다."""
+
     # 예외가 지나는 프레임에 토큰·Authorization 헤더가 남지 않아야 capture_locals로도 새지 않는다.
     async def scenario():
         async with connect(failure) as h:

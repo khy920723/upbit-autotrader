@@ -505,6 +505,7 @@ def test_first_open_after_failed_connects_does_not_call_on_reconnected():
 
 
 def test_reconnect_waits_for_the_hook_before_passing_events():
+    """TS-41·D-091: 재연결 뒤 대조 자리가 끝나야 이벤트를 넘긴다."""
     clock_holder = {}
 
     async def slow_reconcile():
@@ -533,6 +534,7 @@ def test_reconnect_waits_for_the_hook_before_passing_events():
 
 
 def test_each_reconnect_calls_the_hook_exactly_once():
+    """TS-41·D-091: 재연결마다 대조 자리를 정확히 한 번 부른다."""
     connections = [[OPEN, tick(n), closed()] for n in range(4)] + [[OPEN, tick(9)]]
 
     _, rec, _ = simulate("public", *connections, seconds=60)
@@ -594,6 +596,7 @@ def test_hook_invariant_violation_is_not_swallowed():
 
 
 def test_consecutive_failures_follow_the_backoff_table():
+    """TS-41·D-091: 연속 실패는 1·2·4·8·16·32·60초 backoff를 따른다."""
     script, rec, _ = simulate("public", *([connect_failed()] for _ in range(9)), seconds=300)
 
     expected = [1, 2, 4, 8, 16, 32, 60, 60, 60]
@@ -619,6 +622,7 @@ DISCONNECTS = {
 
 @pytest.mark.parametrize("kind", list(DISCONNECTS))
 def test_every_disconnect_kind_backs_off_and_reconnects(kind):
+    """TS-41·D-091: 어떤 끊김이든 backoff 뒤 다시 연결한다."""
     script, rec, result = simulate(
         "public", *(DISCONNECTS[kind]() for _ in range(3)), [OPEN, tick(1)], seconds=20
     )
@@ -635,6 +639,7 @@ def test_every_disconnect_kind_backs_off_and_reconnects(kind):
     ids=["59s-not-stable", "60s-stable", "90s-stable"],
 )
 def test_backoff_resets_after_a_stable_connection(lifetime, next_delays):
+    """TS-41·D-091: 60초 넘게 유지된 연결 뒤에는 backoff가 1초부터 다시 시작한다."""
     script, rec, _ = simulate(
         "public",
         [connect_failed()],
@@ -683,6 +688,7 @@ def test_backoff_model(lifetimes):
 
 
 def test_public_silence_degrades_closes_and_reconnects():
+    """TS-41·D-091: 공개 시세가 120초 넘게 조용하면 DEGRADED를 알리고 다시 연결한다."""
     script, rec, result = simulate("public", [OPEN], [OPEN, tick(2)], seconds=200)
 
     assert result == "running"
@@ -813,6 +819,7 @@ def test_request_errors_are_broken_without_retry(stream, name):
 
 
 def test_auth_error_reconnects_once_without_waiting():
+    """TS-106·D-091: INVALID_AUTH는 기다리지 않고 한 번만 다시 연결한다."""
     script, rec, result = simulate(
         "private", [OPEN, auth_error()], [OPEN, asset_event(2)], seconds=10
     )

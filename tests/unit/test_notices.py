@@ -119,10 +119,12 @@ def test_coin_name_is_an_immutable_hashable_value():
     ],
 )
 def test_trade_notice_with_coin_and_keyword_blocks_that_coin(title, expected):
+    """TS-104: 거래 공지에 코인과 키워드가 함께 있으면 그 코인을 막는다."""
     assert blocks(title) == expected
 
 
 def test_result_is_a_frozenset_of_markets():
+    """TS-104: 결과는 market의 frozenset이다."""
     result = blocks("[거래] 비트코인(BTC) 유의 종목 지정 안내")
 
     assert isinstance(result, frozenset)
@@ -131,6 +133,7 @@ def test_result_is_a_frozenset_of_markets():
 
 @pytest.mark.parametrize("event_type", ["CREATED", "UPDATED"])
 def test_created_and_updated_notices_are_judged_the_same(event_type):
+    """TS-104: 생성·수정 공지는 같게 판단한다."""
     assert blocks("[거래] 리플(XRP) 거래지원 종료 안내", event_type=event_type) == {"KRW-XRP"}
 
 
@@ -153,19 +156,23 @@ def test_release_notice_also_blocks():
     ],
 )
 def test_trade_notice_without_keyword_blocks_nothing(title):
+    """TS-104: 키워드가 없는 거래 공지는 아무것도 막지 않는다."""
     assert blocks(title) == frozenset()
 
 
 def test_trade_notice_about_other_coins_blocks_nothing():
+    """TS-104: 고르지 않은 코인의 공지는 막지 않는다."""
     assert blocks("[거래] 썸씽(SSX) 거래지원 종료 안내") == frozenset()
 
 
 def test_keyword_without_any_coin_blocks_nothing():
+    """TS-104: 코인 언급 없는 키워드 공지는 막지 않는다."""
     assert blocks("[거래] 유의 종목 지정 안내") == frozenset()
 
 
 @pytest.mark.parametrize("category", OTHER_CATEGORIES)
 def test_other_categories_block_nothing(category):
+    """TS-104: 거래 외 카테고리 공지는 막지 않는다."""
     # 다른 카테고리 공지는 기록만 한다(D-079).
     title = "[입출금] 비트코인(BTC) 거래지원 종료에 따른 입출금 유의 안내"
 
@@ -173,10 +180,12 @@ def test_other_categories_block_nothing(category):
 
 
 def test_no_selected_coins_blocks_nothing():
+    """TS-104: 고른 코인이 없으면 막을 것이 없다."""
     assert blocks("[거래] 비트코인(BTC) 유의 종목 지정 안내", coins=()) == frozenset()
 
 
 def test_only_selected_coins_are_returned():
+    """TS-104: 고른 코인의 market만 돌려준다."""
     title = "[거래] 비트코인(BTC), 이더리움(ETH) 유의 종목 지정 안내"
 
     assert blocks(title, coins=(ETH, XRP)) == {"KRW-ETH"}
@@ -350,6 +359,7 @@ def test_empty_names_do_not_block_on_unrelated_notices():
 
 
 def test_body_is_searched_when_present():
+    """TS-104: 본문이 있으면 본문도 찾는다."""
     body = (
         "다음 디지털 자산의 거래지원이 종료됩니다.\n대상: 비트코인(BTC)\n거래지원 종료 일시: 11/20"
     )
@@ -365,6 +375,7 @@ def test_coin_in_title_and_keyword_in_body_go_together():
 
 
 def test_missing_body_means_title_only():
+    """TS-104: 본문이 없으면 제목만 본다."""
     assert blocks("[거래] 이더리움(ETH) 관련 안내", body=None) == frozenset()
 
 
@@ -482,6 +493,7 @@ coin_sets = st.lists(st.sampled_from(POOL), unique=True, max_size=len(POOL)).map
     body=st.none() | st.text() | texts,
 )
 def test_non_trade_categories_never_block(category, title, body):
+    """TS-104: 거래 외 카테고리는 무엇이 와도 막지 않는다."""
     event = notice(title, category=category, body=body)
 
     assert notices.announcement_blocks(event, POOL) == frozenset()
@@ -489,6 +501,7 @@ def test_non_trade_categories_never_block(category, title, body):
 
 @given(title=texts, body=bodies, coins=coin_sets)
 def test_blocked_markets_are_among_the_selected_coins(title, body, coins):
+    """TS-104: 막힌 market은 항상 고른 코인 안에 있다."""
     result = notices.announcement_blocks(notice(title, body=body), coins)
 
     assert result <= {coin.market for coin in coins}
@@ -496,6 +509,7 @@ def test_blocked_markets_are_among_the_selected_coins(title, body, coins):
 
 @given(title=texts, body=bodies, first=coin_sets, second=coin_sets)
 def test_each_coin_is_judged_on_its_own(title, body, first, second):
+    """TS-104: 코인마다 따로 판단한다."""
     event = notice(title, body=body)
     together = tuple(dict.fromkeys(first + second))
 
@@ -528,6 +542,7 @@ NO_KEYWORD_ALPHABET = list(
     body=st.none() | st.text(alphabet=NO_KEYWORD_ALPHABET, max_size=60),
 )
 def test_without_keywords_nothing_is_blocked(title, body):
+    """TS-104: 키워드를 만들 수 없는 글은 막지 않는다."""
     assert notices.announcement_blocks(notice(title, body=body), POOL) == frozenset()
 
 
@@ -548,7 +563,7 @@ def test_market_that_is_not_active_blocks_buying(state):
 
 @pytest.mark.parametrize("state", ["ACTIVE", "DELISTED", None])
 def test_delisting_date_blocks_buying(state):
-    """D-092 A·TS-26: delisting_date가 있으면 상태와 상관없이 막는다."""
+    """D-092 A·TS-26·TS-104: delisting_date가 있으면 상태와 상관없이 막는다."""
     # TS-26: delisting_date가 생기면 거래 상태와 상관없이 매수를 막는다.
     assert notices.ticker_blocks_buy(ticker(state, date(2026, 11, 20))) is True
 

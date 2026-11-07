@@ -860,6 +860,7 @@ def test_public_subscribes_to_ticker_then_yields_opened_first(env):
 
 
 def test_public_sends_neither_authorization_nor_origin(env):
+    """INV-13: 공개 연결에는 Authorization도 Origin도 없고 헤더 이름은 하나씩이다."""
     stream = env.public()
 
     async def scenario(e: Env) -> None:
@@ -966,6 +967,7 @@ def test_recorded_snapshots_become_ticker_events(env):
 
 
 def test_ticker_numbers_become_exact_decimals_without_float(env):
+    """INV-14: ticker 숫자는 float 없이 정확한 Decimal이 된다."""
     stream = env.public()
     long_price = Decimal("44216351009.95755000000000001")  # float로 읽으면 끝자리가 바뀐다
 
@@ -1031,6 +1033,7 @@ def test_deprecated_ticker_fields_are_not_read(env):
 
 @pytest.mark.parametrize("binary", [True, False], ids=["binary", "text"])
 def test_binary_and_text_frames_give_the_same_events(env, binary):
+    """TS-106: 바이너리 프레임과 텍스트 프레임은 같은 이벤트를 준다."""
     env.fake.ws_binary(binary)
     stream = env.public()
 
@@ -1042,6 +1045,7 @@ def test_binary_and_text_frames_give_the_same_events(env, binary):
 
 
 def test_status_up_messages_are_skipped():
+    """TS-106: {"status":"UP"} 메시지는 건너뛴다."""
     env = scripted_env(([STATUS_UP.encode(), BTC_FRAME.encode(), STATUS_UP, BTC_FRAME], 1000))
     stream = env.public()
 
@@ -1074,6 +1078,7 @@ def test_missing_market_state_and_delisting_date_are_none(missing):
 
 @pytest.mark.parametrize("kind", ["public", "private"])
 def test_ping_frames_every_thirty_seconds_keep_the_connection_open(env, kind):
+    """TS-106: 30초마다 PING을 보내 유휴 연결을 유지한다."""
     stream = env.public() if kind == "public" else env.private()
 
     async def scenario(e: Env) -> None:
@@ -1119,6 +1124,7 @@ def test_ping_interval_option(env):
 
 
 def test_pings_continue_while_the_consumer_is_busy(env):
+    """TS-106: 소비자가 바빠도 PING은 계속 나간다."""
     stream = env.public()
 
     async def scenario(e: Env) -> None:
@@ -1639,6 +1645,7 @@ def test_unreadable_announcement_is_skipped_without_its_content(caplog):
     ids=["bad-date-text", "date-not-text", "bad-date-while-active", "state-not-text"],
 )
 def test_unreadable_market_state_or_delisting_date_blocks_new_buys(changes, caplog):
+    """TS-104: 읽을 수 없는 market_state·delisting_date는 신규 매수를 막는 쪽으로 넣는다."""
     # 버리면 마지막 상태(ACTIVE 등)가 남아 상장 폐지 예고를 놓친다. 둘 다 None으로 넣는다.
     from autotrader.core.notices import ticker_blocks_buy
 
@@ -1972,6 +1979,7 @@ def max_in_window(times: Sequence[float], window: float) -> int:
 
 @pytest.mark.parametrize("kind", ["public", "private"])
 def test_connections_wait_to_stay_within_two_per_second(env, kind):
+    """INV-13: 연결은 초당 2회 한도(절반 이하)를 지키려고 기다린다."""
     stream = env.public() if kind == "public" else env.private()
 
     async def scenario(e: Env) -> None:
@@ -2009,6 +2017,7 @@ def test_subscriptions_wait_to_stay_within_fifty_per_minute(env):
 
 @pytest.mark.parametrize(("nth", "minute_limited"), [(1, False), (49, False), (50, True)])
 def test_too_many_request_says_whether_the_minute_budget_was_reached(env, nth, minute_limited):
+    """INV-13·TS-106: TOO_MANY_REQUEST 오류가 분당 예산 도달 여부를 알린다."""
     stream = env.public()
 
     async def scenario(e: Env) -> None:
@@ -2664,6 +2673,7 @@ async def private_failures(e: Env, stream: UpbitPrivateStream) -> tuple[list[Any
 
 
 def test_secrets_never_reach_logs_exceptions_or_reprs(env, caplog):
+    """INV-07: 비밀이 로그·예외·repr에 나오지 않는다."""
     caplog.set_level(logging.DEBUG)
     stream = env.private()
     result: dict[str, Any] = {}
@@ -2702,6 +2712,7 @@ def test_secrets_never_reach_logs_exceptions_or_reprs(env, caplog):
 
 
 def test_traceback_locals_of_adapter_frames_hold_no_secrets(env):
+    """INV-07: 어댑터 프레임의 지역 변수에도 비밀이 없다."""
     # 예외가 지나는 어댑터 프레임에 토큰·Authorization 헤더가 지역 변수로 남지 않는다.
     stream = env.private()
     result: dict[str, Any] = {}
@@ -3435,6 +3446,7 @@ def test_connector_maps_connection_failures_to_connect_failed(monkeypatch, failu
 
 
 def test_private_stream_over_the_default_connector_keeps_secrets_out_of_locals(monkeypatch):
+    """INV-07: 기본 연결기 조합에서도 지역 변수에 비밀이 없다."""
     # 실제 조합(UpbitPrivateStream + WebsocketsConnector)의 핸드셰이크 401 경로. 네트워크 없음.
     from websockets.datastructures import Headers
     from websockets.exceptions import InvalidStatus
@@ -3492,6 +3504,7 @@ def test_private_stream_over_the_default_connector_keeps_secrets_out_of_locals(m
 @pytest.mark.parametrize("name", ["Origin", "origin", "ORIGIN"])
 @pytest.mark.parametrize("url", [PUBLIC_URL, PRIVATE_URL])
 def test_connector_refuses_an_origin_header_before_connecting(monkeypatch, name, url):
+    """INV-13: Origin 헤더가 있으면 연결하기 전에 거부한다."""
     spy = spy_on_websockets_connect(monkeypatch, refused())
     headers = [("Authorization", "Bearer uat-test-0123456789abcdef"), (name, "https://upbit.com")]
 
@@ -3837,6 +3850,7 @@ def test_connection_wrapper_close_of_an_already_closed_connection_is_quiet(monke
 
 
 def test_wire_logger_drops_debug_records_even_at_debug_level(monkeypatch, caplog):
+    """INV-07: 라이브러리 DEBUG 로그(헤더 원문)는 DEBUG 단계에서도 버린다."""
     # websockets는 DEBUG로 요청 헤더(Authorization)·프레임 원문을 남긴다(INV-07).
     spy = spy_on_websockets_connect(monkeypatch, refused())
     with pytest.raises(StreamConnectFailed):

@@ -161,6 +161,8 @@ def test_batch_cancel_is_not_in_the_path_table():
 
 @pytest.mark.parametrize(("group", "half"), sorted(HALF_PER_SECOND.items()))
 def test_sequential_burst_uses_exactly_half_of_the_limit_per_second(group, half):
+    """INV-13: 연속 요청은 초당 한도의 절반만 쓴다."""
+
     async def scenario():
         clock = FakeClock(auto_advance=True)
         limiter = RateLimiter(clock)
@@ -190,6 +192,8 @@ def test_order_cancel_all_allows_one_request_per_four_seconds():
 
 @pytest.mark.parametrize(("group", "half"), sorted(HALF_PER_SECOND.items()))
 def test_a_burst_late_in_a_second_waits_a_full_second_not_the_next_boundary(group, half):
+    """INV-13: 초 끝에 몰린 요청은 다음 경계가 아니라 1초 창만큼 기다린다."""
+
     # 슬라이딩 창: k+0.5에 절반을 쓰면 k+1.0(정수 경계)이 아니라 k+1.5까지 기다린다.
     async def scenario():
         clock = FakeClock(auto_advance=True)
@@ -205,6 +209,8 @@ def test_a_burst_late_in_a_second_waits_a_full_second_not_the_next_boundary(grou
 
 
 def test_spread_requests_free_their_slots_one_second_after_each_send():
+    """INV-13: 흩어진 요청은 보낸 지 1초 뒤에 자리를 비운다."""
+
     # 창에 남는 것은 최근 절반 건의 송신 시각이다. 가장 오래된 것이 1초 지나면 한 자리가 빈다.
     async def scenario():
         clock = FakeClock(auto_advance=True)
@@ -320,6 +326,8 @@ def test_concurrent_bursts_stay_within_half_of_the_limit_in_every_second(tasks, 
 
 @pytest.mark.parametrize("offset", [0.0, 0.25])
 def test_sec_zero_pauses_that_group_until_the_next_second_boundary(offset):
+    """INV-13: sec=0이면 그 그룹을 다음 초 경계까지 멈춘다."""
+
     async def scenario():
         clock = FakeClock(auto_advance=True)
         limiter = RateLimiter(clock)
@@ -410,6 +418,8 @@ def test_recorded_remaining_req_headers_agree_with_the_path_table(entry, caplog)
 
 @pytest.mark.parametrize("offset", [0.0, 0.5])
 def test_rate_limited_pauses_only_that_group_until_the_next_second_boundary(offset):
+    """INV-13: 429면 그 그룹만 다음 초 경계까지 멈춘다."""
+
     async def scenario():
         clock = FakeClock(auto_advance=True)
         limiter = RateLimiter(clock)
@@ -474,6 +484,8 @@ def test_nothing_is_blocked_before_any_418():
 
 
 def test_418_without_retry_after_blocks_every_request_for_five_minutes():
+    """INV-13·TS-05: Retry-After 없는 418은 모든 요청을 5분 막는다."""
+
     async def scenario():
         clock = FakeClock()
         limiter = RateLimiter(clock)
@@ -496,6 +508,8 @@ def test_418_without_retry_after_blocks_every_request_for_five_minutes():
 
 @pytest.mark.parametrize("retry_after", [1.0, 120.0, 900.0])
 def test_418_with_retry_after_waits_that_long(retry_after):
+    """INV-13·TS-05: Retry-After가 있는 418은 그 시간만큼 막는다."""
+
     async def scenario():
         clock = FakeClock()
         limiter = RateLimiter(clock)

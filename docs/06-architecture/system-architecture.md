@@ -14,7 +14,6 @@ flowchart LR
     W -- zip 아티팩트 --> P["Windows 10 PC<br/>앱 실행"]
     P --> UP[(업비트)]
     P --> GM[(Gemini API)]
-    P --> NV[(네이버·RSS)]
     P --> DC[(Discord 웹후크)]
 ```
 
@@ -39,7 +38,7 @@ flowchart TB
         OM[주문 관리]
         BRK["브로커<br/>live·validate·paper"]
         HC[시작 점검·감시]
-        ADP["어댑터<br/>업비트·Gemini·뉴스·디스코드"]
+        ADP["어댑터<br/>업비트·Gemini·디스코드"]
         DBW[(SQLite 쓰기 연결)]
     end
     subgraph INF["기반"]
@@ -86,7 +85,7 @@ asyncio 이벤트 루프를 GUI와 다른 스레드(core 스레드)에서 돌린
 | 스레드 | 하는 일 | 하지 않는 일 |
 |---|---|---|
 | GUI(메인) | QApplication, 창·트레이·대화상자, 앱 계층 브리지, 단일 인스턴스 서버, 전원 이벤트 수신(네이티브 이벤트 필터), 시작 앱 등록, 절전 방지 호출, 화면 조회용 읽기 전용 DB 연결 | 네트워크 호출, DB 쓰기, 매매 판단 |
-| core(asyncio 루프 1개) | 스케줄러, 결정·규칙·위험·주문 관리, 업비트 REST·웹소켓, Gemini, 뉴스, 디스코드 웹후크, DB 쓰기 연결 | Qt import |
+| core(asyncio 루프 1개) | 스케줄러, 결정·규칙·위험·주문 관리, 업비트 REST·웹소켓, Gemini, 디스코드 웹후크, DB 쓰기 연결 | Qt import |
 | 작업 스레드(필요할 때) | keyring 읽기·쓰기(`asyncio.to_thread`), DB 백업, CSV 내보내기 | 매매 상태 변경 |
 
 ### 통신 규칙
@@ -119,7 +118,7 @@ asyncio 이벤트 루프를 GUI와 다른 스레드(core 스레드)에서 돌린
 ## 4. 모듈 경계
 
 - 매매 핵심(`core`)은 Qt를 import하지 않는다. 그래서 GUI 없이 표준 asyncio 루프에서 테스트할 수 있다.
-- 외부 연동은 인터페이스로 감싼다: 거래소(공개·비공개 REST, 웹소켓), 시그널 제공자, 뉴스 출처, 알림, 시계, 비밀 저장소, 공인 IP 확인.
+- 외부 연동은 인터페이스로 감싼다: 거래소(공개·비공개 REST, 웹소켓), 시그널 제공자, 알림, 시계, 비밀 저장소, 공인 IP 확인. 뉴스 출처는 만들지 않는다(D-097).
 - 테스트는 각 인터페이스의 가짜 구현과 `tests/fixtures/`의 녹화 응답을 쓴다.
 
 ## 5. 디렉터리 구조 (계획)
@@ -131,7 +130,7 @@ upbit-autotrader/
 │  ├─ app/            앱 조립, 수명 주기, GUI ↔ core 브리지
 │  ├─ ui/             PySide6 화면
 │  ├─ core/           결정·규칙·위험·주문·스케줄러, 인터페이스와 오류 타입(Qt 의존 없음)
-│  ├─ adapters/       upbit(REST·웹소켓), tls(REST·웹소켓 공용 TLS 설정, D-093), gemini, news, discord, public_ip
+│  ├─ adapters/       upbit(REST·웹소켓), tls(REST·웹소켓 공용 TLS 설정, D-093), gemini, discord, public_ip
 │  ├─ storage/        SQLite, 마이그레이션(migrations/*.sql)
 │  ├─ platform/       시작 앱, 절전 방지, 전원 이벤트, 단일 인스턴스
 │  └─ config/         설정 스키마, keyring
@@ -207,7 +206,7 @@ class Broker(Protocol):                              # LiveBroker, ValidateBroke
     async def open_orders(self) -> list[OrderSnapshot]: ...
     async def balances(self) -> list[Balance]: ...
 
-# ── 시그널·뉴스·알림·IP ───────────────────────────────────
+# ── 시그널·알림·IP ─────────────────────────────────────
 class SignalProvider(Protocol):
     async def evaluate(self, req: SignalRequest) -> SignalResult: ...
     # 예외를 올리지 않는다. 실패하면 signal="neutral", status=timeout|quota|invalid|refused|error
@@ -215,9 +214,8 @@ class SignalProvider(Protocol):
     #               model_requested, model_responded, request_text, raw_response,
     #               latency_ms, tokens_in, tokens_out, tokens_thinking
 
-class NewsSource(Protocol):
-    name: str                                        # naver, coindesk, cointelegraph
-    async def fetch(self, coin: CoinNames, *, since: datetime, limit: int) -> list[Headline]: ...
+# NewsSource(뉴스 출처)는 만들지 않는다(D-097, 뉴스를 수집하지 않음).
+# 이전 설계: name(naver, coindesk, cointelegraph), fetch(coin, since, limit) -> list[Headline]
 
 class Notifier(Protocol):
     async def send(self, text: str) -> SendResult: ... # 실패해도 예외 대신 결과(sent|failed|rate_limited)

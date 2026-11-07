@@ -1,6 +1,6 @@
 # 데이터 모델
 
-상태: 초안(1단계 제안, 사용자 결정 대기: D-041 DB 접근 방식, D-044 실행 모드 저장 위치, D-049 live-validate 일수) · 관련: [로그·감사 기록 정의서](logging-audit.md), [상태 전이 정의서](../03-functional/state-machines.md), [매매 로직 명세](../03-functional/trading-logic.md), [시스템 구성도](../06-architecture/system-architecture.md)
+상태: 초안(1단계 제안, 사용자 결정 대기: D-041 DB 접근 방식, D-044 실행 모드 저장 위치, D-049 live-validate 일수. 2026-11-07 뉴스 테이블 제외, D-097) · 관련: [로그·감사 기록 정의서](logging-audit.md), [상태 전이 정의서](../03-functional/state-machines.md), [매매 로직 명세](../03-functional/trading-logic.md), [시스템 구성도](../06-architecture/system-architecture.md)
 
 저장소는 SQLite 파일 하나다: `%LOCALAPPDATA%\upbit-autotrader\data\autotrader.db`(같은 폴더에 `-wal`, `-shm` 파일이 생긴다). 아래 테이블·열·인덱스는 1단계 제안이며 2단계 구현 전에 사용자 확인을 받는다.
 
@@ -54,8 +54,6 @@ erDiagram
     MARKETS ||--o| SELECTED_COINS : "선택 이력"
     MARKETS ||--o{ CANDLES : "캔들"
     PROMPT_VERSIONS ||--o{ SIGNALS : "프롬프트"
-    SIGNALS ||--o{ SIGNAL_NEWS : "입력"
-    NEWS_ITEMS ||--o{ SIGNAL_NEWS : "인용"
     SIGNALS ||--o{ DECISIONS : "근거"
     DECISIONS ||--o| ORDERS : "생성"
     ORDERS ||--o{ ORDER_EVENTS : "상태 변화"
@@ -64,6 +62,7 @@ erDiagram
     EVENTS ||--o{ NOTIFICATIONS : "알림"
 ```
 
+- 뉴스 테이블(`news_items`, `signal_news`)은 만들지 않는다(D-097, 뉴스를 수집하지 않음). 4장에 이전 설계로 남긴다.
 - `orders.retry_of`는 같은 테이블의 이전 주문을 가리킨다(429 뒤 새 identifier로 다시 낸 손절 등).
 - `positions`와 `round_trips`는 (market, mode)로 이어진다.
 
@@ -146,7 +145,9 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 - `WITHOUT ROWID` 테이블로 만든다.
 - 끝나지 않은 캔들(시작 + 단위 길이 > 거래소 시각)은 저장하지 않는다. 거래가 없던 구간은 캔들이 없으므로 빈칸을 만들어 채우지 않는다.
 
-### news_items: 뉴스 제목
+### news_items: 뉴스 제목 (만들지 않음, D-097)
+
+이전 설계 기록이다. 뉴스를 다시 넣을 때 참고한다.
 
 | 열 | 형식 | 제약 | 설명 |
 |---|---|---|---|
@@ -192,7 +193,9 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | latency_ms | INTEGER | | |
 | tokens_in, tokens_out, tokens_thinking | INTEGER | | |
 
-### signal_news: 시그널에 쓴 뉴스
+### signal_news: 시그널에 쓴 뉴스 (만들지 않음, D-097)
+
+이전 설계 기록이다.
 
 | 열 | 형식 | 제약 | 설명 |
 |---|---|---|---|
@@ -378,14 +381,12 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | order_events | `(identifier, at)` | 주문 상세 |
 | fills | `(at)` | 일일 실현 손익, CSV 내보내기 |
 | signals | `(market, evaluated_at)` | 시그널 기록 화면, 연속 실패 판정 |
-| signal_news | `(news_id)` | 뉴스 삭제·조회 |
-| news_items | `(published_at)` | 최근 24시간 제목 |
 | decisions | `(market, at)` | 코인별 기록 |
 | round_trips | `(mode, closed_at)` | 페이퍼 평가 지표 |
 | events | `(at)`, `(code, at)` | 이벤트 로그, 코드별 조회 |
 | notifications | `(dedupe_key, at)` | 30분·1시간 중복 억제 |
 
-PK와 UNIQUE 제약(`orders.upbit_uuid`, `news_items.url`, `fills(identifier, trade_uuid)`)은 자동으로 인덱스가 생긴다.
+PK와 UNIQUE 제약(`orders.upbit_uuid`, `fills(identifier, trade_uuid)`)은 자동으로 인덱스가 생긴다.
 
 ## 6. 마이그레이션
 
@@ -408,7 +409,6 @@ PK와 UNIQUE 제약(`orders.upbit_uuid`, `news_items.url`, `fills(identifier, tr
 | 대상 | 보관 | 크기 추정(코인 3개, 4시간 평가) |
 |---|---|---|
 | signals(입출력 원문 포함) | 제한 없음 | 하루 18건 × 약 6KB → 연 40MB 안팎 |
-| news_items, signal_news | 제한 없음 | 연 수 MB |
 | orders, order_events, fills | 제한 없음 | 연 1MB 미만(일일 주문 수 상한 20건) |
 | candles | 제한 없음 | 연 1MB 미만(m240, d1 기준) |
 | events, notifications | 제한 없음 | 연 수 MB |

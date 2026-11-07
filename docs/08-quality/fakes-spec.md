@@ -1,8 +1,8 @@
 # 가짜 구현 명세
 
-상태: 초안 · 2026-11-05 · 구현은 각 단계의 개발 세션이 한다(8장) · 관련: [테스트 전략](test-strategy.md) 3·4장, [불변식 명세](invariants.md), [추적표](traceability.md), [녹화 응답](../../tests/fixtures/upbit/README.md), [업비트 API 연동 명세](../05-integration/upbit-api.md), [LLM 시그널 명세](../05-integration/llm-signal.md), [뉴스 수집 명세](../05-integration/news-collection.md), [디스코드 연동 명세](../05-integration/discord.md)
+상태: 초안 · 2026-11-05, 2026-11-07 FakeNews 제외(D-097) · 구현은 각 단계의 개발 세션이 한다(8장) · 관련: [테스트 전략](test-strategy.md) 3·4장, [불변식 명세](invariants.md), [추적표](traceability.md), [녹화 응답](../../tests/fixtures/upbit/README.md), [업비트 API 연동 명세](../05-integration/upbit-api.md), [LLM 시그널 명세](../05-integration/llm-signal.md), [뉴스 수집 명세](../05-integration/news-collection.md), [디스코드 연동 명세](../05-integration/discord.md)
 
-테스트가 쓰는 가짜 구현 다섯 가지(FakeExchange, FakeLLM, FakeNews, FakeClock, FakeNotifier)가 흉내 낼 응답 형식, 오류 이름, 주입 기능을 정한다. 응답 형식과 오류 이름은 2026-11-05에 받은 공식 문서(업비트 개발자 센터 docs.upbit.com/kr, Gemini API 문서 aistudio.google.com/docs)와 같은 날 녹화한 업비트 공개 시세 응답을 기준으로 했다. 디스코드 웹후크는 디스코드 개발자 문서의 공식 원본 저장소(discord/discord-api-docs, 커밋 da52492)를 기준으로 했다. 네이버 문서는 이 세션의 네트워크 정책이 막아 원문을 읽지 못했고, 2026-11-07에 뉴스 검색 문서와 공통 오류 코드 문서를 확인했다(4.2절, 9장).
+테스트가 쓰는 가짜 구현 네 가지(FakeExchange, FakeLLM, FakeClock, FakeNotifier)가 흉내 낼 응답 형식, 오류 이름, 주입 기능을 정한다. FakeNews는 뉴스를 수집하지 않기로 해(D-097) 만들지 않고 4장에 이전 설계로 남긴다. 응답 형식과 오류 이름은 2026-11-05에 받은 공식 문서(업비트 개발자 센터 docs.upbit.com/kr, Gemini API 문서 aistudio.google.com/docs)와 같은 날 녹화한 업비트 공개 시세 응답을 기준으로 했다. 디스코드 웹후크는 디스코드 개발자 문서의 공식 원본 저장소(discord/discord-api-docs, 커밋 da52492)를 기준으로 했다. 네이버 문서는 이 세션의 네트워크 정책이 막아 원문을 읽지 못했고, 2026-11-07에 뉴스 검색 문서와 공통 오류 코드 문서를 확인했다(4.2절, 9장).
 
 ## 1. 원칙
 
@@ -10,11 +10,11 @@
 
 | 층 | 대신하는 것 | 쓰는 테스트 | 예 |
 |---|---|---|---|
-| 포트 가짜 | core가 쓰는 인터페이스(거래소, 시그널, 뉴스, 알림, 시계) | core 단위·통합 테스트 | 주문을 받으면 정해진 결과(체결, 거절, 결과 불명)를 돌려주는 메모리 거래소 |
+| 포트 가짜 | core가 쓰는 인터페이스(거래소, 시그널, 알림, 시계) | core 단위·통합 테스트 | 주문을 받으면 정해진 결과(체결, 거절, 결과 불명)를 돌려주는 메모리 거래소 |
 | 와이어 가짜 | HTTP·웹소켓 상대 서버 | 어댑터 단위 테스트 | 업비트 서버처럼 상태 코드, 헤더, JSON 본문을 돌려주는 HTTP 전송 계층(httpx를 쓰면 `httpx.MockTransport`) |
 
 - 어댑터 테스트는 와이어 가짜만, core 테스트는 포트 가짜만 쓴다. 통합 테스트는 실제 어댑터 + 와이어 가짜로 끝에서 끝까지 돌릴 수 있다.
-- 인터페이스 이름은 [시스템 구성도](../06-architecture/system-architecture.md)의 인터페이스 시그니처를 따른다(6장의 `QuotationApi`, `ExchangeApi`, `PublicStream`, `PrivateStream`, `Broker`, `SignalProvider`, `NewsSource`, `Notifier`, `Clock`, `SecretStore`, 유효(초안)). 이름이 바뀌면 이 문서도 고친다.
+- 인터페이스 이름은 [시스템 구성도](../06-architecture/system-architecture.md)의 인터페이스 시그니처를 따른다(6장의 `QuotationApi`, `ExchangeApi`, `PublicStream`, `PrivateStream`, `Broker`, `SignalProvider`, `Notifier`, `Clock`, `SecretStore`, 유효(초안)). 이름이 바뀌면 이 문서도 고친다.
 
 ### 1.2 공통 규칙
 
@@ -284,15 +284,17 @@
 | `model_mismatch(name)` | 응답 모델(`model`, `modelVersion`)이 요청과 다름 | TS-21 |
 | `auth_error(code)` | `authentication`, `permission_denied`, `model_not_found` | TS-44, TS-54 |
 | `usage(tokens)` | 입력·출력·사고 토큰 수 | TS-144 |
-| `obedient` | 입력의 뉴스 제목에 지시문이 있으면 그대로 따르는 가짜(예: "무조건 매수" → positive 0.99). 프롬프트 방어가 뚫려도 규칙·위험 한도가 막는지 본다 | TS-20, INV-15 |
+| `obedient` | 무엇을 받든 positive 0.99를 내는 가짜(조작에 넘어간 응답을 흉내). 뉴스 제목이 없어(D-097) 지시문을 넣는 경로는 없지만, LLM만으로 매수가 생기지 않는지 계속 본다 | TS-20, INV-15 |
 
 ### 3.5 검사
 
 - 받은 요청 원문(`request_text`)과 HTTP 요청 수를 기록한다. 논리 호출 1번에 HTTP 요청이 몇 번 나갔는지 세어 SDK 자동 재시도를 잡는다. 429와 4xx는 1번, 5xx는 최대 2번(SDK 1회 재시도, D-055)이어야 한다.
 - 요청 본문 검사: 모델 ID가 설정값, 도구(`tools`) 없음, 구조화 출력 스키마 있음, (Interactions면) `store=false`, 2.5 계열 모델 아님.
-- 프롬프트 검사: 카나리아 비밀, 잔고, 주문 내역, IP가 없음(7장, TS-140). 뉴스 제목은 데이터 블록 안에만 있고 200자 이하.
+- 프롬프트 검사: 카나리아 비밀, 잔고, 주문 내역, IP가 없음(7장, TS-140). 입력은 데이터 블록 안에만 있다(뉴스 제목은 D-097로 넣지 않는다).
 
-## 4. FakeNews
+## 4. FakeNews (만들지 않음, D-097)
+
+뉴스를 수집하지 않기로 해(D-097, ADR-0005 개정) 만들지 않는다. 아래는 이전 설계 기록이다. 뉴스를 다시 넣을 때 참고한다.
 
 ### 4.1 두 층
 
@@ -316,7 +318,7 @@
 | `html` | 태그·엔티티가 섞인 제목 | TS-107 |
 | `duplicate_url` | 출처 안·출처 사이 같은 URL | TS-107 |
 | `time(kind)` | 24시간 밖, 미래 시각, 시각 없음, 시간대 표기 다름 | TS-107 |
-| `ticker_collision` | 티커가 일반 단어와 같은 경우(처리 방식은 뉴스 수집 명세 3장의 남은 일) | TS-107 |
+| `ticker_collision` | 티커가 일반 단어와 같은 경우(처리 방식은 D-101에서 고르려 했으나 D-097로 필요 없어짐) | TS-107 |
 
 ## 5. FakeClock
 
@@ -389,7 +391,7 @@
 
 카나리아는 고유 표식을 넣은 가짜 비밀값이다. 이 값이 keyring 밖에서 발견되면 유출이다. INV-07(비밀이 로그·DB·프롬프트 등에 없음)을 증명하는 도구다.
 
-- **만들기:** 업비트 Access·Secret Key, Gemini 키, 네이버 Client Secret, 디스코드 웹후크 주소의 가짜 값을 테스트 실행 중에 만든다. 서비스별 형식(길이, 문자 종류, 디스코드 웹후크는 `https://discord.com/api/webhooks/<숫자>/<문자열>`)은 맞추고, 값 안에 고유 표식을 넣는다. 실제 형식과 같은 문자열을 소스와 문서에 상수로 적지 않는다(GitHub 비밀 검사 오탐 방지).
+- **만들기:** 업비트 Access·Secret Key, Gemini 키, 디스코드 웹후크 주소의 가짜 값을 테스트 실행 중에 만든다. 서비스별 형식(길이, 문자 종류, 디스코드 웹후크는 `https://discord.com/api/webhooks/<숫자>/<문자열>`)은 맞추고, 값 안에 고유 표식을 넣는다. 실제 형식과 같은 문자열을 소스와 문서에 상수로 적지 않는다(GitHub 비밀 검사 오탐 방지).
 - **넣기:** 가짜 `SecretStore`에 넣고 마법사·설정·주문·알림·오류 경로를 모두 지나는 시나리오를 돌린다.
 - **찾을 곳:** 로그 파일, DB의 모든 TEXT 열(특히 events.context_json, order_events.payload_json, signals.raw_response), 설정 파일과 백업(`.bak`), `self-test-report.txt`, CSV, 진단 묶음, FakeLLM이 받은 프롬프트, FakeNotifier가 보낸 글, 로그에 남은 예외 traceback.
 - **찾을 모양:** 원문, URL 인코딩(`quote` 기본·`safe=""`·`quote_plus`, 소문자 퍼센트 인코딩), JSON 이스케이프(`\/`, `\uXXXX`), base64·base64url(시작 위치 3가지), 원문의 8자 이상 부분 문자열(앞 4자만 허용, INV-07), JWT 모양(`eyJ...`로 시작하는 점 2개짜리 문자열), `Authorization`, `Bearer `, `discord.com/api/webhooks/`.
@@ -402,7 +404,7 @@
 | FakeClock | 3단계(요청 한도 계산부터 필요) | - | 로드맵 3단계 |
 | FakeExchange | 5단계(브로커·주문 관리) | 3단계(업비트 어댑터, "가짜 거래소" 포함) | 로드맵 3·5단계 |
 | FakeLLM | 5단계(결정 엔진) | 4단계(Gemini 어댑터) | 로드맵 4·5단계 |
-| FakeNews | 4단계 | 4단계 | 로드맵 4단계 |
+| FakeNews | 만들지 않음(D-097) | 만들지 않음 | ADR-0005 개정 |
 | FakeNotifier | 7단계(디스코드) | 7단계 | 로드맵 7단계 |
 | 카나리아 | 2단계(로그 설정)부터 단계마다 검사 범위를 넓힘 | - | INV-07 |
 
@@ -418,6 +420,6 @@
 | Gemini 생성 차단 코드가 HTTP 오류로 오는지 `status=failed`로 오는지 | 오류 문서에 "이 코드를 받으면"으로만 나온다 | 4단계 실호출(사용자 PC) |
 | Interactions 응답의 `model`이 실제 응답 모델인지 | 문서에 없다(LLM 시그널 명세 6장도 같은 지적) | 4단계 실호출 |
 | 디스코드 개발자 문서 사이트 원문 | 이 세션에서 discord.com 접근이 막혔다 | 공식 원본 저장소(discord/discord-api-docs, 커밋 da52492)로 확인(디스코드 연동 명세). 7단계 전에 사이트와 대조 |
-| 네이버 검색 API 원문(인증 실패·호출 한도 초과 오류 형식 포함) | 2026-11-07에 확인했다(4.2절). 네이버를 계속 쓸지는 D-095(대기) | 계속 쓰게 되면 4단계 세션이 녹화 응답과 대조 |
-| RSS 피드 실제 형식 | 이 세션에서 받지 않았다 | 4단계 세션이 녹화 |
+| 네이버 검색 API 원문(인증 실패·호출 한도 초과 오류 형식 포함) | 2026-11-07에 확인했다(4.2절). D-095로 네이버는 쓰지 않는다 | 필요 없음 |
+| RSS 피드 실제 형식 | D-097로 RSS를 쓰지 않는다 | 필요 없음 |
 | Windows 10에서 잠자기 동안 `time.monotonic()`이 흐르는지 | 리눅스 세션에서 확인할 수 없다 | [수동 점검표](manual-checklist-windows10.md) M-25 |

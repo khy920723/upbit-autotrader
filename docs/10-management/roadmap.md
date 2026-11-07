@@ -78,12 +78,12 @@ PR이 생기면 Changes 카드에서 PR의 ⋮ 메뉴를 열어 Auto-fix를 켠�
 - uv 프로젝트, 빈 창 앱, 설정·로그·SQLite 초기화, `--self-test`, `packaging/autotrader.spec`, 의존성 라이선스 목록
 - 완료 기준: CI와 Windows 빌드 통과. 사용자가 Windows 10 PC에서 빈 앱 실행과 self-test 통과를 확인
 
-### 3단계: 업비트 연동
+### 3단계: 업비트 연동 (완료)
 
 - 시작 전에 정할 것: 업비트 클라이언트(D-038, [ADR-0006](../06-architecture/adr/0006-upbit-client.md))와 GUI–asyncio 연결(D-040, [ADR-0009](../06-architecture/adr/0009-gui-asyncio-bridge.md)). 둘 다 2026-11-05 사용자 결정으로 정했다(추천안 A)
 - JWT 서명(알려진 값 테스트), 요청 한도, 오류 매핑, `/v1/orders/chance`, 호가 단위, 종목 목록과 경고, 시세·비공개 웹소켓(재연결 후 REST로 대조), 가짜 거래소
 - 완료 기준: 가짜 거래소로 테스트 통과
-- 진행: 3a(REST 클라이언트·서명·요청 한도·오류 매핑·주문 가능 정보·호가 단위·종목 경고·REST 가짜 거래소) PR #17 병합(2026-11-05). 3b(시세·비공개 웹소켓, 재연결 감시와 재연결 뒤 대조 자리, 웹소켓 가짜, TLS 설정 통일, 테스트 중 네트워크 차단) PR(2026-11-06)
+- 완료(QA 확인 2026-11-06, [PR #24](https://github.com/khy920723/upbit-autotrader/pull/24)): 3a(REST 클라이언트·서명·요청 한도·오류 매핑·주문 가능 정보·호가 단위·종목 경고·REST 가짜 거래소) [PR #17](https://github.com/khy920723/upbit-autotrader/pull/17) 병합(2026-11-05). 3b(시세·비공개 웹소켓, 재연결 감시와 재연결 뒤 대조 자리, 웹소켓 가짜, TLS 설정 통일, 테스트 중 네트워크 차단) [PR #22](https://github.com/khy920723/upbit-autotrader/pull/22) 병합(2026-11-06). QA 권장 지적(R17·R22)은 프론트/백엔드 정리 PR에서 고친다
 
 ### 4단계: 뉴스 + LLM 시그널
 

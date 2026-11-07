@@ -55,6 +55,7 @@
 | DUST_RECORDED | 팔 수 없는 잔량을 기록 |
 | INTERNAL_ERROR | 불변식 위반, 위험 점검·주문 관리 예외 3회 연속(MSG-E017) |
 | IDENTIFIER_CONFLICT | `duplicated_identifier`를 받고 조회한 주문이 이번 주문과 다름(버그) |
+| UNNAMED_NOT_FOUND | 결과 불명 확인에서 개별 주문 조회가 `error.name` 없는 404를 줘서 "없음"으로 셈(D-094, 경고) |
 | POSITION_RECALCULATED | 시작 점검에서 fills로 다시 계산한 포지션이 저장된 값과 달라 고침 |
 | ORDER_TYPE_UNSUPPORTED | 주문 가능 정보의 `bid_types`에 `best_fok`가 없어 그 코인 매수를 보류 |
 | EXIT_ONLY_BLOCKED | paper에서 exit_only 실보유분의 주문을 키·IP 오류로 낼 수 없음(MSG-E019) |

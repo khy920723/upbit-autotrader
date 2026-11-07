@@ -352,7 +352,7 @@ AutotraderError
 | UpbitNotFound | - | 조회면 `None`으로 바꾼다 | 유지 | - |
 | UpbitRateLimited(429) | REJECTED(RATE_LIMIT_429) | 다음 초에 같은 요청 | 유지, 그 그룹 요청 속도를 낮춤 | 반복되면 NTF-19 |
 | UpbitBlocked(418) | REJECTED(RATE_LIMIT_418) | 중단 | 차단 시간 동안 SUSPENDED | NTF-04. `retry_after_capped`(24시간 상한)가 새로 켜지면 긴급 알림 한 번(D-089) |
-| StreamClosed, StreamConnectFailed | - | 감시가 backoff로 다시 연결(D-091). 공개 시세가 120초 넘게 끊기면 DEGRADED | 공개: DEGRADED, 비공개: 다시 연결 뒤 REST 대조 | 이어지면 NTF-04 |
+| StreamClosed, StreamConnectFailed | - | 감시가 backoff로 다시 연결(D-091). 공개 시세가 120초 넘게 끊기면 DEGRADED. 핸드셰이크가 HTTP 401·403·429로 거절되면 그 상태를 RECONNECTING 상태에 싣고, 비공개 401·403은 `INVALID_AUTH`처럼 다룬다(D-091 (12)) | 공개: DEGRADED, 비공개: 다시 연결 뒤 REST 대조 | 이어지면 NTF-04 |
 | StreamRateLimited, StreamAuthError, StreamRequestError | - | D-080대로: 한도 초과는 기다린 뒤 1번, 인증은 새 JWT로 1번, 형식 오류는 다시 하지 않음(BROKEN) | 공개 BROKEN이면 DEGRADED, AUTH_CHECK이면 REST로 키 확인 | 앱 버그면 NTF-03 |
 | UpbitServerError(5xx) | UNKNOWN | 1회 다시, 실패하면 다음 주기 | 유지 | - |
 | SecretStoreError | - | - | 모든 모드에서 HALTED | NTF-03 |

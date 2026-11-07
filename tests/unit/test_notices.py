@@ -1,6 +1,6 @@
 """공지·ticker 상태로 신규 매수 막기(core/notices.py).
 
-근거: D-079(확정), D-092(대기, 제안 A), TS-26·104.
+근거: D-079(확정), D-092(확정 A, 2026-11-07 사용자 결정), TS-26·104.
 
 announcement_blocks(event, coins) -> frozenset[str]: 신규 매수를 막을 market.
 
@@ -13,20 +13,20 @@ announcement_blocks(event, coins) -> frozenset[str]: 신규 매수를 막을 mar
 - 코인 언급 = 티커 또는 한글 이름. 빈 티커·빈 한글 이름은 아무것에도 맞지 않는다.
   - 티커: ASCII 영숫자 경계로 찾고 대소문자는 무시한다. BTC는 BTCB·WBTC·BTC2
     안에서 맞지 않고 (BTC)·KRW-BTC·btc·한글에 붙은 BTC는 맞는다.
-  - [제안 추가] 마켓 이름은 언급이 아니다: 티커 바로 뒤에 "마켓"이 오면(공백 허용,
+  - [D-092 A] 마켓 이름은 언급이 아니다: 티커 바로 뒤에 "마켓"이 오면(공백 허용,
     "KRW, BTC, USDT 마켓"처럼 쉼표·가운뎃점·빗금으로 이은 티커 목록 뒤도) 그 티커는
     언급이 아니다. 단 마켓 코드의 뒷부분(KRW-BTC 마켓의 BTC)은 언급이다.
-  - [제안 추가] 마켓 코드의 앞부분(호가 통화, BTC-ETH의 BTC·USDT-SSX의 USDT)은
+  - [D-092 A] 마켓 코드의 앞부분(호가 통화, BTC-ETH의 BTC·USDT-SSX의 USDT)은
     언급이 아니다. 뒷부분(KRW-BTC의 BTC)은 언급이다.
   - 한글 이름: 부분 문자열(D-079 문구 그대로). 괄호 같은 글자도 글자 그대로
     비교한다. 그래서 "비트코인캐시" 공지는 비트코인도 막는다(오탐은 매수만 막고
     손실은 없다, D-079).
 - 키워드 = "거래지원 종료" 또는 "유의".
-  [제안 추가] "거래지원 종료"는 띄어쓰기 차이를 무시하고("거래 지원 종료",
+  [D-092 A] "거래지원 종료"는 띄어쓰기 차이를 무시하고("거래 지원 종료",
   "거래지원종료"도 맞는다) 사이에 조사 을·이·은·의 하나를 허용한다("거래지원을 종료",
   "거래 지원이 종료"). 공식 문서 예시 제목이 "신규 거래 지원 안내"처럼 "거래 지원"을
   띄어 쓴다.
-  [제안 추가] "유의사항"·"유의 사항"(안내 문구)은 "유의" 키워드가 아니다.
+  [D-092 A] "유의사항"·"유의 사항"(안내 문구)은 "유의" 키워드가 아니다.
 - 같은 글 안에 코인 언급과 키워드가 함께 있으면 그 코인의 market을 넣는다.
   여러 코인이 함께 나오면 모두 넣는다. event_type(CREATED·UPDATED)은 상관없다.
 
@@ -135,6 +135,7 @@ def test_created_and_updated_notices_are_judged_the_same(event_type):
 
 
 def test_release_notice_also_blocks():
+    """D-092 A·TS-104: 지정 해제 공지도 막는다(D-079 오탐 수용)."""
     # "유의"만 보므로 지정 해제 공지도 막는다. 해제는 종목 목록 API·시세 웹소켓 값으로
     # 확인되거나 사용자가 직접 한다(D-079). 오탐은 매수만 막는다.
     assert blocks("[거래] 이더리움(ETH) 유의 종목 지정 해제 안내") == {"KRW-ETH"}
@@ -199,6 +200,7 @@ def test_only_selected_coins_are_returned():
     ],
 )
 def test_ticker_matches_only_on_alphanumeric_boundaries(title, blocked):
+    """D-092 A·TS-104: 티커는 영숫자 경계로, 대소문자 없이 찾는다."""
     assert blocks(title, coins=(BTC,)) == ({"KRW-BTC"} if blocked else frozenset())
 
 
@@ -212,29 +214,33 @@ def test_ticker_matches_only_on_alphanumeric_boundaries(title, blocked):
     ],
 )
 def test_one_letter_ticker_does_not_match_inside_words(title, blocked):
+    """D-092 A·TS-104: 한 글자 티커도 영숫자 경계로만 맞는다."""
     assert blocks(title, coins=(T,)) == ({"KRW-T"} if blocked else frozenset())
 
 
 def test_korean_name_is_a_plain_substring():
+    """D-092 A(B 아님)·TS-104: 한글 이름은 부분 문자열이다."""
     # D-079 문구 그대로 부분 문자열이다. 비트코인캐시 공지는 비트코인도 막는다(받아들인 오탐).
     assert blocks("[거래] 비트코인캐시(BCH) 거래지원 종료 안내", coins=(BTC,)) == {"KRW-BTC"}
 
 
 def test_korean_name_with_parentheses_is_compared_literally():
+    """D-092 A·TS-104: 한글 이름은 괄호까지 글자 그대로 비교한다."""
     # "엑스알피(리플)"의 괄호를 정규식 묶음으로 읽으면 "엑스알피리플"에만 맞는다.
     assert blocks("[거래] 엑스알피리플 유의 종목 지정 안내", coins=(XRP,)) == frozenset()
     assert blocks("[거래] 엑스알피(리플) 유의 종목 지정 안내", coins=(XRP,)) == {"KRW-XRP"}
 
 
-# ── 키워드 띄어쓰기(제안 추가) ────────────────────────────
+# ── 키워드 띄어쓰기(D-092 A) ────────────────────────────
 
 
 @pytest.mark.parametrize("keyword", ["거래지원 종료", "거래지원종료", "거래 지원 종료"])
 def test_delisting_keyword_ignores_spacing(keyword):
+    """D-092 A·TS-104: 공백을 지운 뒤 '거래지원 종료'를 찾는다."""
     assert blocks(f"[거래] 리플(XRP) {keyword} 안내") == {"KRW-XRP"}
 
 
-# ── 키워드 변형과 예외(제안 추가) ────────────────────────
+# ── 키워드 변형과 예외(D-092 A) ────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -250,11 +256,13 @@ def test_delisting_keyword_ignores_spacing(keyword):
     ],
 )
 def test_delisting_keyword_accepts_particles_and_spacing(phrase):
+    """D-092 A·TS-104: 거래지원(을|이|은|의)?종료."""
     assert blocks(f"[거래] 비트코인(BTC) {phrase}", coins=(BTC,)) == {"KRW-BTC"}
 
 
 @pytest.mark.parametrize("phrase", ["거래지원 안내", "거래지원 재개", "거래지원들 종료"])
 def test_delisting_keyword_needs_the_end_word(phrase):
+    """D-092 A·TS-104: '종료'가 없거나 다른 말이 끼면 키워드가 아니다."""
     assert blocks(f"[거래] 비트코인(BTC) {phrase}", coins=(BTC,)) == frozenset()
 
 
@@ -267,16 +275,18 @@ def test_delisting_keyword_needs_the_end_word(phrase):
     ],
 )
 def test_caution_notes_are_not_the_caution_keyword(body):
+    """D-092 A·TS-104: '유의' 뒤에 '사항'이 오면 키워드가 아니다."""
     assert blocks("[거래] 비트코인(BTC) 신규 거래지원 안내", coins=(BTC,), body=body) == frozenset()
 
 
 def test_caution_keyword_still_matches_next_to_a_caution_note():
+    """D-092 A·TS-104: 유의사항 옆의 다른 '유의'는 맞는다."""
     body = "유의사항을 확인하세요. 비트코인은 유의 종목으로 지정되었습니다."
 
     assert blocks("[거래] 안내", coins=(BTC,), body=body) == {"KRW-BTC"}
 
 
-# ── 마켓 이름은 코인 언급이 아니다(제안 추가) ─────────────
+# ── 마켓 이름은 코인 언급이 아니다(D-092 A) ─────────────
 
 USDT = notices.CoinName(market="KRW-USDT", ticker="USDT", korean_name="테더")
 
@@ -294,6 +304,7 @@ USDT = notices.CoinName(market="KRW-USDT", ticker="USDT", korean_name="테더")
     ],
 )
 def test_market_names_are_not_coin_mentions(title, body):
+    """D-092 A·TS-104: 마켓 이름·마켓 코드 앞부분은 언급이 아니다."""
     assert blocks(title, coins=(BTC, USDT), body=body) == frozenset()
 
 
@@ -310,6 +321,7 @@ def test_market_names_are_not_coin_mentions(title, body):
     ],
 )
 def test_coin_mentions_next_to_market_names_still_match(title, expected):
+    """D-092 A·TS-104: 마켓 코드 뒷부분과 다른 자리의 티커는 언급이다."""
     assert blocks(title, coins=(BTC, USDT)) == expected
 
 
@@ -320,6 +332,7 @@ def test_coin_mentions_next_to_market_names_still_match(title, expected):
     ("ticker", "korean_name"), [("", ""), ("\u200b", "\u200b"), ("", "비트코인"), ("BTC", "")]
 )
 def test_empty_names_match_nothing_by_themselves(ticker, korean_name):
+    """D-092 A·TS-104: 빈 티커·빈 이름은 아무것에도 맞지 않는다."""
     coin = notices.CoinName(market="KRW-X", ticker=ticker, korean_name=korean_name)
     title = "[거래] 거래지원 종료 유의 안내 () - / 마켓"
 
@@ -327,6 +340,7 @@ def test_empty_names_match_nothing_by_themselves(ticker, korean_name):
 
 
 def test_empty_names_do_not_block_on_unrelated_notices():
+    """D-092 A·TS-104: 빈 이름 코인은 다른 코인 공지로 막히지 않는다."""
     empty = notices.CoinName(market="KRW-EMPTY", ticker="", korean_name="")
 
     assert blocks("[거래] 비트코인(BTC) 유의 종목 지정 안내", coins=(BTC, empty)) == {"KRW-BTC"}
@@ -344,6 +358,7 @@ def test_body_is_searched_when_present():
 
 
 def test_coin_in_title_and_keyword_in_body_go_together():
+    """D-092 A·TS-104: 제목의 코인과 본문의 키워드도 짝이 된다."""
     body = "해당 디지털 자산이 유의 종목으로 지정되었습니다."
 
     assert blocks("[거래] 이더리움(ETH) 관련 안내", body=body) == {"KRW-ETH"}
@@ -354,11 +369,13 @@ def test_missing_body_means_title_only():
 
 
 def test_title_and_body_do_not_glue_into_a_ticker():
+    """D-092 A·TS-104: 제목과 본문은 이어 붙이지 않는다(티커)."""
     # 제목 끝 "B"와 본문 앞 "TC"가 붙어 BTC가 되면 안 된다.
     assert blocks("[거래] 거래지원 종료 안내 B", body="TC 관련 공지") == frozenset()
 
 
 def test_title_and_body_do_not_glue_into_a_keyword():
+    """D-092 A·TS-104: 제목과 본문은 이어 붙이지 않는다(키워드)."""
     # 제목 끝 "거래지원"과 본문 앞 "종료"가 붙어 "거래지원종료"가 되면 안 된다.
     assert blocks("[거래] 비트코인(BTC) 거래지원", body="종료 안내") == frozenset()
     assert blocks("[거래] 비트코인(BTC) 거래지원", body="\n종료 안내") == frozenset()
@@ -379,10 +396,12 @@ def test_title_and_body_do_not_glue_into_a_keyword():
     ],
 )
 def test_compatibility_forms_and_format_characters_still_match(title):
+    """D-092 A·TS-104: 제목을 NFKC로 맞추고 서식 문자를 지운다."""
     assert blocks(title, coins=(BTC,)) == {"KRW-BTC"}
 
 
 def test_full_width_coin_name_still_matches():
+    """D-092 A·TS-104: 코인 이름도 NFKC로 맞추고 서식 문자를 지운다."""
     coin = notices.CoinName(market="KRW-BTC", ticker="ＢＴＣ", korean_name="비트\u200b코인")
 
     assert blocks("[거래] BTC 유의 종목 지정 안내", coins=(coin,)) == {"KRW-BTC"}
@@ -390,11 +409,13 @@ def test_full_width_coin_name_still_matches():
 
 
 def test_format_characters_do_not_break_ticker_boundaries():
+    """D-092 A·TS-104: 서식 문자를 지운 뒤 티커 경계를 본다."""
     # Cf를 지우면 W와 BTC가 붙어 WBTC가 된다. 그러면 BTC 언급이 아니다.
     assert blocks("[거래] W\u200bBTC 유의 종목 지정 안내", coins=(BTC,)) == frozenset()
 
 
 def test_decomposed_title_still_matches():
+    """D-092 A·TS-104: 분해형(NFD) 제목도 NFKC로 맞춘다."""
     title = unicodedata.normalize("NFD", "[거래] 비트코인 유의 종목 지정 안내")
     assert title != unicodedata.normalize("NFC", title)
 
@@ -402,6 +423,7 @@ def test_decomposed_title_still_matches():
 
 
 def test_decomposed_coin_name_still_matches():
+    """D-092 A·TS-104: 분해형(NFD) 코인 이름도 NFKC로 맞춘다."""
     coin = notices.CoinName(
         market="KRW-BTC", ticker="BTC", korean_name=unicodedata.normalize("NFD", "비트코인")
     )
@@ -410,6 +432,7 @@ def test_decomposed_coin_name_still_matches():
 
 
 def test_decomposed_body_still_matches():
+    """D-092 A·TS-104: 분해형(NFD) 본문도 NFKC로 맞춘다."""
     body = unicodedata.normalize("NFD", "대상: 이더리움, 거래지원 종료")
 
     assert blocks("[거래] 안내", body=body) == {"KRW-ETH"}
@@ -483,6 +506,8 @@ def test_each_coin_is_judged_on_its_own(title, body, first, second):
 
 @given(title=texts, body=bodies, coins=coin_sets)
 def test_normalization_form_does_not_matter(title, body, coins):
+    """D-092 A·TS-104: 정규화 형식이 달라도 판단이 같다."""
+
     def nfd(text):
         return None if text is None else unicodedata.normalize("NFD", text)
 
@@ -510,17 +535,20 @@ def test_without_keywords_nothing_is_blocked(title, body):
 
 
 def test_active_market_without_delisting_date_allows_buying():
+    """D-092 A·TS-26·TS-104: ACTIVE이고 delisting_date가 없을 때만 산다."""
     assert notices.ticker_blocks_buy(ticker("ACTIVE", None)) is False
 
 
 @pytest.mark.parametrize("state", ["DELISTED", "PREVIEW", None, "active", "SUSPENDED", ""])
 def test_market_that_is_not_active_blocks_buying(state):
-    # PREVIEW(입금지원)와 값이 없는 경우도 막는다(보수적 판단, D-092 제안).
+    """D-092 A(C 아님)·TS-104: PREVIEW·값 없음도 막는다."""
+    # PREVIEW(입금지원)와 값이 없는 경우도 막는다(보수적 판단, D-092 A).
     assert notices.ticker_blocks_buy(ticker(state, None)) is True
 
 
 @pytest.mark.parametrize("state", ["ACTIVE", "DELISTED", None])
 def test_delisting_date_blocks_buying(state):
+    """D-092 A·TS-26: delisting_date가 있으면 상태와 상관없이 막는다."""
     # TS-26: delisting_date가 생기면 거래 상태와 상관없이 매수를 막는다.
     assert notices.ticker_blocks_buy(ticker(state, date(2026, 11, 20))) is True
 
@@ -530,6 +558,119 @@ def test_delisting_date_blocks_buying(state):
     delisting=st.none() | st.dates(min_value=date(2020, 1, 1), max_value=date(2035, 12, 31)),
 )
 def test_ticker_blocks_buy_unless_active_and_listed(state, delisting):
+    """D-092 A·TS-26·TS-104: ACTIVE·날짜 없음만 허용한다."""
     expected = not (state == "ACTIVE" and delisting is None)
 
     assert notices.ticker_blocks_buy(ticker(state, delisting)) is expected
+
+
+# ── D-092 A 확인 ──────────────────────────────────────────
+# 사용자가 2026-11-07에 D-092를 "A: 제안 그대로"로 정했다. 위 구역이 이미 고정한 성질은
+# docstring 첫 줄에 "D-092 A"로 표시했고, 여기에는 빠진 경우와 선택지 B·C와 갈리는 경우만 둔다.
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "[거래] 이더리움클래식(ETC) 거래지원 종료 안내",
+        "[거래] 이더리움 클래식(ETC) 유의 종목 지정 안내",
+    ],
+)
+def test_d092a_korean_name_inside_a_longer_name_still_blocks(title):
+    """D-092 A(B 아님)·TS-104: "이더리움 클래식" 공지가 이더리움을 막는다.
+
+    B(한글 이름 뒤에 다른 한글이 이어지면 맞지 않음)였다면 붙여 쓴 "이더리움클래식"은
+    맞지 않는다. A는 부분 문자열이라 막는다(오탐은 매수만 막는다).
+    """
+    assert blocks(title, coins=(ETH,)) == {"KRW-ETH"}
+
+
+@pytest.mark.parametrize(
+    ("title", "coin", "expected"),
+    [
+        ("[거래] 이더리움이 유의 종목으로 지정되었습니다", ETH, {"KRW-ETH"}),
+        ("[거래] 비트코인의 거래지원 종료 안내", BTC, {"KRW-BTC"}),
+        ("[거래] 비트코인은 거래지원이 종료됩니다", BTC, {"KRW-BTC"}),
+    ],
+)
+def test_d092a_korean_name_followed_by_a_particle_blocks(title, coin, expected):
+    """D-092 A(B 아님)·TS-104: 조사가 붙은 한글 이름(티커 없음)도 막는다."""
+    assert blocks(title, coins=(coin,)) == expected
+
+
+def test_d092a_keyword_in_title_and_coin_in_body_go_together():
+    """D-092 A·TS-104: 제목의 키워드와 본문의 코인도 짝이 된다(반대 방향)."""
+    body = "대상 디지털 자산: 이더리움(ETH)"
+
+    assert blocks("[거래] 디지털 자산 거래지원 종료 안내", body=body) == {"KRW-ETH"}
+
+
+@pytest.mark.parametrize(
+    ("title", "body"),
+    [
+        ("[거래] 유의 종목 지정 안내", "대상: ＥＴＨ"),  # 전각 티커
+        ("[거래] 유의 종목 지정 안내", "대상: 이더\u200b리움"),  # 폭 없는 공백(Cf)
+        ("[거래] 이더리움(ETH) 안내", "거래지원\u200b종료 일시: 11/20"),
+        ("[거래] 이더리움(ETH) 안내", "유\ufeff의 종목으로 지정되었습니다"),  # BOM(Cf)
+    ],
+)
+def test_d092a_body_is_normalized_like_the_title(title, body):
+    """D-092 A·TS-104: 본문도 NFKC로 맞추고 서식 문자를 지운 뒤 본다."""
+    assert blocks(title, coins=(ETH,), body=body) == {"KRW-ETH"}
+
+
+@pytest.mark.parametrize("space", ["\t", "\u3000", "\u00a0", "\r\n"])
+def test_d092a_delisting_keyword_ignores_every_kind_of_space(space):
+    """D-092 A·TS-104: 탭·전각 공백·NBSP·줄바꿈도 지운 뒤 '거래지원 종료'를 찾는다."""
+    assert blocks(f"[거래] 비트코인(BTC) 거래{space}지원{space}종료", coins=(BTC,)) == {"KRW-BTC"}
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "거래지원도 종료",  # 을·이·은·의가 아닌 조사
+        "거래지원과 종료",
+        "거래지원을이 종료",  # 조사는 하나까지
+        "거래지원 을 이 종료",
+        "종료된 거래지원",  # 순서가 바뀜
+    ],
+)
+def test_d092a_delisting_keyword_allows_only_one_of_the_four_particles(phrase):
+    """D-092 A·TS-104: '거래지원'과 '종료' 사이는 을·이·은·의 하나까지만 허용한다."""
+    assert blocks(f"[거래] 비트코인(BTC) {phrase}", coins=(BTC,)) == frozenset()
+
+
+def test_d092a_caution_note_with_a_format_character_is_still_a_note():
+    """D-092 A·TS-104: 서식 문자를 지운 뒤 "유의사항"이 되면 키워드가 아니다."""
+    body = "투자 유의\u200b사항을 확인하세요"
+
+    assert blocks("[거래] 비트코인(BTC) 신규 거래지원 안내", coins=(BTC,), body=body) == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("title", "blocked"),
+    [
+        ("[거래] krw-btc 거래지원 종료 안내", True),  # 마켓 코드 뒷부분(소문자)
+        ("[거래] Krw-Btc 유의 종목 지정 안내", True),
+        ("[거래] btc-ssx 거래지원 종료 안내", False),  # 마켓 코드 앞부분(소문자)
+        ("[거래] btc 마켓 디지털 자산 거래지원 종료 안내", False),  # 마켓 이름(소문자)
+        ("[거래] krw, btc, usdt 마켓 거래지원 종료 안내 (SSX)", False),
+    ],
+)
+def test_d092a_market_rules_ignore_case_like_the_ticker(title, blocked):
+    """D-092 A·TS-104: 대소문자가 달라도 마켓 코드·마켓 이름 규칙이 똑같이 적용된다."""
+    assert blocks(title, coins=(BTC,)) == ({"KRW-BTC"} if blocked else frozenset())
+
+
+def test_d092a_delisting_withdrawal_notice_also_blocks():
+    """D-092 A·TS-104: '거래지원 종료' 철회 공지도 막는다(D-079 오탐 수용).
+
+    "유의" 지정 해제 쪽은 test_release_notice_also_blocks가 고정한다.
+    """
+    assert blocks("[거래] 리플(XRP) 거래지원 종료 결정 철회 안내", coins=(XRP,)) == {"KRW-XRP"}
+
+
+# 시세 상태(2)에서 C와 갈리는 경우(PREVIEW·값 없음도 막음)는 위의
+# test_market_that_is_not_active_blocks_buying이, delisting_date는
+# test_delisting_date_blocks_buying과 test_ticker_blocks_buy_unless_active_and_listed가
+# 이미 고정한다(docstring에 D-092 A 표시).

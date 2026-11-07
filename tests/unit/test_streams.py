@@ -1801,7 +1801,7 @@ def test_open_stream_raising_an_auth_error_reopens_once_then_auth_check():
     assert result == "returned"
     assert opener.calls == [T0, T0]  # 인증 오류 뒤에는 기다리지 않고 1번
     assert script.opened == []
-    (_, reconnecting), = rec.statuses("RECONNECTING")
+    ((_, reconnecting),) = rec.statuses("RECONNECTING")
     assert (reconnecting.reason, reconnecting.error_name, reconnecting.retry_in) == (
         "auth_failed",
         "NO_CREDENTIALS",

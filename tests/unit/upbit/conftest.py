@@ -133,7 +133,7 @@ class ApiEnv:
         content_type: str | None = "application/json; charset=utf-8",
         times: int | None = None,
     ) -> None:
-        """그 경로의 응답을 status·content로 바꾼다(가짜가 만들 수 없는 오류 모양, 예: 이름 없는 404).
+        """그 경로의 응답을 status·content로 바꾼다(가짜가 못 만드는 오류 모양, 예: 이름 없는 404).
 
         요청은 가짜가 그대로 받아 검사·기록한 뒤 바꾼다. 가짜 응답의 Date·Remaining-Req는 둔다.
         content_type이 None이면 Content-Type 헤더를 붙이지 않는다. times번만 바꾸고(None이면

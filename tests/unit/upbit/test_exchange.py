@@ -1941,7 +1941,8 @@ def test_chance_without_bid_or_ask_types_supports_no_type(exchange, key):
 # - core.models.OrderLookup(snapshot: OrderSnapshot | None,
 #   not_found: Literal["order_not_found", "unnamed"] | None). 찾았으면 (스냅숏, None),
 #   없으면 (None, "order_not_found" | "unnamed").
-# - ExchangeApi.lookup_order(*, identifier) -> OrderLookup. 요청은 get_order와 같다(1회, 재시도 없음).
+# - ExchangeApi.lookup_order(*, identifier) -> OrderLookup. 요청은 get_order와 같다(1회, 재시도
+#   없음).
 # - get_order(*, identifier) -> OrderSnapshot | None은 그대로(lookup_order의 snapshot). 두 "없음"
 #   모두 None이다.
 # - 이름이 있는데 order_not_found가 아닌 404는 지금처럼 UpbitNotFound. 404가 아닌 오류는 이름이

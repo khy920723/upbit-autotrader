@@ -15,13 +15,20 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
 정한 인터페이스(어댑터를 만드는 코드는 이 파일의 "어댑터 만들기" 절 한 곳에만 있다):
 
 - `WsConnection`·`WsConnector`는 Protocol이다. 연결: `async send(text)`, `async recv() -> str |
-  bytes`, `async ping()`(PING 프레임, PONG을 기다리지 않음), `async close(code=1000)`,
-  `close_code`(열려 있으면 None). 연결기: `async connect(url, *, headers)`(헤더는 (이름, 값) 쌍).
-- `UpbitPublicStream(connector, clock, *, url=공개 주소, ping_interval=30.0, open_timeout=10.0,
-  ticket=uuid4 문자열을 주는 함수)`. `ticker(markets)`는 부르면 바로 이터레이터를 준다(코루틴 아님).
+  bytes`, `async ping() -> Awaitable[None]`, `async close(code=1000)`, `close_code`(열려 있으면
+  None). 연결기: `async connect(url, *, headers)`(헤더는 (이름, 값) 쌍).
+- `ping()`(3단계 정리 R22-01, websockets 17.4의 `ping()`과 같은 모양): PING 프레임을 보내고
+  "PONG 대기" awaitable을 돌려준다. 그 PING의 PONG을 받으면 끝나고(결과 값은 쓰지 않는다), 받기
+  전에 연결이 끊기면 StreamClosed로 끝난다(라이브러리의 ConnectionClosed도 recv·send와 같은
+  규칙으로 StreamClosed). 버려도(기다리지 않아도) 루프 경고(never retrieved)·RuntimeWarning
+  (never awaited)이 없다. 이미 끊긴 연결이면 ping() 자체가 StreamClosed다.
+- `UpbitPublicStream(connector, clock, *, url=공개 주소, ping_interval=30.0, pong_timeout=30.0,
+  open_timeout=10.0, ticket=uuid4 문자열을 주는 함수)`. `ticker(markets)`는 부르면 바로
+  이터레이터를 준다(코루틴 아님).
 - `UpbitPrivateStream(connector, clock, credentials, *, url=비공개 주소, ping_interval=30.0,
-  open_timeout=10.0, ticket=...)`. credentials는 키 제공 함수(`() -> UpbitCredentials | None`)이고
-  연결마다 부른다.
+  pong_timeout=30.0, open_timeout=10.0, ticket=...)`. credentials는 키 제공 함수(`() ->
+  UpbitCredentials | None`)이고 연결마다 부른다. pong_timeout은 0보다 큰 유한한 초다(아니면
+  ValueError, 문구에 "pong_timeout").
 - `WebsocketsConnector(*, user_agent="upbit-autotrader/<버전>", tls_context=None,
   open_timeout=10.0)`. tls_context가 None이면 `autotrader.adapters.tls.create_tls_context()`.
 
@@ -62,10 +69,20 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
    연결 실패: StreamConnectFailed(http_status 보존). 어댑터는 다시 연결하지 않는다(감시 몫).
 9. PING 프레임: 연결이 열려 있는 동안 별도 태스크가 ping_interval(30초)마다 보낸다(소비자가 다음
    항목을 늦게 요청해도 나간다). 그래서 가짜의 120초 무송수신 끊김이 일어나지 않는다.
+   PONG 상한(R22-01, 반쯤 열린 연결): PING을 보낸 시각부터 pong_timeout(Clock, 기본 30초) 안에
+   그 PING의 PONG을 받지 못하면 이터레이터를 `StreamClosed(reason="pong_timeout")`로 끝낸다
+   (연결을 닫고 PING 태스크를 끝낸다. 남는 태스크·회수되지 않은 예외가 없다). close_code는 정하지
+   않는다. 상한 안에 PONG이 오면 계속된다. PONG을 기다리는 동안에도 메시지는 그대로 받는다.
+   PING 간격은 PONG을 기다리느라 밀리지 않는다(PONG이 늦게 와도 다음 PING은 정해진 시각에).
+   감시(StreamSupervisor)는 이것을 다른 끊김처럼 다시 연결한다.
 10. 한도(절반, INV-13): 연결은 스트림 객체마다 초당 2회. 구독 메시지는 스트림 객체 하나의 모든
    연결을 합쳐 초당 2회·분당 50회로 센다(업비트는 연결마다 세지만, 연결마다 메시지가 1개라
    연결마다 세면 분당 한도에 닿을 수 없다. 합쳐 세는 쪽이 더 보수적이다 — 설계 메모와 다른 점).
-   넘으면 보내기 전에 Clock.sleep으로 기다린다(슬라이딩 창). TOO_MANY_REQUEST를 받을 때 지난
+   넘으면 보내기 전에 Clock.sleep으로 기다린다(슬라이딩 창). 구독 메시지 1개는 연결(핸드셰이크)
+   전에 예약한다(R22-05): 같은 스트림 객체로 연결을 동시에 여러 개 열어 핸드셰이크가 오래
+   걸려도(다른 태스크가 그동안 예산을 봐도) 보낸 구독 메시지가 초당 2개·분당 50개를 넘지
+   않는다. 예약했는데 연결에 실패한 몫을 되돌릴지는 정하지 않는다(되돌리지 않는 쪽이 보수적이다).
+   필요한 만큼만 기다린다. TOO_MANY_REQUEST를 받을 때 지난
    60초에 보낸 구독 메시지(오류를 받은 것 포함)가 50개 이상이면 minute_limited=True.
    TOO_MANY_REQUEST·429 뒤 1초 멈춤(가짜 rate_limit_pause)은 감시의 대기·backoff가 지킨다.
    그래서 이 파일은 그 뒤 1초 안에 같은 종류로 다시 연결하지 않는다. 형식 오류 뒤 같은 구독을
@@ -109,10 +126,13 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
 """
 
 import asyncio
+import collections.abc
 import contextlib
+import gc
 import inspect
 import json
 import logging
+import math
 import re
 import ssl
 import traceback
@@ -134,6 +154,8 @@ from fakes.canary import find_canaries, make_upbit_credentials
 from fakes.clock import FakeClock
 from fakes.upbit_json import RawNumber, dumps, loads_raw
 from fakes.upbit_ws import FakeUpbitWs
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 import autotrader
 from autotrader.core.errors import (
@@ -154,6 +176,7 @@ from autotrader.core.models import (
     TickerEvent,
     UpbitCredentials,
 )
+from autotrader.core.streams import StreamSupervisor
 
 # isort: split
 # 구현 전에는 이 import가 실패한다(이 파일만 모이지 않는다).
@@ -498,7 +521,11 @@ class ScriptedConnection:
     가짜·websockets처럼 close하면 기다리던 recv가 StreamClosed로 깬다.
 
     options: ping_error(PING에서 낼 예외), close_error(close에서 낼 예외), close_hangs(close가
-    끝나지 않음), send_hangs(send가 끝나지 않음).
+    끝나지 않음), send_hangs(send가 끝나지 않음), pong("auto": PING마다 바로 PONG(기본),
+    "manual": answer_pongs()를 부를 때까지 PONG 없음).
+
+    ping()은 websockets처럼 PONG 대기 Future를 돌려준다. 끊기면 기다리던 대기는 StreamClosed로
+    끝난다(websockets처럼 예외를 넣은 뒤 cancel()해 회수되지 않았다는 경고를 막는다).
     """
 
     def __init__(
@@ -510,15 +537,19 @@ class ScriptedConnection:
         close_error: BaseException | None = None,
         close_hangs: bool = False,
         send_hangs: bool = False,
+        pong: str = "auto",
     ) -> None:
+        assert pong in {"auto", "manual"}
         self._frames = deque(frames)
         self._end_code = end_code
         self._ping_error = ping_error
         self._close_error = close_error
         self._close_hangs = close_hangs
         self._send_hangs = send_hangs
+        self._pong = pong
         self.sent: list[str | bytes] = []
         self.pings = 0
+        self.pong_waits: list[asyncio.Future[None]] = []
         self.close_code: int | None = None
         self.close_calls = 0
         self.closed_by_client: int | None = None
@@ -537,20 +568,44 @@ class ScriptedConnection:
             return self._frames.popleft()
         if self._end_code is not None and self.close_code is None:
             self.close_code = self._end_code
+            self._lose_pongs()
         if self.close_code is None:
             await self._closed.wait()
         raise StreamClosed(close_code=self.close_code, reason="대본 끝")
 
-    async def ping(self) -> None:
+    async def ping(self) -> asyncio.Future[None]:
         self.pings += 1
         if self._ping_error is not None:
             raise self._ping_error
+        waiting: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        if self._pong == "auto":
+            waiting.set_result(None)
+        else:
+            self.pong_waits.append(waiting)
+        return waiting
+
+    def answer_pongs(self) -> None:
+        """기다리는 PING에 모두 PONG으로 답한다(pong="manual")."""
+        for waiting in self.pong_waits:
+            if not waiting.done():
+                waiting.set_result(None)
+        self.pong_waits.clear()
+
+    def _lose_pongs(self) -> None:
+        for waiting in self.pong_waits:
+            if not waiting.done():
+                waiting.set_exception(
+                    StreamClosed(close_code=self.close_code, reason="닫힌 연결(대본)")
+                )
+            waiting.cancel()  # 이미 끝난 Future라 결과는 그대로, 회수 경고만 막는다
+        self.pong_waits.clear()
 
     async def close(self, code: int = 1000) -> None:
         self.close_calls += 1
         if self.close_code is None:
             self.close_code = code
             self.closed_by_client = code
+        self._lose_pongs()
         self._closed.set()
         if self._close_hangs:
             await forever()
@@ -672,6 +727,20 @@ def test_connection_and_connector_are_protocols():
     assert typing.get_protocol_members(WsConnector) == {"connect"}
     params = inspect.signature(WsConnector.connect).parameters
     assert params["headers"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_connection_ping_gives_back_a_pong_wait():
+    """TS-106: WsConnection.ping은 PONG 대기 awaitable을 돌려준다(websockets 17.4 모양, R22-01)."""
+    assert inspect.iscoroutinefunction(WsConnection.ping)
+    returned = typing.get_type_hints(WsConnection.ping)["return"]
+    assert typing.get_origin(returned) is collections.abc.Awaitable
+
+
+@pytest.mark.parametrize("cls", [UpbitPublicStream, UpbitPrivateStream])
+def test_streams_take_a_keyword_pong_timeout_of_thirty_seconds(cls):
+    param = inspect.signature(cls).parameters["pong_timeout"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default == 30.0
 
 
 def _stream_maker(kind: str) -> Callable[..., Any]:
@@ -1026,6 +1095,126 @@ def test_pings_continue_while_the_consumer_is_busy(env):
 
     env.run(scenario)
     assert len(env.fake.connections[0].pings) == 10
+
+
+# ── PONG 상한(반쯤 열린 연결, R22-01) ──────────────────────
+
+
+@pytest.mark.parametrize("value", [0, -1.0, math.nan, math.inf])
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_pong_timeout_must_be_positive_and_finite(kind, value):
+    make = _stream_maker(kind)
+    with pytest.raises(ValueError, match="pong_timeout"):
+        make(pong_timeout=value)
+
+
+async def open_stream_of(e: Env, stream: Any, kind: str) -> Consumer:
+    """연결을 열고 StreamOpened(공개는 스냅숏까지)를 받은 소비자."""
+    if kind == "public":
+        consumer, _ = await e.open_ticker(stream)
+        await e.next(consumer)  # 스냅숏
+    else:
+        consumer, _ = await e.open_events(stream)
+    return consumer
+
+
+@pytest.mark.parametrize(
+    ("options", "first_ping", "ends_at"),
+    [
+        ({}, 30.0, 60.0),
+        ({"pong_timeout": 5.0}, 30.0, 35.0),
+        ({"ping_interval": 10.0, "pong_timeout": 25.0}, 10.0, 35.0),
+    ],
+    ids=["defaults", "short-timeout", "timeout-longer-than-interval"],
+)
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_missing_pong_ends_the_iterator_with_pong_timeout(env, kind, options, first_ping, ends_at):
+    """TS-106, TS-41: PING의 PONG이 pong_timeout(Clock) 안에 오지 않으면 StreamClosed로 끝난다."""
+    stream = env.public(**options) if kind == "public" else env.private(**options)
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_no_pong(stream=kind)  # 다음 연결이 반쯤 열린 연결이 된다
+        consumer = await open_stream_of(e, stream, kind)
+        consumer.want()
+        await e.clock.run_for(ends_at - 0.5)
+        assert not consumer.has_result()
+        with pytest.raises(StreamClosed) as info:
+            await consumer.take(within=1.0)
+        assert info.value.reason == "pong_timeout"
+        assert START + ends_at - EPS <= e.now <= START + ends_at + STEP
+        record = e.fake.connections[0]
+        assert record.closed_at == pytest.approx(START + ends_at)  # 어댑터가 연결을 닫았다
+        assert record.pings[0] == pytest.approx(START + first_ping)
+        assert record.pongs == []
+        await settle()
+        assert adapter_tasks() == []  # PING 태스크·PONG 대기가 남지 않는다
+        gc.collect()  # 버린 PONG 대기의 회수되지 않은 예외가 있으면 루프 경고로 잡힌다
+        await settle()
+
+    env.run(scenario)
+    assert len(env.fake.connections) == 1  # 어댑터는 다시 연결하지 않는다
+
+
+def test_messages_still_arrive_while_waiting_for_a_pong(env):
+    """TS-106: PONG을 기다리는 동안에도 받기는 그대로다(PING 태스크가 받기를 막지 않는다)."""
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_no_pong()
+        consumer = await open_stream_of(e, stream, "public")
+        await e.clock.run_for(40)  # PING(1030) 뒤 PONG을 기다리는 중
+        e.fake.push_ticker("KRW-BTC", trade_price=Decimal("7"))
+        assert (await e.next(consumer)).trade_price == Decimal("7")
+        with pytest.raises(StreamClosed) as info:
+            await consumer.next(within=21)
+        assert info.value.reason == "pong_timeout"
+        assert START + 60 - EPS <= e.now <= START + 60 + STEP
+
+    env.run(scenario)
+
+
+def test_answered_pings_keep_the_connection_with_a_short_pong_timeout(env):
+    """TS-106: PONG이 바로 오면 상한이 짧아도 연결이 유지된다."""
+    stream = env.private(pong_timeout=1.0)
+
+    async def scenario(e: Env) -> None:
+        consumer, _ = await e.open_events(stream)
+        consumer.want()
+        await e.clock.run_for(300)
+        assert not consumer.has_result()
+        assert e.fake.connections[0].close_code is None
+        await consumer.cancel()
+
+    env.run(scenario)
+    record = env.fake.connections[0]
+    assert record.pings == pytest.approx([START + 30 * i for i in range(1, 11)])
+    assert record.pongs == record.pings  # 가짜가 PING마다 바로 답했다
+
+
+def test_a_late_pong_within_the_limit_keeps_the_connection_and_the_ping_schedule():
+    """TS-106: PONG이 상한 직전에 오면 계속되고, 다음 PING은 밀리지 않으며 그 PING도 상한을 잰다."""
+    env = scripted_env(([], None, {"pong": "manual"}))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        consumer, _ = await e.open_ticker(stream)
+        consumer.want()
+        conn = e.connector.connections[0]
+        await e.clock.run_for(59)  # PING 1030, 아직 PONG 없음
+        assert conn.pings == 1
+        conn.answer_pongs()  # 1059: PING 29초 뒤 PONG
+        await e.clock.run_for(30.5)  # 1089.5: 두 번째 PING(1060)의 PONG을 기다리는 중
+        assert not consumer.has_result()
+        assert conn.pings == 2
+        with pytest.raises(StreamClosed) as info:
+            await consumer.take(within=1.0)
+        assert info.value.reason == "pong_timeout"
+        assert START + 90 - EPS <= e.now <= START + 90 + STEP
+        assert conn.close_calls >= 1
+        await settle()
+        assert adapter_tasks() == []
+
+    env.run(scenario)
 
 
 # ── 서버 오류 메시지(D-080 입력 쪽) ───────────────────────

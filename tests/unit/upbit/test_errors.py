@@ -153,6 +153,7 @@ def test_out_of_scope_is_the_same_type_for_401_and_403():
 
 
 def test_duplicated_identifier_is_an_identifier_conflict_not_an_order_rejection():
+    """INV-03·TS-89: duplicated_identifier는 REJECTED가 아니라 결과 불명(식별자 충돌) 타입이다."""
     # 같은 요청이 한 번 더 전달돼 주문이 이미 있을 수 있다. 상위 계층이 타입만 보고 REJECTED로
     # 닫으면 그 주문을 놓치고 같은 코인에 새 주문을 낼 수 있다(INV-04).
     error = to_error(
@@ -173,6 +174,7 @@ def test_duplicated_identifier_is_an_identifier_conflict_not_an_order_rejection(
 
 
 def test_only_duplicated_identifier_maps_to_identifier_conflict():
+    """TS-89: 식별자 충돌 타입은 duplicated_identifier에만 쓴다."""
     assert NAME_TYPES["duplicated_identifier"] is UpbitIdentifierConflict
     conflicts = sorted(name for name, kind in NAME_TYPES.items() if kind is UpbitIdentifierConflict)
     assert conflicts == ["duplicated_identifier"]

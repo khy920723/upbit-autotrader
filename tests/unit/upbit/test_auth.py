@@ -92,6 +92,7 @@ def verify_jwt(token: str, creds: Credentials) -> dict:
     [(OPEN_ORDERS_INPUT, OPEN_ORDERS_HASH), (ORDER_INPUT, ORDER_HASH)],
 )
 def test_query_hash_matches_known_sha512_values(text, expected):
+    """TS-16: query_hash는 알려진 SHA512 값과 일치한다."""
     assert query_hash(text) == expected
 
 
@@ -228,6 +229,7 @@ def test_wire_query_decodes_back_to_the_hashed_string(params):
 
 
 def test_body_hash_input_follows_body_order_and_matches_known_hash():
+    """TS-16: 본문 해시 입력은 본문 순서를 따르고 알려진 해시와 일치한다."""
     assert body_hash_input(ORDER_BODY) == ORDER_INPUT
     assert query_hash(body_hash_input(ORDER_BODY)) == ORDER_HASH
 
@@ -247,6 +249,7 @@ def test_body_hash_input_equals_hash_input_of_items_in_order(body):
 
 
 def test_token_with_params_carries_known_query_hash_and_verifies_with_secret_key():
+    """TS-16: 파라미터가 있는 토큰은 알려진 query_hash를 싣고 Secret Key로 검증된다."""
     creds = make_upbit_credentials()
     nonce = str(uuid.uuid4())
 
@@ -261,6 +264,7 @@ def test_token_with_params_carries_known_query_hash_and_verifies_with_secret_key
 
 
 def test_token_for_order_body_carries_known_query_hash():
+    """TS-16: 주문 본문 토큰은 알려진 query_hash를 싣는다."""
     creds = make_upbit_credentials()
 
     payload = verify_jwt(make_token(creds, hash_input=body_hash_input(ORDER_BODY)), creds)
@@ -301,6 +305,7 @@ def test_signature_does_not_verify_with_another_secret():
 
 
 def test_token_does_not_carry_the_secret_key():
+    """INV-07: 토큰에는 Secret Key가 들어 있지 않다."""
     creds = make_upbit_credentials()
 
     token = make_token(creds, hash_input=OPEN_ORDERS_INPUT)
@@ -315,6 +320,7 @@ def test_token_does_not_carry_the_secret_key():
 
 
 def test_credentials_repr_and_str_hide_both_keys():
+    """INV-07: 자격 증명의 repr·str은 두 키를 가린다."""
     made = make_upbit_credentials()
     creds = Credentials(access_key=made.access_key, secret_key=made.secret_key)
 

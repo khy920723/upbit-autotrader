@@ -134,6 +134,7 @@ def by_market(items) -> dict[str, Any]:
 
 
 def test_list_markets_keeps_only_krw_markets(quotation):
+    """TS-102: 종목 목록에는 KRW 마켓만 남는다."""
     markets = quotation.run(lambda api: api.list_markets())
 
     assert all(isinstance(m, MarketInfo) for m in markets)
@@ -144,6 +145,7 @@ def test_list_markets_keeps_only_krw_markets(quotation):
 
 
 def test_list_markets_reads_names_and_market_event_from_the_recording(quotation):
+    """TS-102: 녹화 응답의 이름과 market_event를 그대로 읽는다."""
     markets = by_market(quotation.run(lambda api: api.list_markets()))
 
     for item in recorded("market_all_details.json"):
@@ -166,6 +168,7 @@ def test_list_markets_reads_names_and_market_event_from_the_recording(quotation)
 
 
 def test_warning_alone_marks_the_market_warned(quotation):
+    """TS-102: warning만 참이어도 경고 종목이다."""
     quotation.server.market_event("KRW-BTC", warning=True)
 
     btc = by_market(quotation.run(lambda api: api.list_markets()))["KRW-BTC"]
@@ -177,6 +180,7 @@ def test_warning_alone_marks_the_market_warned(quotation):
 
 @pytest.mark.parametrize("key", CAUTION_KEYS)
 def test_any_single_caution_flag_marks_the_market_warned(quotation, key):
+    """TS-102: caution 항목 하나만 참이어도 경고 종목이다."""
     quotation.server.market_event("KRW-ETH", caution={key: True})
 
     eth = by_market(quotation.run(lambda api: api.list_markets()))["KRW-ETH"]
@@ -187,6 +191,7 @@ def test_any_single_caution_flag_marks_the_market_warned(quotation, key):
 
 
 def test_unknown_caution_key_is_kept_and_marks_the_market_warned(quotation):
+    """TS-102: 처음 보는 caution 키가 참이어도 경고 종목이다."""
     quotation.server.market_event("KRW-XRP", caution={"BRAND_NEW_CAUTION": True})
 
     xrp = by_market(quotation.run(lambda api: api.list_markets()))["KRW-XRP"]
@@ -197,6 +202,8 @@ def test_unknown_caution_key_is_kept_and_marks_the_market_warned(quotation):
 
 
 def test_deprecated_market_warning_field_is_not_read(quotation):
+    """TS-102: 폐기된 market_warning 필드는 읽지 않는다."""
+
     def add_market_warning(items):
         for item in items:
             if item["market"] == "KRW-BTC":
@@ -406,6 +413,7 @@ def test_change_rate_is_the_signed_one(quotation):
 
 
 def test_whole_404_is_retried_per_market_and_the_missing_market_is_dropped(quotation):
+    """TS-104: 없어진 종목이 낀 묶음 404는 마켓별로 다시 묻고 없는 종목을 뺀다."""
     quotation.server.market_removed("KRW-XRP")
 
     tickers = quotation.run(lambda api: api.get_tickers(["KRW-BTC", "KRW-XRP", "KRW-ETH"]))
@@ -420,6 +428,7 @@ def test_whole_404_is_retried_per_market_and_the_missing_market_is_dropped(quota
 
 
 def test_per_market_retry_stays_within_half_the_rate_limit(quotation):
+    """INV-13: 마켓별 재조회도 ticker 그룹 한도의 절반 이하다."""
     quotation.server.market_removed("KRW-ZIL")
     markets = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-ELSA", "KRW-QKC", "KRW-ZIL"]
 
@@ -555,6 +564,8 @@ def test_server_time_can_be_behind(quotation):
 
 
 def test_quotation_calls_send_no_authorization_and_no_origin(quotation):
+    """INV-13: 시세 호출에는 Authorization도 Origin도 없다."""
+
     async def scenario(api):
         await api.list_markets()
         await api.get_candles("KRW-BTC", "m240", count=1)
@@ -608,6 +619,7 @@ MARKET_EVENT_GAPS = {
 
 @pytest.mark.parametrize("edit", MARKET_EVENT_GAPS.values(), ids=MARKET_EVENT_GAPS.keys())
 def test_market_event_that_cannot_be_read_marks_the_market_warned(quotation, edit):
+    """TS-102: 읽을 수 없는 market_event는 경고 종목으로 본다."""
     # 녹화의 KRW-BTC는 정상(warning false, caution 모두 false)이다. 무엇이 빠지거나 참·거짓이
     # 아니면 신규 매수를 막는 쪽(경고)으로 본다. 목록 전체를 실패시키지는 않는다.
     quotation.rewrite_response("/v1/market/all", _edit_market("KRW-BTC", edit))

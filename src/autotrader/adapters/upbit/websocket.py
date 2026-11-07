@@ -8,9 +8,17 @@ core 포트(core/ports.py PublicStream·PrivateStream)를 구현한다. 연결 �
   연결과 구독 전송까지 open_timeout(Clock)이 상한이다. 한도 대기는 그 시간에 들지 않는다.
 - 한도(INV-13, 업비트 한도의 절반): 연결은 스트림 객체마다 초당 2회, 구독 메시지는 스트림 객체의
   모든 연결을 합쳐 초당 2회·분당 50회(슬라이딩 창). 웹소켓은 남은 수를 알려 주지 않아 직접 센다.
+  구독 메시지 1개는 연결(핸드셰이크)을 시작할 때 연결 1회와 같은 시각으로 예약한다(R22-05: 같은
+  스트림 객체로 연결을 동시에 열어도 송신 허가(예약) 시각 기준으로는 넘지 않는다). 핸드셰이크
+  시간이 연결마다 1초 넘게 다르면 서버에 닿는 시각은 몰릴 수 있다(R17-08과 같은 한계). 연결에
+  실패한 예약은 되돌리지 않는다(보수적).
   TOO_MANY_REQUEST를 받을 때 지난 60초 메시지가 50개 이상이면 minute_limited=True.
 - PING: 연결이 가진 별도 태스크가 ping_interval(30초)마다 PING 프레임을 보낸다(서버는 120초
-  무송수신이면 끊는다). 라이브러리 keepalive는 끈다(가짜 시계로 시험하려고). PING 태스크가 실패하면
+  무송수신이면 끊는다). 라이브러리 keepalive는 끈다(가짜 시계로 시험하려고). PING을 보낸 시각부터
+  pong_timeout(30초, Clock) 안에 그 PING의 PONG이 오지 않으면 반쯤 열린 연결로 보고 연결을 닫고
+  StreamClosed(reason "pong_timeout")로 끝낸다(R22-01, WARNING 1줄). 나중 PING의 PONG이 오면
+  앞선 PING들도 확인된 것으로 본다. ping() 호출 자체가 끝나지 않아도 그 PING의 상한에 끊는다.
+  PONG을 기다리는 동안에도 받기와 다음 PING(정해진 시각)은 그대로다. PING 태스크가 실패하면
   연결을 닫고 StreamClosed로 끝낸다.
 - 받은 메시지: 바이너리 프레임은 UTF-8로 푼다. 숫자는 float를 거치지 않고 Decimal(NaN·Infinity
   거부), 모델의 *_ms는 int. `{"status":"UP"}`과 구독하지 않은 type은 건너뛴다. 서버 오류
@@ -29,12 +37,13 @@ core 포트(core/ports.py PublicStream·PrivateStream)를 구현한다. 연결 �
   로그에 토큰이 남지 않는다. 라이브러리의 DEBUG 로그(요청 헤더·프레임 원문)도 내보내지 않는다
   (로거 단계가 아니라 DEBUG를 버리는 LoggerAdapter로. 앱이 로그 설정을 바꿔도 그대로다).
 - 주소: wss:// 또는 ws://(대소문자 무관). ws://는 루프백(127.0.0.1, ::1, localhost)만(시험용).
-  ping_interval은 0 초과 120 미만.
+  ping_interval은 0 초과 120 미만, pong_timeout은 0 초과 유한.
 - WebsocketsConnector: websockets.asyncio.client.connect의 하위 클래스로 연다. 리다이렉트를
   따라가지 않는다(ADR-0006: 3xx는 StreamConnectFailed(http_status=3xx), 핸드셰이크는 1번).
   Origin 없음, 앱 User-Agent, proxy=None(환경 변수 프록시 무시), ping_interval=None, wss면 앱 TLS
   문맥(adapters/tls.py, 커넥터마다 새로), 1 MiB 넘는 메시지 거부. 라이브러리 예외(websockets
-  예외 전체·OSError·TimeoutError)는 core 오류로 바꾼다.
+  예외 전체·OSError·TimeoutError)는 core 오류로 바꾼다. 연결의 ping은 라이브러리 ping이 돌려주는
+  PONG 대기 future를 core 규칙(끊기면 StreamClosed)으로 감싸 돌려준다.
 근거: CLAUDE.md "업비트 API 주의", docs/05-integration/upbit-api.md 2장·9장(D-080), D-091, D-093,
 INV-07·13·14·16, tests/unit/upbit/test_websocket.py docstring.
 """
@@ -43,10 +52,11 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import ssl
 import uuid
 from collections import deque
-from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from types import MappingProxyType
@@ -137,6 +147,8 @@ CREDENTIALS_ERROR: Final = "CREDENTIALS_ERROR"
 """키 제공 함수가 예외를 내 연결하지 않았을 때 StreamAuthError의 error_name(앱이 정한 것)."""
 MAX_PING_INTERVAL: Final = 120.0
 """서버는 120초 동안 주고받은 것이 없으면 끊는다. PING 간격은 이보다 짧아야 한다."""
+PONG_TIMEOUT: Final = "pong_timeout"
+"""PING의 PONG이 pong_timeout 안에 오지 않아 끝낼 때 StreamClosed의 reason(R22-01)."""
 UNKNOWN_TYPE: Final = "unknown"
 """skipped_messages에서 type을 알 수 없는 메시지(UTF-8·JSON·객체가 아님)의 열쇠."""
 
@@ -171,8 +183,15 @@ class WsConnection(Protocol):
         """다음 메시지(텍스트는 str, 바이너리는 bytes). 취소해도 메시지를 잃지 않는다."""
         ...
 
-    async def ping(self) -> None:
-        """PING 프레임(PONG을 기다리지 않는다)."""
+    async def ping(self) -> asyncio.Future[None]:
+        """PING 프레임을 보내고 그 PING의 "PONG 대기" Future를 돌려준다(websockets 17.4 모양).
+
+        대기는 PONG을 받으면 끝나고(결과 값은 쓰지 않는다), 받기 전에 연결이 끊기면 StreamClosed로
+        끝난다. 기다리지 않고 버려도 루프 경고(never retrieved)가 없어야 한다. 이미 끊긴 연결이면
+        ping() 자체가 StreamClosed다. 어댑터는 나중 PING의 PONG이 오면 앞선 PING들도 확인된
+        것으로 본다(websockets도 PONG 하나로 그 앞 PING의 대기를 모두 끝낸다). 그래서 앞 대기가
+        끝나지 않은 채 버려질 수 있다.
+        """
         ...
 
     async def close(self, code: int = 1000) -> None: ...
@@ -289,13 +308,48 @@ class _WebsocketsConnection:
             failure = self._failure(exc)
         raise failure
 
-    async def ping(self) -> None:
+    async def ping(self) -> asyncio.Future[None]:
         try:
-            await self._ws.ping()  # PONG을 기다리는 future는 버린다(라이브러리가 정리한다)
-            return
+            pong = await self._ws.ping()
         except WebSocketException as exc:
             failure = self._failure(exc)
+        else:
+            return self._pong_wait(pong)
         raise failure
+
+    def _pong_wait(self, pong: Awaitable[Any]) -> asyncio.Future[None]:
+        """라이브러리의 PONG 대기를 core 규칙의 Future로 옮긴다.
+
+        PONG이면 None, 끊김(ConnectionClosed 등)이면 StreamClosed(recv·send와 같은 규칙, 라이브러리
+        예외를 잇지 않는다). 끝낸 뒤 cancel()로 "never retrieved" 기록을 끈다(끝난 Future의
+        cancel은 상태를 바꾸지 않는다. websockets의 terminate_pending_pings와 같다).
+        """
+        source = asyncio.ensure_future(pong)
+        target: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+        def settle(done: asyncio.Future[Any]) -> None:
+            if done.cancelled():
+                error: BaseException | None = StreamClosed(
+                    close_code=self._ws.close_code, reason="PONG 대기가 취소됐다"
+                )
+            else:
+                error = done.exception()  # 꺼내 둔다(라이브러리 쪽 경고도 막는다)
+                if isinstance(error, WebSocketException):
+                    error = self._failure(error)
+                elif error is not None:
+                    error = StreamClosed(
+                        close_code=self._ws.close_code, reason=type(error).__name__
+                    )
+            if target.done():
+                return
+            if error is None:
+                target.set_result(None)
+                return
+            target.set_exception(error)
+            target.cancel()
+
+        source.add_done_callback(settle)
+        return target
 
     async def close(self, code: int = 1000) -> None:
         with contextlib.suppress(ConnectionClosed):  # 이미 닫혔다
@@ -404,11 +458,15 @@ class _SlidingBudget:
 
 
 class _Deadline:
-    """Clock으로 재는 시간 상한(asyncio.timeout과 같은 방식). 넘으면 StreamConnectFailed."""
+    """Clock으로 재는 시간 상한(asyncio.timeout과 같은 방식). 넘으면 error()(기본은
+    StreamConnectFailed)를 올린다."""
 
-    def __init__(self, clock: Clock, seconds: float) -> None:
+    def __init__(
+        self, clock: Clock, seconds: float, error: Callable[[], Exception] | None = None
+    ) -> None:
         self._clock = clock
         self._seconds = seconds
+        self._error = error
         self._expired = False
         self._task: asyncio.Task[Any] | None = None
         self._timer: asyncio.Task[None] | None = None
@@ -431,6 +489,8 @@ class _Deadline:
             return
         # 이 상한이 건 취소를 거둔다. 바깥에서 건 취소가 더 있으면 CancelledError를 그대로 둔다.
         if self._task.uncancel() == 0 and exc_type is asyncio.CancelledError:
+            if self._error is not None:
+                raise self._error()
             raise StreamConnectFailed(
                 http_status=None, reason=f"{self._seconds}초 안에 연결·구독하지 못했다"
             )
@@ -440,6 +500,15 @@ def _retrieve(task: asyncio.Future[Any]) -> None:
     """끝난 태스크의 예외를 회수한다("never retrieved" 경고를 막는다)."""
     if not task.cancelled():
         task.exception()
+
+
+def _check_answered(waiting: asyncio.Future[None], conn: WsConnection) -> None:
+    """끝난 PONG 대기: PONG이면 그냥 돌아가고, 끊겨 실패했으면 그 오류를 올린다."""
+    if waiting.cancelled():
+        raise StreamClosed(close_code=conn.close_code, reason="PONG 대기가 취소됐다")
+    error = waiting.exception()
+    if error is not None:
+        raise error
 
 
 # ── 메시지 읽기 ───────────────────────────────────────────
@@ -597,18 +666,22 @@ class _UpbitStream:
         *,
         url: str,
         ping_interval: float,
+        pong_timeout: float,
         open_timeout: float,
         ticket: Callable[[], str],
     ) -> None:
         _check_stream_url(url)
         if not 0 < ping_interval < MAX_PING_INTERVAL:
             raise ValueError("ping_interval은 0초보다 크고 120초보다 작아야 한다(120초 무송수신)")
+        if not 0 < pong_timeout < math.inf:  # NaN도 여기서 걸린다
+            raise ValueError("pong_timeout은 0초보다 큰 유한한 값이어야 한다")
         if open_timeout <= 0:
             raise ValueError("open_timeout은 0보다 커야 한다")
         self._connector = connector
         self._clock = clock
         self._url = url
         self._ping_interval = ping_interval
+        self._pong_timeout = pong_timeout
         self._open_timeout = open_timeout
         self._ticket = ticket
         self._connects = _SlidingBudget(clock, CONNECT_LIMITS)
@@ -645,7 +718,6 @@ class _UpbitStream:
         try:
             async with _Deadline(self._clock, self._open_timeout):
                 conn = await self._connect()
-                self._messages.record()
                 await self._send(conn, request)
             self._opened += 1
             pinger = asyncio.get_running_loop().create_task(self._keepalive(conn))
@@ -662,7 +734,11 @@ class _UpbitStream:
             await self._shutdown(conn, pinger)
 
     async def _wait_for_budget(self) -> None:
-        """연결 1회와 구독 메시지 1개를 쓸 수 있을 때까지 기다린다(연결 전)."""
+        """연결 1회와 구독 메시지 1개를 쓸 수 있을 때까지 기다린다(연결 전).
+
+        돌아온 뒤 _connect가 await 없이 둘을 기록(예약)하므로 확인과 예약 사이에 다른 태스크가
+        끼지 않는다.
+        """
         while True:
             wait = max(self._connects.delay(), self._messages.delay())
             if wait <= _EPS:
@@ -671,7 +747,10 @@ class _UpbitStream:
 
     async def _connect(self) -> WsConnection:
         headers = self._headers()
+        # 연결 1회와 구독 메시지 1개를 핸드셰이크 전에 같은 시각으로 기록한다(R22-05). 핸드셰이크
+        # 동안 같은 스트림 객체의 다른 연결이 이 몫을 보고 기다린다. 실패해도 되돌리지 않는다.
         self._connects.record()
+        self._messages.record()
         try:
             return await self._connector.connect(self._url, headers=headers)
         except OSError as exc:
@@ -688,18 +767,54 @@ class _UpbitStream:
         raise failure
 
     async def _keepalive(self, conn: WsConnection) -> None:
-        """ping_interval마다 PING 프레임. 실패하면 예외로 끝난다(_receive가 연결을 끝낸다)."""
+        """ping_interval마다 PING 프레임을 보내고 PING마다 PONG 상한(pong_timeout)을 잰다.
+
+        답을 기다리는 PING은 보낸 순서대로 waits에 둔다(상한도 그 순서다). 깨어날 때마다 끝난
+        대기를 본다: 끊겨 실패했으면 그 오류로 끝내고, 나중 PING의 PONG이 왔으면 그 앞 대기를 모두
+        버린다(앞 PING도 확인된 것으로 본다). 다음 PING 시각과 가장 오래된 PING의 상한 가운데 이른
+        쪽까지 잔다. 그래서 PONG을 기다리느라 PING이 밀리지 않는다. 상한이 지나면 StreamClosed
+        (reason "pong_timeout"). ping() 호출이 끝나지 않으면 그 PING 자신의 상한(PING 시각 +
+        pong_timeout)에 끊는다. 앞 PING의 상한은 호출이 끝난 뒤 다음 확인에서 본다.
+        """
         due = self._clock.monotonic() + self._ping_interval
+        waits: deque[tuple[float, asyncio.Future[None]]] = deque()
         while True:
-            wait = due - self._clock.monotonic()
-            if wait > 0:
-                await self._clock.sleep(wait)
-            await conn.ping()
+            now = self._clock.monotonic()
+            answered = 0
+            for number, (_, waiting) in enumerate(waits, start=1):
+                if waiting.done():
+                    _check_answered(waiting, conn)
+                    answered = number
+            for _ in range(answered):
+                waits.popleft()
+            if waits and waits[0][0] - now <= _EPS:
+                raise self._pong_timed_out()
+            if due - now > _EPS:
+                wake = min(due, waits[0][0]) if waits else due
+                await self._clock.sleep(wake - now)
+                continue
+            limit = now + self._pong_timeout
+            async with _Deadline(self._clock, self._pong_timeout, self._pong_timed_out):
+                waiting = await conn.ping()
+            waiting.add_done_callback(_retrieve)
+            waits.append((limit, waiting))
             # 정해진 시각에 맞춰 보낸다(밀리지 않게). PING이 늦어 지났으면 지금부터 다시 센다.
             due += self._ping_interval
             now = self._clock.monotonic()
             if due <= now:
                 due = now + self._ping_interval
+
+    def _pong_timed_out(self) -> StreamClosed:
+        """PONG 상한으로 끊는다(WARNING 1줄. 설정 값만 남기고 비밀·메시지는 없다)."""
+        logger.warning(
+            "%s 웹소켓 PING의 PONG이 오지 않아 연결을 끊는다(%s, ping_interval=%s초, "
+            "pong_timeout=%s초)",
+            self._name,
+            PONG_TIMEOUT,
+            self._ping_interval,
+            self._pong_timeout,
+        )
+        return StreamClosed(close_code=None, reason=PONG_TIMEOUT)
 
     async def _receive(self, conn: WsConnection, pinger: asyncio.Task[None]) -> str | bytes:
         """다음 메시지. PING 태스크가 먼저 실패하면 StreamClosed."""
@@ -812,6 +927,7 @@ class UpbitPublicStream(_UpbitStream):
         *,
         url: str = PUBLIC_URL,
         ping_interval: float = 30.0,
+        pong_timeout: float = 30.0,
         open_timeout: float = 10.0,
         ticket: Callable[[], str] = _new_ticket,
     ) -> None:
@@ -820,6 +936,7 @@ class UpbitPublicStream(_UpbitStream):
             clock,
             url=url,
             ping_interval=ping_interval,
+            pong_timeout=pong_timeout,
             open_timeout=open_timeout,
             ticket=ticket,
         )
@@ -855,6 +972,7 @@ class UpbitPrivateStream(_UpbitStream):
         *,
         url: str = PRIVATE_URL,
         ping_interval: float = 30.0,
+        pong_timeout: float = 30.0,
         open_timeout: float = 10.0,
         ticket: Callable[[], str] = _new_ticket,
     ) -> None:
@@ -863,6 +981,7 @@ class UpbitPrivateStream(_UpbitStream):
             clock,
             url=url,
             ping_interval=ping_interval,
+            pong_timeout=pong_timeout,
             open_timeout=open_timeout,
             ticket=ticket,
         )

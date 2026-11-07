@@ -162,6 +162,8 @@ class UpbitRequestError(UpbitError):
 # ── 웹소켓 스트림 오류(3단계 3b, D-080) ───────────────────
 # 감시(core/streams.py StreamSupervisor)가 타입으로 처리를 나눈다.
 # - 연결 문제(StreamClosed, StreamConnectFailed): NetworkError 하위. 백오프 뒤 다시 연결한다.
+#   단 비공개 스트림의 핸드셰이크 401·403(StreamConnectFailed.http_status)은 백오프가 아니라
+#   INVALID_AUTH처럼 1번 바로 다시 연결한다(D-091 (12)).
 # - 서버 오류 메시지 {"error": {"name", "message"}}(StreamError 하위): NetworkError가 아니다.
 #   TOO_MANY_REQUEST는 기다린 뒤 1번, INVALID_AUTH는 새 JWT로 1번 다시 연결하고,
 #   나머지(형식 오류·모르는 이름)는 다시 요청하지 않는다.

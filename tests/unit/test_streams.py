@@ -82,6 +82,32 @@ open_stream을 부를 때마다 다음 줄의 async generator를 준다. 줄이 
     끊김을 정리하던 중이면 기록(logging)만 하고 다시 연다.
 15. backoff 대기가 0이어도 이벤트 루프를 한 번 놓는다(즉시 실패가 이어져도 루프를
     독점하지 않는다).
+16. 핸드셰이크 HTTP 상태(3단계 정리 R22-02): 연결 실패(StreamConnectFailed)에
+    http_status가 있으면 그 끊김의 RECONNECTING 상태 error_name이 `"HTTP_<상태>"`
+    (예: "HTTP_401")다. 접두어는 공개 상수 `streams.HANDSHAKE_STATUS_PREFIX`("HTTP_"),
+    이름은 공개 도우미 `streams.handshake_status_name(http_status) -> str | None`(None이면
+    None)이 만든다. 이터레이터가 내든 open_stream()이 바로 내든 같다. http_status가
+    None이면 지금처럼 None이다. kind·reason("connect_failed")·backoff 진행은 바뀌지 않는다.
+    429만은 다시 연결 대기가 `max(backoff 값, RATE_LIMIT_RETRY_SECONDS(1초))`다(backoff
+    표에 0이 있어도 429 뒤 1초 멈춤을 지킨다. retry_in도 그 값). 다른 끊김(StreamClosed,
+    NetworkError, 오류 없이 끝남, 무수신)의 RECONNECTING error_name은 None 그대로다. 앱은
+    이것으로 인증·한도 문제와 네트워크 끊김을 구분한다(401·403·418·429가 이어질 때의 처리는
+    5단계). 비공개 스트림의 401·403만은 17이 앞선다.
+17. 비공개 핸드셰이크 401·403(D-091 (12), D-080 보완): StreamAuthError(INVALID_AUTH)와 같이
+    다룬다. 기다리지 않고(같은 monotonic 시각에) 1번 다시 연다(어댑터가 새 JWT를 만든다).
+    RECONNECTING은 reason="auth_failed"(INVALID_AUTH와 같은 값), error_name="HTTP_401"·
+    "HTTP_403", retry_in=0.0이다. 정상 이벤트(8) 없이 또 401·403이면 AUTH_CHECK(reason=
+    "auth_failed", error_name은 그 두 번째 HTTP 상태 이름)로 run()이 예외 없이 끝난다.
+    - 허용 횟수는 INVALID_AUTH와 하나를 같이 쓴다: INVALID_AUTH 뒤 401·403, 401·403 뒤
+      INVALID_AUTH도 두 번째다(AUTH_CHECK의 error_name은 두 번째 것의 이름).
+    - 돌아오는 때도 같다: 정상 데이터 이벤트, stable_after 이상 유지된 연결(D-091 (6)).
+      StreamOpened만 있던 연결이나 다른 끊김(연결 실패, 429·5xx 거절 등)은 돌려주지 않는다.
+    - 즉시 재연결은 INVALID_AUTH처럼 backoff 표를 내려가지 않는다(다음 끊김의 대기는 그 앞
+      끊김이 쓴 칸의 다음 칸). 그래서 401·403을 INVALID_AUTH로 바꾼 대본과 다시 여는 시각·상태
+      (error_name만 빼고)가 같다.
+    - 이터레이터가 내든 open_stream()이 바로 내든 같다.
+    - 공개 스트림의 401·403, 모든 429·5xx·그 밖 상태(418·3xx 등)·http_status 없음은 16대로
+      backoff(인증 허용 횟수를 쓰지도 돌려주지도 않는다).
 """
 
 import asyncio
@@ -494,6 +520,7 @@ def test_first_open_after_failed_connects_does_not_call_on_reconnected():
 
 
 def test_reconnect_waits_for_the_hook_before_passing_events():
+    """TS-41·D-091: 재연결 뒤 대조 자리가 끝나야 이벤트를 넘긴다."""
     clock_holder = {}
 
     async def slow_reconcile():
@@ -522,6 +549,7 @@ def test_reconnect_waits_for_the_hook_before_passing_events():
 
 
 def test_each_reconnect_calls_the_hook_exactly_once():
+    """TS-41·D-091: 재연결마다 대조 자리를 정확히 한 번 부른다."""
     connections = [[OPEN, tick(n), closed()] for n in range(4)] + [[OPEN, tick(9)]]
 
     _, rec, _ = simulate("public", *connections, seconds=60)
@@ -583,6 +611,7 @@ def test_hook_invariant_violation_is_not_swallowed():
 
 
 def test_consecutive_failures_follow_the_backoff_table():
+    """TS-41·D-091: 연속 실패는 1·2·4·8·16·32·60초 backoff를 따른다."""
     script, rec, _ = simulate("public", *([connect_failed()] for _ in range(9)), seconds=300)
 
     expected = [1, 2, 4, 8, 16, 32, 60, 60, 60]
@@ -608,6 +637,7 @@ DISCONNECTS = {
 
 @pytest.mark.parametrize("kind", list(DISCONNECTS))
 def test_every_disconnect_kind_backs_off_and_reconnects(kind):
+    """TS-41·D-091: 어떤 끊김이든 backoff 뒤 다시 연결한다."""
     script, rec, result = simulate(
         "public", *(DISCONNECTS[kind]() for _ in range(3)), [OPEN, tick(1)], seconds=20
     )
@@ -624,6 +654,7 @@ def test_every_disconnect_kind_backs_off_and_reconnects(kind):
     ids=["59s-not-stable", "60s-stable", "90s-stable"],
 )
 def test_backoff_resets_after_a_stable_connection(lifetime, next_delays):
+    """TS-41·D-091: 60초 넘게 유지된 연결 뒤에는 backoff가 1초부터 다시 시작한다."""
     script, rec, _ = simulate(
         "public",
         [connect_failed()],
@@ -672,6 +703,7 @@ def test_backoff_model(lifetimes):
 
 
 def test_public_silence_degrades_closes_and_reconnects():
+    """TS-41·D-091: 공개 시세가 120초 넘게 조용하면 DEGRADED를 알리고 다시 연결한다."""
     script, rec, result = simulate("public", [OPEN], [OPEN, tick(2)], seconds=200)
 
     assert result == "running"
@@ -802,6 +834,7 @@ def test_request_errors_are_broken_without_retry(stream, name):
 
 
 def test_auth_error_reconnects_once_without_waiting():
+    """TS-106·D-091: INVALID_AUTH는 기다리지 않고 한 번만 다시 연결한다."""
     script, rec, result = simulate(
         "private", [OPEN, auth_error()], [OPEN, asset_event(2)], seconds=10
     )
@@ -1038,6 +1071,216 @@ def test_silence_reports_degraded_then_reconnecting_with_the_same_reason():
     assert reconnecting == ["RECONNECTING", "silence"]
     assert reconnecting_at == degraded_at
     assert rec.statuses("RECONNECTING")[0][1].retry_in == 1
+
+
+# ── 핸드셰이크 HTTP 상태(16, R22-02) ──────────────────────
+
+
+def handshake_failed(status: int | None) -> errors.StreamConnectFailed:
+    return errors.StreamConnectFailed(http_status=status, reason=f"핸드셰이크 HTTP {status}")
+
+
+def reconnecting_fields(rec: Recorder) -> list[tuple[str, str | None, float | None]]:
+    return [(s.reason, s.error_name, s.retry_in) for _, s in rec.statuses("RECONNECTING")]
+
+
+AUTH_STATUSES = (401, 403)
+"""비공개 스트림에서 INVALID_AUTH와 같이 다루는 핸드셰이크 상태(정한 점 17, D-091 (12))."""
+
+
+def backs_off(stream: str, status: int | None) -> bool:
+    """그 스트림에서 그 핸드셰이크 상태가 backoff대로 다시 연결하는 연결 실패인지(정한 점 16·17)."""
+    return not (stream == "private" and status in AUTH_STATUSES)
+
+
+BACKOFF_HANDSHAKE_CASES = [
+    (stream, status)
+    for stream in ("public", "private")
+    for status in (301, 401, 403, 429, 500, 503)
+    if backs_off(stream, status)
+]
+
+
+@pytest.mark.parametrize(("stream", "status"), BACKOFF_HANDSHAKE_CASES)
+def test_reconnecting_names_the_handshake_http_status(stream, status):
+    """TS-41: 핸드셰이크 HTTP 상태가 RECONNECTING의 error_name "HTTP_<상태>"로 간다.
+
+    비공개 401·403은 backoff가 아니다(D-091 (12) 구역).
+    """
+    script, rec, result = simulate(
+        stream, *([handshake_failed(status)] for _ in range(3)), [OPEN], seconds=10
+    )
+
+    assert result == "running"
+    name = streams.handshake_status_name(status)
+    assert reconnecting_fields(rec) == [
+        ("connect_failed", name, 1),
+        ("connect_failed", name, 2),
+        ("connect_failed", name, 4),
+    ]
+    # 다른 동작은 그대로다: backoff 표, 실패한 시각에 알림, 열리면 OPEN(error_name 없음).
+    assert gaps(script) == pytest.approx([1, 2, 4])
+    assert [t for t, _ in rec.statuses("RECONNECTING")] == pytest.approx(
+        [c.opened_at for c in script.opened[:3]]
+    )
+    (_, opened), *_ = rec.statuses("OPEN")
+    assert (opened.reason, opened.error_name, opened.retry_in) == ("opened", None, None)
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_connect_failure_without_http_status_keeps_error_name_none(stream):
+    """TS-41: HTTP 응답이 없는 연결 실패(거절·타임아웃)는 지금처럼 error_name이 None이다."""
+    _, rec, _ = simulate(stream, [connect_failed()], [handshake_failed(None)], [OPEN], seconds=5)
+
+    assert reconnecting_fields(rec) == [("connect_failed", None, 1), ("connect_failed", None, 2)]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [k for k in DISCONNECTS if k not in {"connect_failed", "handshake_rejected"}],
+)
+def test_other_disconnects_keep_error_name_none(kind):
+    """TS-41: HTTP 상태가 없는 끊김의 RECONNECTING error_name은 None 그대로다."""
+    _, rec, _ = simulate("public", DISCONNECTS[kind](), [OPEN, tick(1)], seconds=5)
+
+    ((reason, error_name, retry_in),) = reconnecting_fields(rec)
+    assert reason != "connect_failed"
+    assert (error_name, retry_in) == (None, 1)
+
+
+def test_silence_reconnect_keeps_error_name_none():
+    """TS-41: 무수신으로 끊은 뒤의 RECONNECTING도 error_name이 None이다."""
+    _, rec, _ = simulate("public", [OPEN], [OPEN, tick(2)], seconds=200)
+
+    (_, status), *_ = rec.statuses("RECONNECTING")
+    assert (status.reason, status.error_name) == ("silence", None)
+
+
+@pytest.mark.parametrize(
+    ("stream", "status"),
+    [("public", 401), ("public", 403), ("private", 429), ("private", 503)],
+)
+def test_connect_failure_raised_by_open_stream_itself_names_the_status(stream, status):
+    """TS-41: open_stream()이 이터레이터를 주기 전에 StreamConnectFailed를 내도 같다.
+
+    비공개 401·403은 backoff가 아니다(D-091 (12) 구역).
+    """
+
+    async def scenario():
+        clock = FakeClock()
+        script = Script(clock, stream, [OPEN])
+        calls: list[float] = []
+
+        def open_stream():
+            calls.append(clock.monotonic())
+            if len(calls) == 1:
+                raise errors.StreamConnectFailed(http_status=status, reason="핸드셰이크 거절")
+            return script.open_stream()
+
+        rec = Recorder(clock)
+        task = await start(supervisor(clock, script, rec, open_stream=open_stream))
+        await clock.run_for(5)
+        await stop(task)
+        assert not leftover_tasks()
+        return rec, calls
+
+    rec, calls = asyncio.run(scenario())
+
+    assert calls == [T0, T0 + 1]
+    assert reconnecting_fields(rec) == [
+        ("connect_failed", streams.handshake_status_name(status), 1)
+    ]
+    assert [s.kind for _, s in rec.statuses()] == ["CONNECTING", "RECONNECTING", "OPEN"]
+
+
+def test_handshake_status_name_and_prefix_are_public():
+    """R22-02: 접두어와 이름 도우미는 core/streams.py가 내보낸다(앱·시험이 같은 값을 쓴다)."""
+    assert streams.HANDSHAKE_STATUS_PREFIX == "HTTP_"
+    assert streams.handshake_status_name(401) == "HTTP_401"
+    assert streams.handshake_status_name(429) == "HTTP_429"
+    assert streams.handshake_status_name(None) is None
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+@pytest.mark.parametrize(
+    ("backoff", "status", "delays"),
+    [
+        ((0,), 429, [1, 1, 1]),
+        ((0, 0.5, 3), 429, [1, 1, 3]),
+        ((0,), 503, [0, 0, 0]),
+        ((0,), None, [0, 0, 0]),
+        ((0.5, 3), 418, [0.5, 3, 3]),
+    ],
+)
+def test_handshake_429_waits_at_least_one_second_whatever_the_backoff(
+    stream, backoff, status, delays
+):
+    """TS-41: 핸드셰이크 429 뒤 대기는 max(backoff, 1초)다. 다른 상태는 backoff 그대로다.
+
+    (비공개 401·403은 backoff가 아니어서 여기서 뺀다. 공개 401·403은 D-091 (12) 구역.)
+    """
+    script, rec, result = simulate(
+        stream, *([handshake_failed(status)] for _ in delays), [OPEN], seconds=10, backoff=backoff
+    )
+
+    assert result == "running"
+    name = streams.handshake_status_name(status)
+    assert reconnecting_fields(rec) == [("connect_failed", name, d) for d in delays]
+    assert gaps(script) == pytest.approx(delays)
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    stream=st.sampled_from(["public", "private"]),
+    statuses=st.lists(
+        st.one_of(st.none(), st.sampled_from([401, 403, 418, 429]), st.integers(100, 599)),
+        min_size=1,
+        max_size=8,
+    ),
+    backoff=st.sampled_from([DEFAULT_BACKOFF, (0.0, 0.5, 2.0), (0.0,)]),
+)
+def test_handshake_status_model(stream, statuses, backoff):
+    """TS-41·D-091 (12): 연속 연결 실패마다 그 실패의 HTTP 상태를 싣고 backoff 표는 그대로
+    내려간다(429만 1초 이상 기다린다). 비공개 401·403은 INVALID_AUTH처럼 표를 내려가지 않고
+    바로 1번, 두 번째면 AUTH_CHECK로 끝난다(정한 점 17)."""
+    # 모형: (reason, error_name, retry_in) 목록과 마지막 AUTH_CHECK의 error_name(없으면 None).
+    expected: list[tuple[str, str | None, float]] = []
+    auth_check: str | None = None
+    index, auth_retried = 0, False
+    for status in statuses:
+        name = streams.handshake_status_name(status)
+        if not backs_off(stream, status):
+            if auth_retried:
+                auth_check = name
+                break
+            auth_retried = True
+            expected.append(("auth_failed", name, 0.0))
+            continue
+        table = backoff[min(index, len(backoff) - 1)]
+        index += 1
+        delay = max(table, streams.RATE_LIMIT_RETRY_SECONDS) if status == 429 else table
+        expected.append(("connect_failed", name, delay))
+    delays = [delay for _, _, delay in expected]
+    connections = [[handshake_failed(status)] for status in statuses]
+
+    script, rec, result = simulate(
+        stream, *connections, [OPEN], seconds=sum(delays) + 1, backoff=backoff
+    )
+
+    assert reconnecting_fields(rec) == expected
+    assert gaps(script) == pytest.approx(delays)
+    if auth_check is None:
+        assert result == "running"
+        assert "AUTH_CHECK" not in [s.kind for _, s in rec.statuses()]
+    else:
+        assert result == "returned"
+        last = rec.statuses()[-1][1]
+        assert (last.kind, last.reason, last.error_name) == (
+            "AUTH_CHECK",
+            "auth_failed",
+            auth_check,
+        )
+        assert len(script.opened) == len(expected) + 1
 
 
 # ── 무수신: 콜백 시간 제외, 열린 뒤에만 ───────────────────
@@ -1570,3 +1813,730 @@ def test_second_cancel_during_cleanup_still_ends_cancelled(stream, where):
         assert not leftover_tasks(), leftover_tasks()
 
     asyncio.run(scenario())
+
+
+# ── open_stream이 부르는 순간 core 오류를 낼 때(R22-03) ─────────
+# open_stream은 보통 async generator 함수를 불러 이터레이터를 준다(첫 anext 전에는 아무 일도
+# 없다). 그래도 부르는 순간 core 오류(NetworkError·StreamError 계열)를 내면(예: 키를 부를 때
+# 읽는 구현) 이터레이터에서 난 같은 오류와 똑같이 다룬다: 끊김이면 backoff 뒤 다시 열고,
+# D-080 규칙(인증 오류는 바로 1번, 요청 오류는 BROKEN)을 따른다. 이터레이터가 없으니 닫을 것도
+# 없고 남는 태스크도 없다. core 밖 예외는 이터레이터 오류처럼 run() 밖으로 올린다(11).
+
+
+class RaisingOpen:
+    """open_stream 자리: 앞의 errors를 부르는 순간 차례로 내고(이터레이터를 만들지 않는다),
+    다 내면 대본(script)의 다음 줄을 준다."""
+
+    def __init__(self, script: Script, *errors_first: BaseException) -> None:
+        self.script = script
+        self.errors = list(errors_first)
+        self.calls: list[float] = []
+
+    def __call__(self):
+        self.calls.append(self.script.clock.monotonic())
+        if self.errors:
+            raise self.errors.pop(0)
+        return self.script.open_stream()
+
+
+def simulate_raising_open(stream: str, errors_first, *connections, seconds: float, **options):
+    """simulate와 같되 open_stream이 앞의 errors_first를 부르는 순간 낸다.
+
+    (opener, script, rec, 결과) — 결과는 "running"·"returned"·예외 객체.
+    """
+
+    async def scenario():
+        clock = FakeClock()
+        script = Script(clock, stream, *connections)
+        opener = RaisingOpen(script, *errors_first)
+        rec = Recorder(clock)
+        task = await start(supervisor(clock, script, rec, open_stream=opener, **options))
+        await clock.run_for(seconds)
+        if task.done():
+            result = task.exception() or "returned"
+            await settle()
+            script.freeze()
+        else:
+            result = "running"
+            script.freeze()
+            await stop(task)
+        assert not leftover_tasks(), leftover_tasks()
+        return opener, script, rec, result
+
+    return asyncio.run(scenario())
+
+
+CALL_TIME_DISCONNECTS = {
+    "connect_failed": (lambda: connect_failed(), "connect_failed"),
+    "handshake_rejected": (
+        lambda: errors.StreamConnectFailed(http_status=503, reason="핸드셰이크 HTTP 503"),
+        "connect_failed",
+    ),
+    "closed": (lambda: closed(1006), "closed"),
+    "network_error": (lambda: errors.NetworkError("DNS 실패"), "network_error"),
+    "request_timeout": (lambda: errors.RequestTimeout("응답 없음"), "network_error"),
+}
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+@pytest.mark.parametrize(
+    ("make_error", "reason"), CALL_TIME_DISCONNECTS.values(), ids=CALL_TIME_DISCONNECTS.keys()
+)
+def test_open_stream_raising_a_disconnect_backs_off_and_reopens(stream, make_error, reason):
+    data = tick(1) if stream == "public" else asset_event(1)
+
+    opener, script, rec, result = simulate_raising_open(
+        stream, [make_error(), make_error(), make_error()], [OPEN, data], seconds=20
+    )
+
+    assert result == "running"
+    # 부를 때 실패한 세 번도 연속 실패로 센다: 1·2·4초 뒤 다시 부른다.
+    assert [t - T0 for t in opener.calls] == pytest.approx([0, 1, 3, 7])
+    reconnecting = [s for _, s in rec.statuses("RECONNECTING")]
+    assert [s.retry_in for s in reconnecting] == pytest.approx([1, 2, 4])
+    assert {s.reason for s in reconnecting} == {reason}
+    assert all(s.stream == stream for _, s in rec.statuses())
+    # 네 번째에 연 연결이 첫 연결이다(재연결 훅 없이 OPEN, 이벤트 전달).
+    assert len(script.opened) == 1
+    assert [s.kind for _, s in rec.statuses()] == [
+        "CONNECTING",
+        "RECONNECTING",
+        "RECONNECTING",
+        "RECONNECTING",
+        "OPEN",
+    ]
+    assert rec.hooks() == []
+    assert [e for _, e in rec.events()] == [data]
+
+
+def test_open_stream_raising_an_auth_error_reopens_once_then_auth_check():
+    no_keys = errors.StreamAuthError(error_name="NO_CREDENTIALS", message="키 없음")
+    again = errors.StreamAuthError(error_name="NO_CREDENTIALS", message="키 없음")
+
+    opener, script, rec, result = simulate_raising_open(
+        "private", [no_keys, again], [OPEN, asset_event(1)], seconds=600
+    )
+
+    assert result == "returned"
+    assert opener.calls == [T0, T0]  # 인증 오류 뒤에는 기다리지 않고 1번
+    assert script.opened == []
+    ((_, reconnecting),) = rec.statuses("RECONNECTING")
+    assert (reconnecting.reason, reconnecting.error_name, reconnecting.retry_in) == (
+        "auth_failed",
+        "NO_CREDENTIALS",
+        0.0,
+    )
+    last_at, last = rec.statuses()[-1]
+    assert (last.kind, last.error_name) == ("AUTH_CHECK", "NO_CREDENTIALS")
+    assert last_at == T0
+
+
+def test_open_stream_raising_an_auth_error_once_then_working_opens():
+    no_keys = errors.StreamAuthError(error_name="NO_CREDENTIALS", message="키 없음")
+
+    opener, script, rec, result = simulate_raising_open(
+        "private", [no_keys], [OPEN, asset_event(1)], seconds=10
+    )
+
+    assert result == "running"
+    assert opener.calls == [T0, T0]
+    assert len(script.opened) == 1
+    assert [s.kind for _, s in rec.statuses()] == ["CONNECTING", "RECONNECTING", "OPEN"]
+    assert [e for _, e in rec.events()] == [asset_event(1)]
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_open_stream_raising_a_rate_limit_waits_then_reopens_once(stream):
+    opener, _, rec, result = simulate_raising_open(
+        stream, [rate_limited(), rate_limited()], seconds=600
+    )
+
+    assert result == "returned"
+    assert [t - T0 for t in opener.calls] == pytest.approx([0, 1])
+    last = rec.statuses()[-1][1]
+    assert (last.kind, last.reason, last.error_name) == (
+        "BROKEN",
+        "rate_limited",
+        "TOO_MANY_REQUEST",
+    )
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_open_stream_raising_a_request_error_is_broken_without_retry(stream):
+    error = errors.StreamRequestError(error_name="WRONG_FORMAT", message="형식 오류")
+
+    opener, script, rec, result = simulate_raising_open(stream, [error], [OPEN], seconds=600)
+
+    assert result == "returned"
+    assert len(opener.calls) == 1
+    assert script.opened == []
+    assert rec.statuses("RECONNECTING") == []
+    last = rec.statuses()[-1][1]
+    assert (last.kind, last.reason, last.error_name) == ("BROKEN", "request_error", "WRONG_FORMAT")
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+@pytest.mark.parametrize(
+    "make_error",
+    [lambda: ValueError("구독할 마켓이 없다"), lambda: errors.InvariantViolation("버그")],
+    ids=["ValueError", "InvariantViolation"],
+)
+def test_open_stream_raising_a_non_core_error_propagates(stream, make_error):
+    error = make_error()
+
+    opener, script, rec, result = simulate_raising_open(stream, [error], [OPEN], seconds=600)
+
+    assert result is error
+    assert len(opener.calls) == 1
+    assert script.opened == []
+    assert rec.statuses("RECONNECTING") == []
+
+
+def test_open_stream_failing_at_call_time_degrades_a_long_public_outage():
+    # 부를 때 실패가 이어져도 끊김과 같다: 마지막 데이터(없으면 run() 시작) 뒤 120초면 DEGRADED 1번.
+    failures = [connect_failed() for _ in range(10)]
+
+    _, _, rec, result = simulate_raising_open("public", failures, seconds=200)
+
+    assert result == "running"
+    degraded = rec.statuses("DEGRADED")
+    assert len(degraded) == 1
+    at, status = degraded[0]
+    assert status.reason == "silence"
+    assert T0 + 120 <= at <= T0 + 120 + 30
+
+
+SAME_AS_ITERATOR = {
+    **{key: make for key, (make, _) in CALL_TIME_DISCONNECTS.items()},
+    "auth_error": auth_error,
+    "rate_limited": lambda: rate_limited(),
+    "minute_limited": lambda: rate_limited(minute_limited=True),
+    "request_error": lambda: errors.StreamRequestError(error_name="NO_CODES", message="m"),
+}
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+@pytest.mark.parametrize("make_error", SAME_AS_ITERATOR.values(), ids=SAME_AS_ITERATOR.keys())
+def test_open_stream_raising_is_handled_like_the_iterator_raising(stream, make_error):
+    # 부르는 순간 낸 오류와 첫 anext에서 낸 같은 오류는 상태(모든 필드)·다시 여는 시각이 같다.
+    data = tick(1) if stream == "public" else asset_event(1)
+
+    opener, _, raised_at_call, _ = simulate_raising_open(
+        stream, [make_error(), make_error()], [OPEN, data], seconds=200
+    )
+    script, from_iterator, _ = simulate(
+        stream, [make_error()], [make_error()], [OPEN, data], seconds=200
+    )
+
+    assert raised_at_call.statuses() == from_iterator.statuses()
+    assert opener.calls == [c.opened_at for c in script.opened]
+
+
+# ── D-091 (12) 핸드셰이크 401·403: 비공개는 INVALID_AUTH와 같이(정한 점 17) ──
+# 비공개 스트림의 핸드셰이크 401·403(StreamConnectFailed.http_status)은 D-080의 INVALID_AUTH와
+# 같이 다룬다: 기다리지 않고 1번 다시 열고(RECONNECTING reason="auth_failed", error_name
+# "HTTP_401"·"HTTP_403", retry_in=0.0), 정상 이벤트 없이 또 오면 AUTH_CHECK로 run()이 끝난다
+# (5단계가 REST로 키를 확인한다). 허용 횟수는 INVALID_AUTH와 하나를 같이 쓴다. 공개 스트림의
+# 401·403과 모든 429·5xx·그 밖 상태는 backoff(1~60초)대로 계속한다(정한 점 16).
+
+
+def status_fields(rec: Recorder) -> list[tuple[float, str, str, str | None, float | None]]:
+    return [(t, s.kind, s.reason, s.error_name, s.retry_in) for t, s in rec.statuses()]
+
+
+@pytest.mark.parametrize("status", AUTH_STATUSES)
+def test_private_handshake_auth_rejection_reopens_once_without_waiting(status):
+    """TS-106·D-091 (12): 비공개 핸드셰이크 401·403은 기다리지 않고 한 번 다시 연결한다."""
+    script, rec, result = simulate(
+        "private", [handshake_failed(status)], [OPEN, asset_event(1)], seconds=10
+    )
+
+    assert result == "running"
+    assert [c.opened_at for c in script.opened] == [T0, T0]
+    assert status_fields(rec) == [
+        (T0, "CONNECTING", "start", None, None),
+        (T0, "RECONNECTING", "auth_failed", streams.handshake_status_name(status), 0.0),
+        (T0, "OPEN", "opened", None, None),
+    ]
+    assert rec.hooks() == []  # 두 번째 시도가 처음 열린 연결이다
+    assert [e for _, e in rec.events()] == [asset_event(1)]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    list(itertools.product(AUTH_STATUSES, repeat=2)),
+    ids=lambda status: f"HTTP_{status}",
+)
+def test_private_handshake_auth_rejection_twice_without_data_is_auth_check(first, second):
+    """TS-106·D-091 (12): 정상 이벤트 없이 또 401·403이면 AUTH_CHECK로 끝난다(두 번째 상태 이름)."""
+    script, rec, result = simulate(
+        "private",
+        [handshake_failed(first)],
+        [handshake_failed(second)],
+        [OPEN, asset_event(1)],
+        seconds=600,
+    )
+
+    assert result == "returned"
+    assert [c.opened_at for c in script.opened] == [T0, T0]
+    assert status_fields(rec) == [
+        (T0, "CONNECTING", "start", None, None),
+        (T0, "RECONNECTING", "auth_failed", streams.handshake_status_name(first), 0.0),
+        (T0, "AUTH_CHECK", "auth_failed", streams.handshake_status_name(second), None),
+    ]
+    assert rec.log[-1][2] is rec.statuses()[-1][1]  # AUTH_CHECK 뒤에는 아무것도 부르지 않는다
+    assert rec.events() == []
+
+
+AUTH_FAILURES = {
+    "invalid_auth": (lambda: [OPEN, auth_error()], "INVALID_AUTH"),
+    "invalid_auth_before_open": (lambda: [auth_error()], "INVALID_AUTH"),
+    "handshake_401": (lambda: [handshake_failed(401)], "HTTP_401"),
+    "handshake_403": (lambda: [handshake_failed(403)], "HTTP_403"),
+}
+"""비공개 인증 실패 하나(연결 한 줄)와 그 상태의 error_name."""
+
+MIXED_AUTH_PAIRS = [
+    (first, second)
+    for first in AUTH_FAILURES
+    for second in AUTH_FAILURES
+    if first.startswith("handshake") != second.startswith("handshake")
+]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"), MIXED_AUTH_PAIRS, ids=[f"{a}-then-{b}" for a, b in MIXED_AUTH_PAIRS]
+)
+def test_handshake_auth_rejection_and_invalid_auth_share_one_allowance(first, second):
+    """TS-106·D-091 (12): 핸드셰이크 401·403과 INVALID_AUTH는 허용 횟수 하나를 같이 쓴다.
+
+    어느 순서든 정상 이벤트 없이 두 번째면 AUTH_CHECK(error_name은 두 번째 것의 이름)다.
+    """
+    make_first, first_name = AUTH_FAILURES[first]
+    make_second, second_name = AUTH_FAILURES[second]
+
+    script, rec, result = simulate(
+        "private", make_first(), make_second(), [OPEN, asset_event(1)], seconds=600
+    )
+
+    assert result == "returned"
+    assert [c.opened_at for c in script.opened] == [T0, T0]
+    assert reconnecting_fields(rec) == [("auth_failed", first_name, 0.0)]
+    last_at, last = rec.statuses()[-1]
+    assert (last_at, last.kind, last.reason, last.error_name) == (
+        T0,
+        "AUTH_CHECK",
+        "auth_failed",
+        second_name,
+    )
+    assert rec.log[-1][2] is last
+    assert rec.events() == []
+
+
+@pytest.mark.parametrize("auth", AUTH_FAILURES)
+def test_auth_retry_does_not_use_up_the_rate_limit_allowance(auth):
+    """TS-106·D-080·D-091 (12): 인증 허용 횟수(401·403·INVALID_AUTH)와 한도 허용 횟수는 따로 간다.
+
+    인증 실패로 다시 연 뒤 TOO_MANY_REQUEST가 와도 한도 허용은 남아 있어 1초 뒤 1번 다시 연다.
+    """
+    make_auth, auth_name = AUTH_FAILURES[auth]
+
+    script, rec, result = simulate(
+        "private", make_auth(), [OPEN, rate_limited()], [OPEN, asset_event(1)], seconds=600
+    )
+
+    assert result == "running"
+    assert [c.opened_at - T0 for c in script.opened] == pytest.approx([0, 0, 1])
+    assert reconnecting_fields(rec) == [
+        ("auth_failed", auth_name, 0.0),
+        ("rate_limited", "TOO_MANY_REQUEST", 1.0),
+    ]
+    assert {s.kind for _, s in rec.statuses()} == {"CONNECTING", "RECONNECTING", "OPEN"}
+    assert [e for _, e in rec.events()] == [asset_event(1)]
+
+
+@pytest.mark.parametrize("auth", AUTH_FAILURES)
+def test_auth_retry_does_not_restore_the_rate_limit_allowance(auth):
+    """TS-106·D-080·D-091 (12): 사이의 인증 재연결은 정상 이벤트가 아니어서 한도 허용을 못 돌린다.
+
+    TOO_MANY_REQUEST 뒤 인증 실패로 한 번 더 열고 또 TOO_MANY_REQUEST면 BROKEN이다.
+    """
+    make_auth, auth_name = AUTH_FAILURES[auth]
+
+    script, rec, result = simulate(
+        "private",
+        [OPEN, rate_limited()],
+        make_auth(),
+        [OPEN, rate_limited()],
+        [OPEN, asset_event(1)],
+        seconds=600,
+    )
+
+    assert result == "returned"
+    assert [c.opened_at - T0 for c in script.opened] == pytest.approx([0, 1, 1])
+    assert reconnecting_fields(rec) == [
+        ("rate_limited", "TOO_MANY_REQUEST", 1.0),
+        ("auth_failed", auth_name, 0.0),
+    ]
+    last_at, last = rec.statuses()[-1]
+    assert (last_at, last.kind, last.reason, last.error_name) == (
+        pytest.approx(T0 + 1),
+        "BROKEN",
+        "rate_limited",
+        "TOO_MANY_REQUEST",
+    )
+    assert rec.log[-1][2] is last
+    assert rec.events() == []
+
+
+@pytest.mark.parametrize("auth", AUTH_FAILURES)
+def test_rate_limit_retry_does_not_restore_the_auth_allowance(auth):
+    """TS-106·D-080·D-091 (12): 반대도 같다. 사이의 한도 재연결은 인증 허용을 돌려주지 않는다."""
+    make_auth, auth_name = AUTH_FAILURES[auth]
+
+    script, rec, result = simulate(
+        "private",
+        make_auth(),
+        [OPEN, rate_limited()],
+        make_auth(),
+        [OPEN, asset_event(1)],
+        seconds=600,
+    )
+
+    assert result == "returned"
+    assert [c.opened_at - T0 for c in script.opened] == pytest.approx([0, 0, 1])
+    assert reconnecting_fields(rec) == [
+        ("auth_failed", auth_name, 0.0),
+        ("rate_limited", "TOO_MANY_REQUEST", 1.0),
+    ]
+    last_at, last = rec.statuses()[-1]
+    assert (last_at, last.kind, last.reason, last.error_name) == (
+        pytest.approx(T0 + 1),
+        "AUTH_CHECK",
+        "auth_failed",
+        auth_name,
+    )
+    assert rec.log[-1][2] is last
+    assert rec.events() == []
+
+
+BETWEEN_WITHOUT_DATA = {
+    "opened_only": (lambda: [OPEN, closed()], ("closed", None, 1.0)),
+    "connect_failed": (lambda: [connect_failed()], ("connect_failed", None, 1.0)),
+    "handshake_429": (lambda: [handshake_failed(429)], ("connect_failed", "HTTP_429", 1.0)),
+    "handshake_503": (lambda: [handshake_failed(503)], ("connect_failed", "HTTP_503", 1.0)),
+    "network_error": (lambda: [errors.NetworkError("DNS 실패")], ("network_error", None, 1.0)),
+}
+"""정상 데이터 이벤트 없는 끊김 하나와 그 RECONNECTING(앞의 즉시 재연결은 표를 쓰지 않아 1초)."""
+
+
+@pytest.mark.parametrize(
+    ("make_between", "between_fields"),
+    BETWEEN_WITHOUT_DATA.values(),
+    ids=BETWEEN_WITHOUT_DATA.keys(),
+)
+def test_disconnects_without_data_do_not_restore_the_handshake_auth_allowance(
+    make_between, between_fields
+):
+    """TS-106·D-091 (12): 사이의 다른 끊김(열리기만 한 연결 포함)은 허용 횟수를 돌려주지 않는다."""
+    script, rec, result = simulate(
+        "private",
+        [handshake_failed(401)],
+        make_between(),
+        [handshake_failed(403)],
+        [OPEN, asset_event(1)],
+        seconds=600,
+    )
+
+    assert result == "returned"
+    assert [c.opened_at - T0 for c in script.opened] == pytest.approx([0, 0, 1])
+    assert reconnecting_fields(rec) == [("auth_failed", "HTTP_401", 0.0), between_fields]
+    last_at, last = rec.statuses()[-1]
+    assert (last_at, last.kind, last.reason, last.error_name) == (
+        T0 + 1,
+        "AUTH_CHECK",
+        "auth_failed",
+        "HTTP_403",
+    )
+
+
+def test_normal_data_restores_the_handshake_auth_allowance():
+    """TS-106·D-091 (12): 사이에 정상 데이터 이벤트가 오면 다음 401·403에 다시 1번 허용한다."""
+    script, rec, result = simulate(
+        "private",
+        [handshake_failed(401)],
+        [OPEN, asset_event(1), closed()],
+        [handshake_failed(403)],
+        [handshake_failed(401)],
+        [OPEN, asset_event(2)],
+        seconds=600,
+    )
+
+    assert result == "returned"
+    assert [c.opened_at - T0 for c in script.opened] == pytest.approx([0, 0, 1, 1])
+    assert reconnecting_fields(rec) == [
+        ("auth_failed", "HTTP_401", 0.0),
+        ("closed", None, 1.0),
+        ("auth_failed", "HTTP_403", 0.0),
+    ]
+    assert [e for _, e in rec.events()] == [asset_event(1)]
+    last = rec.statuses()[-1][1]
+    assert (last.kind, last.reason, last.error_name) == ("AUTH_CHECK", "auth_failed", "HTTP_401")
+
+
+def test_data_then_invalid_auth_uses_the_restored_allowance_before_a_handshake_rejection():
+    """TS-106·D-091 (12): 데이터 뒤 INVALID_AUTH가 허용을 쓰면 다음 401·403은 AUTH_CHECK다."""
+    script, rec, result = simulate(
+        "private",
+        [handshake_failed(401)],
+        [OPEN, asset_event(1), auth_error()],
+        [handshake_failed(403)],
+        [OPEN],
+        seconds=600,
+    )
+
+    assert result == "returned"
+    assert [c.opened_at for c in script.opened] == [T0, T0, T0]
+    assert reconnecting_fields(rec) == [
+        ("auth_failed", "HTTP_401", 0.0),
+        ("auth_failed", "INVALID_AUTH", 0.0),
+    ]
+    last = rec.statuses()[-1][1]
+    assert (last.kind, last.reason, last.error_name) == ("AUTH_CHECK", "auth_failed", "HTTP_403")
+
+
+@pytest.mark.parametrize("first", ["handshake_401", "invalid_auth"])
+@pytest.mark.parametrize(("lifetime", "reset"), [(5 * 3600, True), (60, True), (59, False)])
+def test_stable_connection_restores_the_handshake_auth_allowance(first, lifetime, reset):
+    """TS-106·D-091 (6)(12): 60초(stable_after) 이상 유지된 연결 뒤에는 401·403에 다시 1번."""
+    make_first, _ = AUTH_FAILURES[first]
+
+    script, rec, result = simulate(
+        "private",
+        make_first(),
+        [OPEN, Wait(lifetime), closed()],
+        [handshake_failed(403)],
+        [OPEN],
+        seconds=lifetime + 200,
+    )
+
+    if reset:
+        assert result == "running"
+        assert len(script.opened) == 4
+        assert script.opened[3].opened_at == script.opened[2].opened_at  # 바로 다시 열었다
+        assert reconnecting_fields(rec)[-1] == ("auth_failed", "HTTP_403", 0.0)
+        assert "AUTH_CHECK" not in [s.kind for _, s in rec.statuses()]
+    else:
+        assert result == "returned"
+        assert len(script.opened) == 3
+        last = rec.statuses()[-1][1]
+        assert (last.kind, last.reason, last.error_name) == (
+            "AUTH_CHECK",
+            "auth_failed",
+            "HTTP_403",
+        )
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    [(401,) * 9, (403,) * 9, (401, 403) * 4 + (401,)],
+    ids=["401", "403", "alternating"],
+)
+def test_public_handshake_auth_rejections_keep_backing_off(statuses):
+    """TS-41·D-091 (12): 공개 스트림의 401·403은 연결 실패로 보고 backoff대로 계속 다시 연결한다."""
+    script, rec, result = simulate(
+        "public", *([handshake_failed(s)] for s in statuses), [OPEN, tick(1)], seconds=300
+    )
+
+    expected = [1, 2, 4, 8, 16, 32, 60, 60, 60]
+    assert result == "running"
+    assert gaps(script) == pytest.approx(expected)
+    assert reconnecting_fields(rec) == [
+        ("connect_failed", streams.handshake_status_name(s), d)
+        for s, d in zip(statuses, expected, strict=True)
+    ]
+    assert {"AUTH_CHECK", "BROKEN"}.isdisjoint(s.kind for _, s in rec.statuses())
+    assert rec.events()[-1][1] == tick(1)
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 418, 404, 301, None])
+def test_private_handshake_rejections_other_than_401_403_back_off(status):
+    """TS-41·D-091 (12): 비공개라도 401·403 밖의 핸드셰이크 거절(429·5xx 등)은 backoff대로다."""
+    script, rec, result = simulate(
+        "private",
+        *([handshake_failed(status)] for _ in range(8)),
+        [OPEN, asset_event(1)],
+        seconds=300,
+    )
+
+    expected = [1, 2, 4, 8, 16, 32, 60, 60]
+    assert result == "running"
+    assert gaps(script) == pytest.approx(expected)
+    assert reconnecting_fields(rec) == [
+        ("connect_failed", streams.handshake_status_name(status), d) for d in expected
+    ]
+    assert "AUTH_CHECK" not in [s.kind for _, s in rec.statuses()]
+    assert [e for _, e in rec.events()] == [asset_event(1)]
+
+
+def test_private_429_and_5xx_do_not_use_the_handshake_auth_allowance():
+    """TS-106·D-091 (12): 비공개 429·5xx 거절은 인증 허용 횟수를 쓰지 않는다(뒤 401은 바로 1번)."""
+    script, rec, result = simulate(
+        "private",
+        [handshake_failed(429)],
+        [handshake_failed(500)],
+        [handshake_failed(429)],
+        [handshake_failed(401)],
+        [OPEN, asset_event(1)],
+        seconds=60,
+    )
+
+    assert result == "running"
+    assert gaps(script) == pytest.approx([1, 2, 4, 0])
+    assert reconnecting_fields(rec) == [
+        ("connect_failed", "HTTP_429", 1),
+        ("connect_failed", "HTTP_500", 2),
+        ("connect_failed", "HTTP_429", 4),
+        ("auth_failed", "HTTP_401", 0.0),
+    ]
+    assert [e for _, e in rec.events()] == [asset_event(1)]
+
+
+def test_handshake_auth_retry_does_not_move_the_backoff_table():
+    """TS-41·D-091 (12): 401·403의 즉시 재연결은 INVALID_AUTH처럼 backoff 표를 내려가지 않는다."""
+    script, rec, result = simulate(
+        "private",
+        [connect_failed()],
+        [handshake_failed(401)],
+        [connect_failed()],
+        [connect_failed()],
+        [OPEN],
+        seconds=60,
+    )
+
+    assert result == "running"
+    assert gaps(script) == pytest.approx([1, 0, 2, 4])
+    assert [s.retry_in for _, s in rec.statuses("RECONNECTING")] == pytest.approx([1, 0, 2, 4])
+
+
+PRIVATE_OTHER_STEPS = {
+    "connect_failed": lambda: [connect_failed()],
+    "handshake_429": lambda: [handshake_failed(429)],
+    "handshake_503": lambda: [handshake_failed(503)],
+    "opened_closed": lambda: [OPEN, closed()],
+    "data_closed": lambda: [OPEN, asset_event(1), closed()],
+    "stable_closed": lambda: [OPEN, Wait(STABLE_AFTER), closed()],
+    "data_invalid_auth": lambda: [OPEN, asset_event(2), auth_error()],
+    "opened_rate_limited": lambda: [OPEN, rate_limited()],
+}
+"""비공개 대본에서 401·403 사이에 섞는 연결(인증 실패가 아닌 것, 데이터 뒤 INVALID_AUTH, 한도)."""
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    plan=st.lists(
+        st.one_of(st.sampled_from(AUTH_STATUSES), st.sampled_from(sorted(PRIVATE_OTHER_STEPS))),
+        min_size=1,
+        max_size=8,
+    )
+)
+def test_private_handshake_auth_rejection_is_scheduled_like_invalid_auth(plan):
+    """TS-106·D-091 (12): 비공개 401·403을 INVALID_AUTH로 바꾼 대본과 다시 여는 시각·상태가 같다.
+
+    상태는 시각·kind·reason·retry_in이 모두 같고, error_name만 INVALID_AUTH 자리가 HTTP 상태
+    이름이다(AUTH_CHECK로 끝나는 시각과 그 뒤에 아무것도 안 하는 것도 같다).
+    """
+
+    def connections(as_invalid_auth: bool):
+        for step in plan:
+            if isinstance(step, int):
+                yield [auth_error()] if as_invalid_auth else [handshake_failed(step)]
+            else:
+                yield PRIVATE_OTHER_STEPS[step]()
+
+    seconds = (STABLE_AFTER + 60) * len(plan) + 10
+    rejected, by_handshake, handshake_result = simulate(
+        "private", *connections(False), [OPEN], seconds=seconds
+    )
+    replaced, by_message, message_result = simulate(
+        "private", *connections(True), [OPEN], seconds=seconds
+    )
+
+    assert handshake_result == message_result
+    assert [c.opened_at for c in rejected.opened] == [c.opened_at for c in replaced.opened]
+    assert [(t, s.kind, s.reason, s.retry_in) for t, s in by_handshake.statuses()] == [
+        (t, s.kind, s.reason, s.retry_in) for t, s in by_message.statuses()
+    ]
+    # INVALID_AUTH 상태 하나가 대본의 인증 실패 하나다(데이터 뒤 INVALID_AUTH는 두 대본에 같다).
+    names = iter(
+        "INVALID_AUTH" if step == "data_invalid_auth" else streams.handshake_status_name(step)
+        for step in plan
+        if isinstance(step, int) or step == "data_invalid_auth"
+    )
+    assert [s.error_name for _, s in by_handshake.statuses()] == [
+        next(names) if s.error_name == "INVALID_AUTH" else s.error_name
+        for _, s in by_message.statuses()
+    ]
+    assert [e for _, e in by_handshake.events()] == [e for _, e in by_message.events()]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    list(itertools.product(AUTH_STATUSES, repeat=2)),
+    ids=lambda status: f"HTTP_{status}",
+)
+def test_open_stream_raising_private_handshake_auth_rejections_is_auth_check(first, second):
+    """TS-106·D-091 (12): open_stream()이 바로 401·403을 내도 바로 1번, 또 오면 AUTH_CHECK다."""
+    opener, script, rec, result = simulate_raising_open(
+        "private",
+        [handshake_failed(first), handshake_failed(second)],
+        [OPEN, asset_event(1)],
+        seconds=600,
+    )
+
+    assert result == "returned"
+    assert opener.calls == [T0, T0]
+    assert script.opened == []
+    assert status_fields(rec) == [
+        (T0, "CONNECTING", "start", None, None),
+        (T0, "RECONNECTING", "auth_failed", streams.handshake_status_name(first), 0.0),
+        (T0, "AUTH_CHECK", "auth_failed", streams.handshake_status_name(second), None),
+    ]
+
+
+@pytest.mark.parametrize("status", AUTH_STATUSES)
+def test_open_stream_raising_a_private_handshake_auth_rejection_once_then_opening(status):
+    """TS-106·D-091 (12): open_stream()이 401·403을 한 번 내고 그다음 열리면 바로 OPEN이다."""
+    opener, script, rec, result = simulate_raising_open(
+        "private", [handshake_failed(status)], [OPEN, asset_event(1)], seconds=10
+    )
+
+    assert result == "running"
+    assert opener.calls == [T0, T0]
+    assert len(script.opened) == 1
+    assert status_fields(rec) == [
+        (T0, "CONNECTING", "start", None, None),
+        (T0, "RECONNECTING", "auth_failed", streams.handshake_status_name(status), 0.0),
+        (T0, "OPEN", "opened", None, None),
+    ]
+    assert [e for _, e in rec.events()] == [asset_event(1)]
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+@pytest.mark.parametrize("status", [401, 403, 429, 503])
+def test_open_stream_raising_a_handshake_rejection_is_handled_like_the_iterator_raising(
+    stream, status
+):
+    """TS-41·D-091 (12): open_stream()이 바로 낸 핸드셰이크 거절과 이터레이터의 것은 상태가 같다."""
+    data = tick(1) if stream == "public" else asset_event(1)
+
+    opener, _, raised_at_call, call_result = simulate_raising_open(
+        stream, [handshake_failed(status), handshake_failed(status)], [OPEN, data], seconds=200
+    )
+    script, from_iterator, iterator_result = simulate(
+        stream, [handshake_failed(status)], [handshake_failed(status)], [OPEN, data], seconds=200
+    )
+
+    assert call_result == iterator_result
+    assert raised_at_call.statuses() == from_iterator.statuses()
+    assert opener.calls == [c.opened_at for c in script.opened]

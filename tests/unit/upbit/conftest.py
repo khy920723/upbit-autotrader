@@ -10,8 +10,9 @@
   (credentials=None이면 인증 요청은 보내기 전에 실패하므로 시세 API가 키를 쓰지 않는지도 본다).
 - `env.run(scenario)`는 asyncio.run으로 돌리고, 끝나면 가짜의 엄격 검사 위반이 0건이어야 한다.
 - `env.rewrite_response(path, edit)`는 가짜의 2xx 응답 본문을 테스트 안에서 고친다(가짜에 없는
-  응답 모양을 만들 때. 가짜 파일은 고치지 않는다). 더 일반적으로는 `env.wrap`에 전송 계층 감싸개를
-  넣는다(예: 헤더를 뺄 때).
+  응답 모양을 만들 때. 가짜 파일은 고치지 않는다). `env.replace_response(path, status, content)`는
+  그 경로의 응답(오류 포함)을 통째로 바꾼다(예: 이름 없는 404, D-094 B). 더 일반적으로는
+  `env.wrap`에 전송 계층 감싸개를 넣는다(예: 헤더를 뺄 때).
 """
 
 import asyncio
@@ -118,6 +119,48 @@ class ApiEnv:
                 ]
                 content = dumps(data).encode("utf-8")
                 return httpx.Response(response.status_code, headers=headers, content=content)
+
+            return httpx.MockTransport(handler)
+
+        self.wrap = wrap
+
+    def replace_response(
+        self,
+        path: str,
+        status: int,
+        content: bytes = b"",
+        *,
+        content_type: str | None = "application/json; charset=utf-8",
+        times: int | None = None,
+    ) -> None:
+        """그 경로의 응답을 status·content로 바꾼다(가짜가 못 만드는 오류 모양, 예: 이름 없는 404).
+
+        요청은 가짜가 그대로 받아 검사·기록한 뒤 바꾼다. 가짜 응답의 Date·Remaining-Req는 둔다.
+        content_type이 None이면 Content-Type 헤더를 붙이지 않는다. times번만 바꾸고(None이면
+        계속) 앞서 넣은 감싸개(rewrite_response 등)는 그 안쪽에 그대로 둔다.
+        """
+        previous = self.wrap
+        left = [times]
+
+        def wrap(inner: httpx.AsyncBaseTransport) -> httpx.AsyncBaseTransport:
+            if previous is not None:
+                inner = previous(inner)
+
+            async def handler(request: httpx.Request) -> httpx.Response:
+                response = await inner.handle_async_request(request)
+                if request.url.path != path or left[0] == 0:
+                    return response
+                if left[0] is not None:
+                    left[0] -= 1
+                await response.aread()
+                headers = [
+                    (k, v)
+                    for k, v in response.headers.multi_items()
+                    if k.lower() in ("date", "remaining-req")
+                ]
+                if content_type is not None:
+                    headers.append(("Content-Type", content_type))
+                return httpx.Response(status, headers=headers, content=content)
 
             return httpx.MockTransport(handler)
 

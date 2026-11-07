@@ -10,11 +10,19 @@
   되던져(athrow) 오류가 사라지지 않게 한다.
 - 상태: run() 시작에 CONNECTING. 첫 StreamOpened에서 OPEN. 재연결의 StreamOpened에서는
   on_reconnected가 끝난 뒤 OPEN(실패면 OPEN "reconnect_hook_failed")을 알린다(훅이 도는 동안
-  앱이 DEGRADED를 풀지 않게). 끊김마다 RECONNECTING(retry_in)을 알린 뒤 기다린다.
+  앱이 DEGRADED를 풀지 않게). 끊김마다 RECONNECTING(retry_in)을 알린 뒤 기다린다. retry_in은
+  감시가 기다리는 시간이고, 다시 연 뒤 어댑터의 요청 한도 대기가 더해질 수 있다.
   BROKEN·AUTH_CHECK는 마지막 상태이고 run()은 예외 없이 끝난다.
 - 끊김(NetworkError 계열, 오류 없이 끝남): backoff 표대로 기다린다. 연속 실패마다 표를 한 칸씩
   내려가고 끝 값을 계속 쓴다. StreamOpened부터 끊길 때까지 stable_after초 이상 유지됐으면 표와
   D-080 허용 횟수를 처음으로 돌린다. 대기가 0이어도 이벤트 루프를 한 번 놓는다.
+  연결 실패(StreamConnectFailed)에 핸드셰이크 HTTP 상태가 있으면 그 RECONNECTING의 error_name은
+  "HTTP_<상태>"(예: "HTTP_401", 접두어 HANDSHAKE_STATUS_PREFIX, 도우미 handshake_status_name)다
+  (R22-02, D-091 (12)). 앱이 인증·한도 문제와 네트워크 끊김을 구분하게 한다. backoff는 그대로
+  내려가되 429면 대기를 max(backoff 값, RATE_LIMIT_RETRY_SECONDS)로 한다(표에 0이 있어도 1초
+  멈춤). 단 비공개 스트림의 401·403(AUTH_HANDSHAKE_STATUSES)은 backoff가 아니라 아래 D-080의
+  StreamAuthError(INVALID_AUTH)와 같이 다룬다. 공개 스트림의 401·403과 418·3xx·404·5xx 등은
+  backoff대로 계속한다. 공개 401·403·418·429가 이어질 때의 처리(매매 정지 등)는 5단계.
 - 무수신(공개 스트림만, StreamOpened 뒤에만): 감시가 다음 수신을 기다리기 시작한 뒤
   silence_timeout초가 지나면 check_interval마다 하는 점검에서 DEGRADED("silence")를 알리고
   연결을 닫고 다시 연다. 콜백(on_event·on_reconnected)이 도는 시간은 세지 않는다.
@@ -27,6 +35,11 @@
   1번 다시 연다(어댑터가 새 JWT를 만든다). 그 사이 데이터 이벤트(StreamOpened 아님)나
   stable_after 이상 유지된 연결 없이 또 오면 BROKEN·AUTH_CHECK. 그 밖의 StreamError
   (StreamRequestError 등)는 다시 열지 않고 BROKEN.
+- D-091 (12): 비공개 스트림의 핸드셰이크 401·403(StreamConnectFailed.http_status)은
+  StreamAuthError와 같은 허용 횟수 하나를 쓴다. 처음이면 RECONNECTING(reason "auth_failed",
+  error_name "HTTP_401"·"HTTP_403", retry_in 0, backoff 표는 내려가지 않음), 그 사이 정상
+  이벤트 없이 또 인증 실패(둘이 섞여도)면 AUTH_CHECK(error_name은 두 번째 실패의 것)로 끝난다.
+  REST로 키를 확인하는 일은 5단계.
 - 콜백 오류: on_event 오류와 훅의 InvariantViolation은 삼키지 않고 run() 밖으로 올린다(연결은
   닫는다). 훅의 다른 Exception은 OPEN("reconnect_hook_failed")으로 알리고 계속한다.
   NetworkError·StreamError 계열이 아닌 이터레이터 오류도 run() 밖으로 올린다.
@@ -76,6 +89,10 @@ RATE_LIMIT_RETRY_SECONDS: Final = 1.0
 MINUTE_LIMIT_RETRY_SECONDS: Final = 60.0
 AUTH_RETRY_SECONDS: Final = 0.0
 """인증 오류 뒤에는 기다리지 않고 바로 다시 연다(RECONNECTING의 retry_in으로 알린다)."""
+HANDSHAKE_STATUS_PREFIX: Final = "HTTP_"
+"""핸드셰이크 HTTP 상태가 있는 연결 실패의 RECONNECTING error_name 접두어(R22-02)."""
+AUTH_HANDSHAKE_STATUSES: Final = frozenset({401, 403})
+"""비공개 스트림에서 INVALID_AUTH와 같이 다루는 핸드셰이크 HTTP 상태(D-091 (12))."""
 
 # StreamStatus.reason 값. 화면·로그가 이 값으로 문구를 고른다.
 REASON_START: Final = "start"
@@ -469,23 +486,55 @@ class StreamSupervisor:
             session.rate_limit_retried = True
             delay = MINUTE_LIMIT_RETRY_SECONDS if error.minute_limited else RATE_LIMIT_RETRY_SECONDS
             return await self._retry(session, REASON_RATE_LIMITED, delay, error.error_name)
-        if isinstance(error, StreamAuthError):
+        name = self._auth_failure_name(error)
+        if name is not None:
+            # INVALID_AUTH와 비공개 핸드셰이크 401·403은 허용 횟수 하나를 같이 쓴다(D-091 (12)).
             if session.auth_retried:
-                await self._report("AUTH_CHECK", REASON_AUTH_FAILED, error_name=error.error_name)
+                await self._report("AUTH_CHECK", REASON_AUTH_FAILED, error_name=name)
                 return False
             session.auth_retried = True
-            return await self._retry(
-                session, REASON_AUTH_FAILED, AUTH_RETRY_SECONDS, error.error_name
-            )
+            return await self._retry(session, REASON_AUTH_FAILED, AUTH_RETRY_SECONDS, name)
         if isinstance(error, StreamError):
             await self._report("BROKEN", REASON_REQUEST_ERROR, error_name=error.error_name)
             return False
-        return await self._back_off(session, _disconnect_reason(error))
+        # 핸드셰이크 429: backoff 표에 0이 있어도 1초 멈춤(업비트 429 규칙)을 지킨다.
+        at_least = (
+            RATE_LIMIT_RETRY_SECONDS
+            if isinstance(error, StreamConnectFailed) and error.http_status == 429
+            else 0.0
+        )
+        return await self._back_off(
+            session, _disconnect_reason(error), _handshake_status(error), at_least=at_least
+        )
 
-    async def _back_off(self, session: _Session, reason: str) -> bool:
+    def _auth_failure_name(self, error: NetworkError | StreamError | None) -> str | None:
+        """인증 실패면 상태의 error_name, 아니면 None(D-080, D-091 (12)).
+
+        StreamAuthError는 그 error_name, 비공개 스트림의 핸드셰이크 401·403은 "HTTP_<상태>".
+        공개 스트림의 401·403은 인증 실패로 보지 않고 backoff대로 한다.
+        """
+        if isinstance(error, StreamAuthError):
+            return error.error_name
+        if (
+            self._stream == "private"
+            and isinstance(error, StreamConnectFailed)
+            and error.http_status in AUTH_HANDSHAKE_STATUSES
+        ):
+            return handshake_status_name(error.http_status)
+        return None
+
+    async def _back_off(
+        self,
+        session: _Session,
+        reason: str,
+        error_name: str | None = None,
+        *,
+        at_least: float = 0.0,
+    ) -> bool:
         index = min(session.backoff_index, len(self._backoff) - 1)
         session.backoff_index += 1
-        return await self._retry(session, reason, self._backoff[index])
+        delay = max(self._backoff[index], at_least)
+        return await self._retry(session, reason, delay, error_name)
 
     async def _retry(
         self, session: _Session, reason: str, delay: float, error_name: str | None = None
@@ -534,6 +583,23 @@ class StreamSupervisor:
                 retry_in=retry_in,
             )
         )
+
+
+def handshake_status_name(http_status: int | None) -> str | None:
+    """핸드셰이크 HTTP 상태의 RECONNECTING error_name(R22-02).
+
+    "HTTP_<상태>"(예: "HTTP_401", 접두어 HANDSHAKE_STATUS_PREFIX). 상태가 None이면 None.
+    """
+    if http_status is None:
+        return None
+    return f"{HANDSHAKE_STATUS_PREFIX}{http_status}"
+
+
+def _handshake_status(error: NetworkError | StreamError | None) -> str | None:
+    """핸드셰이크 HTTP 상태가 있는 연결 실패면 그 이름, 아니면 None(R22-02)."""
+    if isinstance(error, StreamConnectFailed):
+        return handshake_status_name(error.http_status)
+    return None
 
 
 def _disconnect_reason(error: NetworkError | StreamError | None) -> str:

@@ -523,6 +523,7 @@ def test_direct_clock_uses_allows_wait_and_as_completed_without_timeout(tmp_path
     ids=lambda p: str(p.relative_to(PACKAGE_DIR)),
 )
 def test_core_reads_time_only_through_clock(path):
+    """INV-16: core는 시각을 Clock으로만 본다."""
     uses = direct_clock_uses(path)
 
     assert not uses, f"{path}: 시각은 Clock으로만 본다(INV-16): {uses}"
@@ -577,6 +578,7 @@ def test_float_calls_finds_calls_but_not_annotations(tmp_path):
 
 
 def test_float_call_allowlist_is_empty():
+    """INV-14: float( 호출 허용 목록은 비어 있다."""
     assert FLOAT_CALL_ALLOWLIST == {}
 
 
@@ -584,6 +586,7 @@ def test_float_call_allowlist_is_empty():
     "path", python_files("core"), ids=lambda p: str(p.relative_to(PACKAGE_DIR))
 )
 def test_core_has_no_float_calls(path):
+    """INV-14: core에는 float( 호출이 없다."""
     allowed = FLOAT_CALL_ALLOWLIST.get(str(path.relative_to(PACKAGE_DIR).as_posix()), 0)
 
     assert len(float_calls(path)) == allowed, f"{path}: float( 호출(INV-14): {float_calls(path)}"

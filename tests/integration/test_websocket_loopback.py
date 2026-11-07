@@ -8,7 +8,8 @@ TIME_LIMIT). 스트림 어댑터와 함께 붙을 때는 url만 루프백 주소
 - 요청 헤더: Origin 없음, 이름마다 한 번, User-Agent는 앱 값("upbit-autotrader/<버전>", 바꿀 수
   있음), 비공개용 Authorization은 받은 값 그대로.
 - 연결 객체: 텍스트 프레임은 str, 바이너리 프레임은 bytes로 받는다. send는 텍스트 프레임이다.
-  ping은 PING 프레임을 보낸다. 서버가 1000으로 닫으면 recv가 StreamClosed(close_code=1000)이고
+  ping은 PING 프레임을 보내고 PONG 대기 Future를 돌려준다(PONG에 끝나고, PONG 없이 끊기면
+  StreamClosed, R22-01). 서버가 1000으로 닫으면 recv가 StreamClosed(close_code=1000)이고
   그 뒤 send·ping도 StreamClosed다. close 프레임 없이 끊기면 StreamClosed(1006 또는 None).
   1 MiB를 넘는 메시지는 받지 않고 StreamClosed다(max_size).
 - 연결 실패: 거절된 포트, 핸드셰이크 HTTP 오류(401·429·503, 상태 보존), 핸드셰이크 무응답
@@ -21,6 +22,9 @@ TIME_LIMIT). 스트림 어댑터와 함께 붙을 때는 url만 루프백 주소
   autotrader 로거 재설정 포함) 나가지 않는다.
 - 스트림 어댑터 + 기본 연결기 + SystemClock: 공개 구독·ticker·status UP·PING·서버 종료,
   비공개 JWT(HS512, access_key·nonce)·구독·myOrder·서버 종료, 연결 실패의 비밀 비노출.
+- PONG 상한(R22-01): PING에 PONG으로 답하지 않는 서버(NoPongConnection, 닫기는 그대로 한다)에서는
+  pong_timeout(인자로 짧게) 뒤 StreamClosed(reason "pong_timeout")로 끝난다. 보통 서버
+  (websockets가 스스로 PONG으로 답한다)에서는 상한을 여러 번 넘겨도 계속된다.
 """
 
 import asyncio
@@ -126,6 +130,25 @@ class RecordingConnection(ServerConnection):
         super().process_event(event)
 
 
+class NoPongConnection(RecordingConnection):
+    """PING에 PONG으로 답하지 않는 서버 쪽 연결(반쯤 열린 연결 흉내, R22-01).
+
+    websockets 프로토콜은 PING을 받으면 스스로 PONG 프레임을 보낸다. 그 프레임만 버리고 나머지
+    (데이터, close 핸드셰이크)는 그대로 보낸다.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        send_frame = self.protocol.send_frame
+
+        def without_pong(frame: Any) -> None:
+            if frame.opcode is Opcode.PONG:
+                return
+            send_frame(frame)
+
+        self.protocol.send_frame = without_pong  # type: ignore[method-assign]
+
+
 @dataclass
 class Loopback:
     port: int
@@ -146,10 +169,12 @@ async def loopback(
     *,
     reject: HTTPStatus | None = None,
     respond: Callable[[Loopback], Response] | None = None,
+    connection_class: type[RecordingConnection] = RecordingConnection,
 ) -> AsyncIterator[Loopback]:
     """127.0.0.1 임시 포트 서버. reject를 주면 핸드셰이크를 그 HTTP 상태로 거절한다.
 
     respond를 주면 핸드셰이크마다 그 함수가 만든 HTTP 응답(예: 리다이렉트)을 준다.
+    connection_class로 서버 쪽 연결을 바꾼다(예: NoPongConnection).
     """
     state = Loopback(port=0)
 
@@ -170,7 +195,7 @@ async def loopback(
         handle,
         "127.0.0.1",
         0,
-        create_connection=RecordingConnection,
+        create_connection=connection_class,
         process_request=process_request,
         ping_interval=None,
         logger=SERVER_LOGGER,
@@ -221,6 +246,8 @@ async def wait_for_close(connection: RecordingConnection, state: Loopback) -> No
 
 
 def test_public_handshake_headers():
+    """INV-13: 공개 핸드셰이크에는 Origin이 없고 헤더 이름은 하나씩이다."""
+
     async def scenario() -> list[tuple[str, str]]:
         async with loopback(wait_for_close) as server:
             conn = await make_connector().connect(server.url(), headers=[])
@@ -307,6 +334,8 @@ def test_text_and_binary_frames_then_server_close_1000():
 
 
 def test_ping_sends_a_ping_frame():
+    """TS-106: 실제 연결에서 PING 프레임이 서버에 닿는다."""
+
     async def handler(connection: RecordingConnection, state: Loopback) -> None:
         state.received.append(await connection.recv())  # PING 프레임 뒤에 보낸 메시지
         state.received.append(len(connection.pings))
@@ -322,6 +351,39 @@ def test_ping_sends_a_ping_frame():
             return list(server.received)
 
     assert run(scenario) == ["after-ping", 1]
+
+
+def test_ping_gives_a_pong_wait_that_ends_on_the_pong():
+    """TS-106: 실제 라이브러리의 PONG 대기(서버 websockets가 스스로 PONG으로 답한다, R22-01)."""
+
+    async def scenario() -> int:
+        async with loopback(wait_for_close) as server:
+            conn = await make_connector().connect(server.url(), headers=[])
+            first = await conn.ping()
+            assert isinstance(first, asyncio.Future)  # WsConnection.ping 계약(Future)
+            await asyncio.wait_for(first, 1.0)
+            await asyncio.wait_for(await conn.ping(), 1.0)
+            await conn.close()
+            return len(server.connections[0].pings)
+
+    assert run(scenario) == 2
+
+
+def test_pong_wait_without_a_pong_ends_with_stream_closed_on_close():
+    """TS-106: PONG이 오지 않으면 대기가 끝나지 않고, 연결을 닫으면 StreamClosed다(R22-01)."""
+
+    async def scenario() -> tuple[bool, int]:
+        async with loopback(wait_for_close, connection_class=NoPongConnection) as server:
+            conn = await make_connector().connect(server.url(), headers=[])
+            waiting = asyncio.ensure_future(await conn.ping())
+            await asyncio.sleep(0.2)
+            pending = not waiting.done()
+            await conn.close()
+            with pytest.raises(StreamClosed):
+                await asyncio.wait_for(waiting, 1.0)
+            return pending, len(server.connections[0].pings)
+
+    assert run(scenario) == (True, 1)
 
 
 def test_close_without_a_close_frame_is_stream_closed():
@@ -489,6 +551,7 @@ def test_redirects_are_not_followed(case, status):
 
 
 def test_private_stream_does_not_follow_a_redirect():
+    """INV-07: 비공개 연결은 리다이렉트를 따라가 Authorization을 넘기지 않는다."""
     creds = make_upbit_credentials()
 
     async def scenario() -> dict[str, Any]:
@@ -551,6 +614,7 @@ def restore_autotrader_loggers() -> Any:
 def test_library_debug_log_never_carries_the_handshake_headers(
     reconfigure, caplog, restore_autotrader_loggers
 ):
+    """INV-07: 라이브러리 DEBUG 로그에 핸드셰이크 헤더가 없다."""
     caplog.set_level(logging.DEBUG)
     if reconfigure:
         # 앱이 나중에 autotrader 로거를 DEBUG로 다시 설정하는 경우: 하위 로거 단계가 NOTSET으로
@@ -701,6 +765,82 @@ def test_private_stream_end_to_end():
     assert types == ["announcement", "myAsset", "myOrder"]
 
 
+async def snapshot_then_wait(connection: RecordingConnection, state: Loopback) -> None:
+    state.received.append(await connection.recv())
+    await connection.send(BTC_FRAME.encode("utf-8"))
+    await connection.wait_closed()
+
+
+def test_stream_ends_with_pong_timeout_when_the_server_never_pongs():
+    """TS-106, TS-41: PONG이 오지 않으면 pong_timeout(실제 시간 0.2초) 뒤 StreamClosed다(R22-01)."""
+
+    async def scenario() -> dict[str, Any]:
+        async with loopback(snapshot_then_wait, connection_class=NoPongConnection) as server:
+            stream = make_public_stream(
+                make_connector(),
+                SystemClock(),
+                url=server.url(),
+                ping_interval=0.1,
+                pong_timeout=0.2,
+            )
+            started = time.monotonic()
+            items, error = await collect(stream.ticker(["KRW-BTC"]))
+            elapsed = time.monotonic() - started
+            await asyncio.sleep(0)
+            leftover = [
+                task
+                for task in asyncio.all_tasks()
+                if task is not asyncio.current_task()
+                and not task.done()
+                and (code := getattr(task.get_coro(), "cr_code", None)) is not None
+                and Path(code.co_filename).resolve().is_relative_to(APP_DIR)
+            ]
+            return {
+                "items": items,
+                "error": error,
+                "elapsed": elapsed,
+                "pings": len(server.connections[0].pings),
+                "leftover": leftover,
+            }
+
+    result = run(scenario)
+    assert [type(item) for item in result["items"]] == [StreamOpened, TickerEvent]
+    assert type(result["error"]) is StreamClosed
+    assert result["error"].reason == "pong_timeout"
+    assert 0.25 <= result["elapsed"] < TIME_LIMIT  # 첫 PING(0.1초) + 상한(0.2초)
+    assert result["pings"] >= 1
+    assert result["leftover"] == []
+
+
+def test_stream_with_pongs_outlives_several_pong_timeouts():
+    """TS-106: 서버가 PONG으로 답하면 상한(0.2초)을 여러 번 넘겨도 끊지 않는다(R22-01)."""
+
+    async def handler(connection: RecordingConnection, state: Loopback) -> None:
+        state.received.append(await connection.recv())
+        await connection.send(BTC_FRAME.encode("utf-8"))
+        await asyncio.sleep(0.8)
+        await connection.close(1000)
+
+    async def scenario() -> dict[str, Any]:
+        async with loopback(handler) as server:
+            stream = make_public_stream(
+                make_connector(),
+                SystemClock(),
+                url=server.url(),
+                ping_interval=0.1,
+                pong_timeout=0.2,
+            )
+            items, error = await collect(stream.ticker(["KRW-BTC"]))
+            return {"items": items, "error": error, "pings": len(server.connections[0].pings)}
+
+    result = run(scenario)
+    assert [type(item) for item in result["items"]] == [StreamOpened, TickerEvent]
+    assert type(result["error"]) is StreamClosed
+    assert result["error"].close_code == 1000  # 서버가 닫았다(pong_timeout이 아니다)
+    assert result["error"].reason != "pong_timeout"
+    assert result["pings"] >= 4
+
+
 def _app_frame_locals(error: BaseException) -> str:
     """capture_locals traceback에서 앱 코드(src/autotrader) 프레임의 지역 변수만 모은다."""
     parts: list[str] = []
@@ -726,6 +866,7 @@ async def _silent(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) ->
 
 @pytest.mark.parametrize("failure", ["refused", "http-401", "http-301", "open-timeout"])
 def test_failed_private_connection_keeps_secrets_out_of_errors_and_locals(failure):
+    """INV-07: 실패한 비공개 연결의 오류와 지역 변수에 비밀이 없다."""
     creds = make_upbit_credentials()
 
     async def scenario() -> tuple[BaseException, str]:

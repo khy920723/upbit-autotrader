@@ -15,13 +15,20 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
 정한 인터페이스(어댑터를 만드는 코드는 이 파일의 "어댑터 만들기" 절 한 곳에만 있다):
 
 - `WsConnection`·`WsConnector`는 Protocol이다. 연결: `async send(text)`, `async recv() -> str |
-  bytes`, `async ping()`(PING 프레임, PONG을 기다리지 않음), `async close(code=1000)`,
-  `close_code`(열려 있으면 None). 연결기: `async connect(url, *, headers)`(헤더는 (이름, 값) 쌍).
-- `UpbitPublicStream(connector, clock, *, url=공개 주소, ping_interval=30.0, open_timeout=10.0,
-  ticket=uuid4 문자열을 주는 함수)`. `ticker(markets)`는 부르면 바로 이터레이터를 준다(코루틴 아님).
+  bytes`, `async ping() -> asyncio.Future[None]`, `async close(code=1000)`, `close_code`(열려
+  있으면 None). 연결기: `async connect(url, *, headers)`(헤더는 (이름, 값) 쌍).
+- `ping()`(3단계 정리 R22-01, websockets 17.4의 `ping()`과 같은 모양): PING 프레임을 보내고
+  "PONG 대기" Future를 돌려준다. 그 PING의 PONG을 받으면 끝나고(결과 값은 쓰지 않는다), 받기
+  전에 연결이 끊기면 StreamClosed로 끝난다(라이브러리의 ConnectionClosed, 대기 취소, 그 밖의
+  예외도 recv·send와 같은 규칙으로 StreamClosed). 버려도(기다리지 않아도) 루프 경고(never
+  retrieved)가 없다. 이미 끊긴 연결이면 ping() 자체가 StreamClosed다.
+- `UpbitPublicStream(connector, clock, *, url=공개 주소, ping_interval=30.0, pong_timeout=30.0,
+  open_timeout=10.0, ticket=uuid4 문자열을 주는 함수)`. `ticker(markets)`는 부르면 바로
+  이터레이터를 준다(코루틴 아님).
 - `UpbitPrivateStream(connector, clock, credentials, *, url=비공개 주소, ping_interval=30.0,
-  open_timeout=10.0, ticket=...)`. credentials는 키 제공 함수(`() -> UpbitCredentials | None`)이고
-  연결마다 부른다.
+  pong_timeout=30.0, open_timeout=10.0, ticket=...)`. credentials는 키 제공 함수(`() ->
+  UpbitCredentials | None`)이고 연결마다 부른다. pong_timeout은 0보다 큰 유한한 초다(아니면
+  ValueError, 문구에 "pong_timeout").
 - `WebsocketsConnector(*, user_agent="upbit-autotrader/<버전>", tls_context=None,
   open_timeout=10.0)`. tls_context가 None이면 `autotrader.adapters.tls.create_tls_context()`.
 
@@ -62,10 +69,30 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
    연결 실패: StreamConnectFailed(http_status 보존). 어댑터는 다시 연결하지 않는다(감시 몫).
 9. PING 프레임: 연결이 열려 있는 동안 별도 태스크가 ping_interval(30초)마다 보낸다(소비자가 다음
    항목을 늦게 요청해도 나간다). 그래서 가짜의 120초 무송수신 끊김이 일어나지 않는다.
+   PONG 상한(R22-01, 반쯤 열린 연결): PING을 보낸 시각부터 pong_timeout(Clock, 기본 30초) 안에
+   그 PING의 PONG을 받지 못하면 이터레이터를 `StreamClosed(reason="pong_timeout")`로 끝낸다
+   (연결을 닫고 PING 태스크를 끝낸다. 남는 태스크·회수되지 않은 예외가 없다). close_code는 정하지
+   않는다. 끊을 때 앱 로거에 WARNING 1줄(스트림 종류, ping_interval·pong_timeout 값, 비밀 없음).
+   상한 안에 PONG이 오면 계속된다. 나중 PING의 PONG이 오면 앞선 PING들도 확인된 것으로 본다
+   (서버가 최신 PING에만 답해도 끊지 않는다). ping() 호출 자체가 끝나지 않으면 그 PING의 상한
+   (PING 시각 + pong_timeout)에 끊는다. 호출이 오래 걸리는 동안 앞 PING의 상한이 지나도 그
+   상한으로 호출을 끊지 않고, 호출이 끝난 뒤 다음 확인에서 본다. 바깥 취소와 호출 상한이 같은
+   순간이면 CancelledError가 남는다. PONG을 기다리는 동안에도 메시지는 그대로 받는다.
+   PING 간격은 PONG을 기다리느라 밀리지 않는다(PONG이 늦게 와도 다음 PING은 정해진 시각에).
+   ping() 호출이 간격보다 오래 걸려 다음 시각이 지났으면 호출이 끝난 때부터 다시 센다.
+   감시(StreamSupervisor)는 이것을 다른 끊김처럼 다시 연결한다.
 10. 한도(절반, INV-13): 연결은 스트림 객체마다 초당 2회. 구독 메시지는 스트림 객체 하나의 모든
    연결을 합쳐 초당 2회·분당 50회로 센다(업비트는 연결마다 세지만, 연결마다 메시지가 1개라
    연결마다 세면 분당 한도에 닿을 수 없다. 합쳐 세는 쪽이 더 보수적이다 — 설계 메모와 다른 점).
-   넘으면 보내기 전에 Clock.sleep으로 기다린다(슬라이딩 창). TOO_MANY_REQUEST를 받을 때 지난
+   넘으면 보내기 전에 Clock.sleep으로 기다린다(슬라이딩 창). 구독 메시지 1개는 연결(핸드셰이크)
+   전에 예약한다(R22-05): 같은 스트림 객체로 연결을 동시에 여러 개 열어 핸드셰이크가 오래
+   걸려도(다른 태스크가 그동안 예산을 봐도) 송신 허가(예약) 시각 기준으로 초당 2개·분당 50개를
+   넘지 않는다. 예약은 연결 1회 기록과 같은 시각(연결을 시작하는 시각 = INV-13의 송신 허가
+   시각)으로 세고, 보낸 뒤 시각으로 옮기지 않는다. 핸드셰이크 시간이 연결마다 1초 넘게 다르면
+   서버 도착은 몰릴 수 있다(R17-08과 같은 한계. 시험은 핸드셰이크 시간이 같을 때만 도착 시각을
+   보고, 다를 때는 연결 시작 시각만 본다). 예약했는데 연결에 실패한 몫을 되돌릴지는 정하지 않는다
+   (되돌리지 않는 쪽이 보수적이다). 필요한 만큼만 기다린다(도착 순서대로 가장 이른 시각, 시험의
+   earliest_slots). TOO_MANY_REQUEST를 받을 때 지난
    60초에 보낸 구독 메시지(오류를 받은 것 포함)가 50개 이상이면 minute_limited=True.
    TOO_MANY_REQUEST·429 뒤 1초 멈춤(가짜 rate_limit_pause)은 감시의 대기·backoff가 지킨다.
    그래서 이 파일은 그 뒤 1초 안에 같은 종류로 다시 연결하지 않는다. 형식 오류 뒤 같은 구독을
@@ -110,9 +137,11 @@ docs_examples/websocket-*.json, TS-26·41·65·104·106, INV-07·13·14·16.
 
 import asyncio
 import contextlib
+import gc
 import inspect
 import json
 import logging
+import math
 import re
 import ssl
 import traceback
@@ -120,7 +149,7 @@ import typing
 import uuid
 import warnings
 from collections import deque
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -134,6 +163,8 @@ from fakes.canary import find_canaries, make_upbit_credentials
 from fakes.clock import FakeClock
 from fakes.upbit_json import RawNumber, dumps, loads_raw
 from fakes.upbit_ws import FakeUpbitWs
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 import autotrader
 from autotrader.core.errors import (
@@ -153,6 +184,11 @@ from autotrader.core.models import (
     StreamOpened,
     TickerEvent,
     UpbitCredentials,
+)
+from autotrader.core.streams import (
+    HANDSHAKE_STATUS_PREFIX,
+    StreamSupervisor,
+    handshake_status_name,
 )
 
 # isort: split
@@ -498,7 +534,13 @@ class ScriptedConnection:
     가짜·websockets처럼 close하면 기다리던 recv가 StreamClosed로 깬다.
 
     options: ping_error(PING에서 낼 예외), close_error(close에서 낼 예외), close_hangs(close가
-    끝나지 않음), send_hangs(send가 끝나지 않음).
+    끝나지 않음), send_hangs(send가 끝나지 않음), pong("auto": PING마다 바로 PONG(기본),
+    "manual": answer_pongs()·answer_latest_pong()을 부를 때까지 PONG 없음), ping_hangs(몇 번째
+    ping() 호출(1부터) → 그 호출이 걸리는 초(clock으로 잰다), None이면 끝나지 않음), clock(주면
+    ping() 호출을 시작한 시각을 ping_times에 남긴다. ping_hangs에 초가 있으면 필요하다).
+
+    ping()은 websockets처럼 PONG 대기 Future를 돌려준다. 끊기면 기다리던 대기는 StreamClosed로
+    끝난다(websockets처럼 예외를 넣은 뒤 cancel()해 회수되지 않았다는 경고를 막는다).
     """
 
     def __init__(
@@ -510,15 +552,25 @@ class ScriptedConnection:
         close_error: BaseException | None = None,
         close_hangs: bool = False,
         send_hangs: bool = False,
+        pong: str = "auto",
+        ping_hangs: Mapping[int, float | None] | None = None,
+        clock: FakeClock | None = None,
     ) -> None:
+        assert pong in {"auto", "manual"}
+        self._ping_hangs = dict(ping_hangs or {})
+        assert clock is not None or all(v is None for v in self._ping_hangs.values())
+        self._clock = clock
+        self.ping_times: list[float] = []
         self._frames = deque(frames)
         self._end_code = end_code
         self._ping_error = ping_error
         self._close_error = close_error
         self._close_hangs = close_hangs
         self._send_hangs = send_hangs
+        self._pong = pong
         self.sent: list[str | bytes] = []
         self.pings = 0
+        self.pong_waits: list[asyncio.Future[None]] = []
         self.close_code: int | None = None
         self.close_calls = 0
         self.closed_by_client: int | None = None
@@ -537,20 +589,58 @@ class ScriptedConnection:
             return self._frames.popleft()
         if self._end_code is not None and self.close_code is None:
             self.close_code = self._end_code
+            self._lose_pongs()
         if self.close_code is None:
             await self._closed.wait()
         raise StreamClosed(close_code=self.close_code, reason="대본 끝")
 
-    async def ping(self) -> None:
+    async def ping(self) -> asyncio.Future[None]:
         self.pings += 1
+        if self._clock is not None:
+            self.ping_times.append(self._clock.monotonic())
         if self._ping_error is not None:
             raise self._ping_error
+        if self.pings in self._ping_hangs:
+            seconds = self._ping_hangs[self.pings]
+            if seconds is None:
+                await forever()
+            assert self._clock is not None
+            await self._clock.sleep(seconds)
+        waiting: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        if self._pong == "auto":
+            waiting.set_result(None)
+        else:
+            self.pong_waits.append(waiting)
+        return waiting
+
+    def answer_pongs(self) -> None:
+        """기다리는 PING에 모두 PONG으로 답한다(pong="manual")."""
+        for waiting in self.pong_waits:
+            if not waiting.done():
+                waiting.set_result(None)
+        self.pong_waits.clear()
+
+    def answer_latest_pong(self) -> None:
+        """가장 나중 PING에만 PONG으로 답한다(앞 PING의 대기는 답하지 않은 채 둔다)."""
+        waiting = self.pong_waits.pop()
+        assert not waiting.done()
+        waiting.set_result(None)
+
+    def _lose_pongs(self) -> None:
+        for waiting in self.pong_waits:
+            if not waiting.done():
+                waiting.set_exception(
+                    StreamClosed(close_code=self.close_code, reason="닫힌 연결(대본)")
+                )
+            waiting.cancel()  # 이미 끝난 Future라 결과는 그대로, 회수 경고만 막는다
+        self.pong_waits.clear()
 
     async def close(self, code: int = 1000) -> None:
         self.close_calls += 1
         if self.close_code is None:
             self.close_code = code
             self.closed_by_client = code
+        self._lose_pongs()
         self._closed.set()
         if self._close_hangs:
             await forever()
@@ -674,6 +764,20 @@ def test_connection_and_connector_are_protocols():
     assert params["headers"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
+def test_connection_ping_gives_back_a_pong_wait():
+    """TS-106: WsConnection.ping은 PONG 대기 Future를 돌려준다(websockets 17.4 모양, R22-01)."""
+    assert inspect.iscoroutinefunction(WsConnection.ping)
+    returned = typing.get_type_hints(WsConnection.ping)["return"]
+    assert typing.get_origin(returned) is asyncio.Future
+
+
+@pytest.mark.parametrize("cls", [UpbitPublicStream, UpbitPrivateStream])
+def test_streams_take_a_keyword_pong_timeout_of_thirty_seconds(cls):
+    param = inspect.signature(cls).parameters["pong_timeout"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default == 30.0
+
+
 def _stream_maker(kind: str) -> Callable[..., Any]:
     """연결기·시계가 필요 없는 생성자 검사용(연결하지 않는다)."""
     if kind == "public":
@@ -756,6 +860,7 @@ def test_public_subscribes_to_ticker_then_yields_opened_first(env):
 
 
 def test_public_sends_neither_authorization_nor_origin(env):
+    """INV-13: 공개 연결에는 Authorization도 Origin도 없고 헤더 이름은 하나씩이다."""
     stream = env.public()
 
     async def scenario(e: Env) -> None:
@@ -862,6 +967,7 @@ def test_recorded_snapshots_become_ticker_events(env):
 
 
 def test_ticker_numbers_become_exact_decimals_without_float(env):
+    """INV-14·TS-73: ticker 숫자는 float 없이 정확한 Decimal이 된다."""
     stream = env.public()
     long_price = Decimal("44216351009.95755000000000001")  # float로 읽으면 끝자리가 바뀐다
 
@@ -927,6 +1033,7 @@ def test_deprecated_ticker_fields_are_not_read(env):
 
 @pytest.mark.parametrize("binary", [True, False], ids=["binary", "text"])
 def test_binary_and_text_frames_give_the_same_events(env, binary):
+    """TS-106: 바이너리 프레임과 텍스트 프레임은 같은 이벤트를 준다."""
     env.fake.ws_binary(binary)
     stream = env.public()
 
@@ -938,6 +1045,7 @@ def test_binary_and_text_frames_give_the_same_events(env, binary):
 
 
 def test_status_up_messages_are_skipped():
+    """TS-106: {"status":"UP"} 메시지는 건너뛴다."""
     env = scripted_env(([STATUS_UP.encode(), BTC_FRAME.encode(), STATUS_UP, BTC_FRAME], 1000))
     stream = env.public()
 
@@ -970,6 +1078,7 @@ def test_missing_market_state_and_delisting_date_are_none(missing):
 
 @pytest.mark.parametrize("kind", ["public", "private"])
 def test_ping_frames_every_thirty_seconds_keep_the_connection_open(env, kind):
+    """TS-106: 30초마다 PING을 보내 유휴 연결을 유지한다."""
     stream = env.public() if kind == "public" else env.private()
 
     async def scenario(e: Env) -> None:
@@ -1015,6 +1124,7 @@ def test_ping_interval_option(env):
 
 
 def test_pings_continue_while_the_consumer_is_busy(env):
+    """TS-106: 소비자가 바빠도 PING은 계속 나간다."""
     stream = env.public()
 
     async def scenario(e: Env) -> None:
@@ -1026,6 +1136,336 @@ def test_pings_continue_while_the_consumer_is_busy(env):
 
     env.run(scenario)
     assert len(env.fake.connections[0].pings) == 10
+
+
+# ── PONG 상한(반쯤 열린 연결, R22-01) ──────────────────────
+
+
+@pytest.mark.parametrize("value", [0, -1.0, math.nan, math.inf])
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_pong_timeout_must_be_positive_and_finite(kind, value):
+    make = _stream_maker(kind)
+    with pytest.raises(ValueError, match="pong_timeout"):
+        make(pong_timeout=value)
+
+
+async def open_stream_of(e: Env, stream: Any, kind: str) -> Consumer:
+    """연결을 열고 StreamOpened(공개는 스냅숏까지)를 받은 소비자."""
+    if kind == "public":
+        consumer, _ = await e.open_ticker(stream)
+        await e.next(consumer)  # 스냅숏
+    else:
+        consumer, _ = await e.open_events(stream)
+    return consumer
+
+
+@pytest.mark.parametrize(
+    ("options", "first_ping", "ends_at"),
+    [
+        ({}, 30.0, 60.0),
+        ({"pong_timeout": 5.0}, 30.0, 35.0),
+        ({"ping_interval": 10.0, "pong_timeout": 25.0}, 10.0, 35.0),
+    ],
+    ids=["defaults", "short-timeout", "timeout-longer-than-interval"],
+)
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_missing_pong_ends_the_iterator_with_pong_timeout(env, kind, options, first_ping, ends_at):
+    """TS-106, TS-41: PING의 PONG이 pong_timeout(Clock) 안에 오지 않으면 StreamClosed로 끝난다."""
+    stream = env.public(**options) if kind == "public" else env.private(**options)
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_no_pong(stream=kind)  # 다음 연결이 반쯤 열린 연결이 된다
+        consumer = await open_stream_of(e, stream, kind)
+        consumer.want()
+        await e.clock.run_for(ends_at - 0.5)
+        assert not consumer.has_result()
+        with pytest.raises(StreamClosed) as info:
+            await consumer.take(within=1.0)
+        assert info.value.reason == "pong_timeout"
+        assert START + ends_at - EPS <= e.now <= START + ends_at + STEP
+        record = e.fake.connections[0]
+        assert record.closed_at == pytest.approx(START + ends_at)  # 어댑터가 연결을 닫았다
+        assert record.pings[0] == pytest.approx(START + first_ping)
+        assert record.pongs == []
+        await settle()
+        assert adapter_tasks() == []  # PING 태스크·PONG 대기가 남지 않는다
+        gc.collect()  # 버린 PONG 대기의 회수되지 않은 예외가 있으면 루프 경고로 잡힌다
+        await settle()
+
+    env.run(scenario)
+    assert len(env.fake.connections) == 1  # 어댑터는 다시 연결하지 않는다
+
+
+def test_messages_still_arrive_while_waiting_for_a_pong(env):
+    """TS-106: PONG을 기다리는 동안에도 받기는 그대로다(PING 태스크가 받기를 막지 않는다)."""
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_no_pong()
+        consumer = await open_stream_of(e, stream, "public")
+        await e.clock.run_for(40)  # PING(1030) 뒤 PONG을 기다리는 중
+        e.fake.push_ticker("KRW-BTC", trade_price=Decimal("7"))
+        assert (await e.next(consumer)).trade_price == Decimal("7")
+        with pytest.raises(StreamClosed) as info:
+            await consumer.next(within=21)
+        assert info.value.reason == "pong_timeout"
+        assert START + 60 - EPS <= e.now <= START + 60 + STEP
+
+    env.run(scenario)
+
+
+def test_answered_pings_keep_the_connection_with_a_short_pong_timeout(env):
+    """TS-106: PONG이 바로 오면 상한이 짧아도 연결이 유지된다."""
+    stream = env.private(pong_timeout=1.0)
+
+    async def scenario(e: Env) -> None:
+        consumer, _ = await e.open_events(stream)
+        consumer.want()
+        await e.clock.run_for(300)
+        assert not consumer.has_result()
+        assert e.fake.connections[0].close_code is None
+        await consumer.cancel()
+
+    env.run(scenario)
+    record = env.fake.connections[0]
+    assert record.pings == pytest.approx([START + 30 * i for i in range(1, 11)])
+    assert record.pongs == record.pings  # 가짜가 PING마다 바로 답했다
+
+
+def test_a_late_pong_within_the_limit_keeps_the_connection_and_the_ping_schedule():
+    """TS-106: PONG이 상한 직전에 오면 계속되고, 다음 PING은 밀리지 않으며 그 PING도 상한을 잰다."""
+    env = scripted_env(([], None, {"pong": "manual"}))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        consumer, _ = await e.open_ticker(stream)
+        consumer.want()
+        conn = e.connector.connections[0]
+        await e.clock.run_for(59)  # PING 1030, 아직 PONG 없음
+        assert conn.pings == 1
+        conn.answer_pongs()  # 1059: PING 29초 뒤 PONG
+        await e.clock.run_for(30.5)  # 1089.5: 두 번째 PING(1060)의 PONG을 기다리는 중
+        assert not consumer.has_result()
+        assert conn.pings == 2
+        with pytest.raises(StreamClosed) as info:
+            await consumer.take(within=1.0)
+        assert info.value.reason == "pong_timeout"
+        assert START + 90 - EPS <= e.now <= START + 90 + STEP
+        assert conn.close_calls >= 1
+        await settle()
+        assert adapter_tasks() == []
+
+    env.run(scenario)
+
+
+def ping_env(**options: Any) -> Env:
+    """대본 연결 하나(시계를 함께 넘겨 ping_times를 남긴다)."""
+    clock = FakeClock()
+    return Env(clock, ScriptedConnector(([], None, {"clock": clock, **options})))
+
+
+def keepalive_task() -> asyncio.Task[Any]:
+    """지금 도는 PING 태스크(어댑터가 연결마다 하나 만든다)."""
+    (task,) = [t for t in adapter_tasks() if getattr(t.get_coro(), "__name__", "") == "_keepalive"]
+    return task
+
+
+@pytest.mark.parametrize("kind", ["public", "private"])
+@pytest.mark.parametrize(
+    ("options", "ends_at"),
+    [({}, 60.0), ({"pong_timeout": 5.0}, 35.0), ({"pong_timeout": 45.0}, 75.0)],
+)
+def test_a_ping_call_that_never_ends_closes_at_its_pong_limit(kind, options, ends_at):
+    """TS-106: ping() 호출 자체가 끝나지 않으면 PING 시각 + pong_timeout에 끝난다(pong_timeout)."""
+    env = ping_env(ping_hangs={1: None})
+
+    async def scenario(e: Env) -> None:
+        consumer = e.consume(_hanging_stream(e, kind, **options))
+        assert isinstance(await consumer.next(), StreamOpened)
+        consumer.want()
+        conn = e.connector.connections[0]
+        await e.clock.run_for(ends_at - 0.5)
+        assert conn.ping_times == pytest.approx([START + 30])  # 호출을 시작하고 멈췄다
+        assert not consumer.has_result()
+        assert conn.close_calls == 0
+        with pytest.raises(StreamClosed) as info:
+            await consumer.take(within=1.0)
+        assert info.value.reason == "pong_timeout"
+        assert START + ends_at - EPS <= e.now <= START + ends_at + STEP
+        assert conn.close_calls >= 1
+        assert conn.pings == 1  # 끝나지 않은 호출 뒤 PING을 더 보내지 않았다
+        await settle()
+        assert adapter_tasks() == []
+
+    env.run(scenario)
+
+
+def test_an_outer_cancel_at_the_ping_call_limit_stays_a_cancel():
+    """ping() 호출 상한과 바깥 취소(소비 태스크 취소)가 같은 순간이면 CancelledError가 남는다."""
+    env = ping_env(ping_hangs={1: None})
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        consumer, _ = await e.open_ticker(stream)
+        consumer.want()
+        await e.clock.run_for(59)  # 1030에 시작한 ping() 호출이 멈춰 있다(상한 1060)
+        pinger = keepalive_task()
+        e.clock.advance(1)  # 상한 타이머가 깨어나 PING 태스크를 취소할 차례다
+        consumer.task.cancel()  # 같은 순간 바깥(소비 태스크)도 취소한다
+        await settle()
+        assert consumer.task.cancelled()
+        assert pinger.cancelled()  # 상한의 StreamClosed로 바꾸지 않았다
+        assert e.connector.connections[0].close_calls >= 1
+        await settle()
+        assert adapter_tasks() == []
+
+    env.run(scenario)
+
+
+@pytest.mark.parametrize(
+    ("answer_first", "ends_at"),
+    [(True, None), (False, 100.0)],
+    ids=["first-answered-during-the-call", "first-never-answered"],
+)
+def test_a_slow_ping_call_is_limited_by_its_own_pong_limit(answer_first, ends_at):
+    """TS-106: 호출 상한은 그 PING 자신의 상한(PING 시각 + pong_timeout)이다. 앞 PING은 호출이
+    끝난 뒤 다음 확인에서 본다(앞 PING의 상한으로 느린 호출을 끊지 않는다)."""
+    env = ping_env(pong="manual", ping_hangs={2: 40.0})
+    stream = env.public(pong_timeout=60.0)
+
+    async def scenario(e: Env) -> None:
+        consumer, _ = await e.open_ticker(stream)
+        consumer.want()
+        conn = e.connector.connections[0]
+        await e.clock.run_for(70)  # PING1 1030(상한 1090), PING2 호출 1060~1100(상한 1120)
+        assert conn.ping_times == pytest.approx([START + 30, START + 60])
+        if answer_first:
+            conn.answer_pongs()  # 1070: PING1의 PONG(PING2 호출은 아직 멈춰 있다)
+        await e.clock.run_for(25)  # 1095: PING1의 상한(1090)이 지났다
+        assert not consumer.has_result()
+        if ends_at is None:
+            await e.clock.run_for(10)  # 1105: PING2 호출이 1100에 끝났다
+            assert not consumer.has_result()
+            conn.answer_pongs()  # PING2의 PONG(상한 1120 안)
+            await e.clock.run_for(20)  # 1125
+            assert not consumer.has_result()
+            assert conn.close_calls == 0
+            await consumer.cancel()
+            return
+        with pytest.raises(StreamClosed) as info:
+            await consumer.take(within=10)
+        assert info.value.reason == "pong_timeout"
+        assert START + ends_at - EPS <= e.now <= START + ends_at + STEP
+
+    env.run(scenario)
+
+
+def test_a_pong_for_a_later_ping_confirms_the_earlier_ones():
+    """TS-106: 나중 PING의 PONG이 오면 앞선 PING들도 확인된 것으로 본다(서버가 최신 PING에만
+    답해도 끊지 않는다. websockets도 PONG 하나로 그 앞 PING 대기를 모두 끝낸다)."""
+    env = ping_env(pong="manual")
+    stream = env.public(pong_timeout=60.0)
+
+    async def scenario(e: Env) -> None:
+        consumer, _ = await e.open_ticker(stream)
+        consumer.want()
+        conn = e.connector.connections[0]
+        await e.clock.run_for(61)  # PING 1030(상한 1090)·1060(상한 1120), 아직 PONG 없음
+        assert conn.pings == 2
+        conn.answer_latest_pong()  # 1061: 1060 PING에만 답한다
+        await e.clock.run_for(50)  # 1111: 1030 PING의 상한(1090)이 지났다
+        assert not consumer.has_result()
+        assert conn.close_calls == 0
+        assert conn.pings == 3  # PING 1090
+        conn.answer_latest_pong()  # 1111: 1090 PING에만 답한다
+        await e.clock.run_for(60)  # 1171: PING 1120·1150은 답이 없다(1120의 상한 1180)
+        assert not consumer.has_result()
+        with pytest.raises(StreamClosed) as info:
+            await consumer.take(within=10)
+        assert info.value.reason == "pong_timeout"
+        assert START + 180 - EPS <= e.now <= START + 180 + STEP
+
+    env.run(scenario)
+
+
+@pytest.mark.parametrize("ending", ["lost", "cancelled"])
+def test_a_pong_wait_that_fails_ends_the_iterator_at_the_next_check(ending):
+    """PONG 대기가 PONG 없이 끝나면(끊김 StreamClosed·취소) PING 태스크가 다음 확인(다음 PING
+    시각)에 StreamClosed로 끝낸다(pong_timeout이 아니다)."""
+    env = ping_env(pong="manual")
+    stream = env.public(pong_timeout=60.0)
+
+    async def scenario(e: Env) -> None:
+        consumer, _ = await e.open_ticker(stream)
+        consumer.want()
+        await e.clock.run_for(40)  # PING 1030(상한 1090)
+        conn = e.connector.connections[0]
+        (waiting,) = conn.pong_waits
+        if ending == "lost":
+            waiting.set_exception(StreamClosed(close_code=4001, reason="PONG 대기 끊김(대본)"))
+        else:
+            waiting.cancel()
+        with pytest.raises(StreamClosed) as info:
+            await consumer.take(within=25)
+        assert START + 60 - EPS <= e.now <= START + 60 + STEP  # 다음 PING 시각(1060)의 확인
+        if ending == "lost":
+            assert (info.value.close_code, info.value.reason) == (4001, "PONG 대기 끊김(대본)")
+        else:
+            assert info.value.reason == "PONG 대기가 취소됐다"
+        assert conn.pings == 1
+        assert conn.close_calls >= 1
+
+    env.run(scenario)
+
+
+def test_a_ping_call_slower_than_the_interval_restarts_the_schedule():
+    """PING 호출이 간격보다 오래 걸려 다음 PING 시각이 지났으면 호출이 끝난 때부터 다시 센다."""
+    env = ping_env(ping_hangs={2: 15.0})
+    stream = env.public(ping_interval=10.0)
+
+    async def scenario(e: Env) -> None:
+        consumer, _ = await e.open_ticker(stream)
+        consumer.want()
+        await e.clock.run_for(60)
+        assert not consumer.has_result()
+        conn = e.connector.connections[0]
+        # 1010, 1020(호출이 1035까지 걸린다) → 1030은 지나쳤고 1045부터 10초마다
+        assert conn.ping_times == pytest.approx([START + t for t in (10, 20, 45, 55)])
+        await consumer.cancel()
+
+    env.run(scenario)
+
+
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_pong_timeout_logs_one_warning_with_the_settings(make_fake_upbit_ws, kind, caplog):
+    """관측성: PONG 상한으로 끊을 때 어댑터가 WARNING 1줄(스트림 종류, ping_interval·
+    pong_timeout 값)을 남긴다. 비밀은 없다."""
+    caplog.set_level(logging.DEBUG)
+    clock = FakeClock()
+    env = Env(clock, make_fake_upbit_ws(clock=clock))
+    options = {"ping_interval": 20.0, "pong_timeout": 7.5}
+    stream = env.public(**options) if kind == "public" else env.private(**options)
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_no_pong(stream=kind)
+        consumer = await open_stream_of(e, stream, kind)
+        with pytest.raises(StreamClosed) as info:
+            await consumer.next(within=30)
+        assert info.value.reason == "pong_timeout"
+
+    env.run(scenario)
+    (record,) = app_warnings(caplog)
+    message = record.getMessage()
+    assert "\n" not in message
+    assert kind in message
+    assert "20.0" in message
+    assert "7.5" in message
+    assert "pong_timeout" in message
+    if kind == "private":
+        creds = env.fake.credentials
+        token = bearer_token(env.fake.connections[0].headers)
+        assert find_canaries(caplog.text, [creds.access_key, creds.secret_key]) == []
+        assert token not in caplog.text
 
 
 # ── 서버 오류 메시지(D-080 입력 쪽) ───────────────────────
@@ -1205,6 +1645,7 @@ def test_unreadable_announcement_is_skipped_without_its_content(caplog):
     ids=["bad-date-text", "date-not-text", "bad-date-while-active", "state-not-text"],
 )
 def test_unreadable_market_state_or_delisting_date_blocks_new_buys(changes, caplog):
+    """TS-26·TS-104: 읽을 수 없는 market_state·delisting_date는 신규 매수를 막는 쪽으로 넣는다."""
     # 버리면 마지막 상태(ACTIVE 등)가 남아 상장 폐지 예고를 놓친다. 둘 다 None으로 넣는다.
     from autotrader.core.notices import ticker_blocks_buy
 
@@ -1538,6 +1979,7 @@ def max_in_window(times: Sequence[float], window: float) -> int:
 
 @pytest.mark.parametrize("kind", ["public", "private"])
 def test_connections_wait_to_stay_within_two_per_second(env, kind):
+    """INV-13: 연결은 초당 2회 한도(절반 이하)를 지키려고 기다린다."""
     stream = env.public() if kind == "public" else env.private()
 
     async def scenario(e: Env) -> None:
@@ -1557,6 +1999,7 @@ def test_connections_wait_to_stay_within_two_per_second(env, kind):
 
 
 def test_subscriptions_wait_to_stay_within_fifty_per_minute(env):
+    """INV-13·TS-106: 구독 메시지는 분당 50개·초당 2개(한도의 절반) 안에서 기다려 보낸다."""
     # 구독 메시지는 스트림 객체 하나의 모든 연결을 합쳐 센다(정한 동작 10).
     stream = env.public()
 
@@ -1575,6 +2018,7 @@ def test_subscriptions_wait_to_stay_within_fifty_per_minute(env):
 
 @pytest.mark.parametrize(("nth", "minute_limited"), [(1, False), (49, False), (50, True)])
 def test_too_many_request_says_whether_the_minute_budget_was_reached(env, nth, minute_limited):
+    """TS-106: TOO_MANY_REQUEST 오류가 분당 예산 도달 여부를 알린다."""
     stream = env.public()
 
     async def scenario(e: Env) -> None:
@@ -1590,7 +2034,222 @@ def test_too_many_request_says_whether_the_minute_budget_was_reached(env, nth, m
     assert len(env.fake.connections) == nth
 
 
-# ── 비공개: 인증과 구독 ───────────────────────────────────
+# ── 한도: 같은 스트림 객체의 동시 연결(R22-05) ─────────────
+
+
+class DelayedConnector:
+    """핸드셰이크가 Clock으로 delay초 걸린 뒤 안쪽 연결기(FakeUpbitWs)에 붙는 연결기(R22-05).
+
+    핸드셰이크 동안 같은 스트림 객체의 다른 연결이 예산을 보는 경합을 만든다. connect를 부른
+    시각을 calls에 남긴다. 가짜는 종류마다 열린 연결 하나만 받으므로(concurrent_connections)
+    시험은 StreamOpened를 받자마자 같은 태스크에서 닫는다(open_then_close): 겹치는 것은
+    핸드셰이크이고 열린 연결은 겹치지 않는다.
+    """
+
+    def __init__(self, inner: Any, clock: FakeClock, delay: float) -> None:
+        self.inner = inner
+        self.clock = clock
+        self.delay = delay
+        self.calls: list[float] = []
+
+    async def connect(self, url: str, *, headers: Sequence[tuple[str, str]]) -> Any:
+        self.calls.append(self.clock.monotonic())
+        await self.clock.sleep(self.delay)
+        return await self.inner.connect(url, headers=headers)
+
+
+async def open_then_close(iterator: Any) -> Any:
+    """한 태스크에서 첫 항목(StreamOpened)을 받고 곧바로 닫는다(그 사이 루프를 놓지 않는다)."""
+    try:
+        return await anext(iterator)
+    finally:
+        await iterator.aclose()
+
+
+def subscription_times(fake: FakeUpbitWs) -> list[float]:
+    """가짜가 받은 구독 메시지의 시각(모든 연결)."""
+    return sorted(t for record in fake.connections for t, _ in record.received)
+
+
+def earliest_slots(arrivals: Sequence[float]) -> list[float]:
+    """연결 초당 2회·구독 메시지 초당 2개·분당 50개(슬라이딩 창)를 지키며 가장 이르게 연결을 시작할
+    수 있는 시각들. 연결과 구독 메시지 예약은 같은 시각이라 두 예산이 한 줄이 된다. 도착 순서대로
+    탐욕적으로 고른다(같은 일을 하는 연결이라 누가 먼저 가든 시각의 모임은 같다)."""
+    slots: list[float] = []
+    for arrival in sorted(arrivals):
+        t = max([arrival, *slots[-1:]])
+        while True:
+            wait = 0.0
+            for window, count in ((1.0, 2), (60.0, 50)):
+                inside = [s for s in slots if s > t - window + 1e-9]
+                if len(inside) >= count:
+                    wait = max(wait, inside[-count] + window - t)
+            if wait <= 1e-9:
+                break
+            t += wait
+        slots.append(t)
+    return slots
+
+
+def _stream_opener(kind: str, connector: Any, clock: FakeClock, fake: FakeUpbitWs) -> Callable:
+    """같은 스트림 객체 하나에서 새 연결 이터레이터를 주는 함수."""
+    if kind == "public":
+        public = make_public_stream(connector, clock)
+        return lambda: public.ticker(["KRW-BTC"])
+    private = make_private_stream(connector, clock, lambda: fake.credentials)
+    return private.events
+
+
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_concurrent_handshakes_reserve_the_minute_budget_before_connecting(
+    make_fake_upbit_ws, kind
+):
+    """INV-13: 핸드셰이크 중인 연결도 구독 메시지 예산(분당 50개)을 차지한다(R22-05)."""
+    clock = FakeClock()
+    fake = make_fake_upbit_ws(clock=clock)
+    connector = DelayedConnector(fake, clock, delay=0.0)
+    new = _stream_opener(kind, connector, clock, fake)
+
+    async def scenario(e: Env) -> None:
+        async def warm_up() -> None:
+            for _ in range(48):
+                await open_then_close(new())
+
+        warming = asyncio.ensure_future(warm_up())
+        await e.clock.run_for(30)
+        assert warming.done()
+        warming.result()  # 1000~1023초에 초당 2개씩 48개
+        connector.delay = 3.0  # 이제 핸드셰이크가 3초 걸린다
+        racing = [asyncio.ensure_future(open_then_close(new())) for _ in range(4)]  # 1030초
+        await e.clock.run_for(40)
+        assert all(task.done() for task in racing)
+        assert sorted(task.result().connection_no for task in racing) == [49, 50, 51, 52]
+
+    Env(clock, connector).run(scenario)
+    sent = subscription_times(fake)
+    assert len(sent) == 52
+    assert sent[:48] == pytest.approx([START + i // 2 for i in range(48)])
+    assert max_in_window(sent, 60.0) <= 50
+    assert max_in_window(sent, 1.0) <= 2
+    late = sent[48:]
+    assert late[:2] == pytest.approx([START + 33] * 2)  # 49·50번째는 예산 안이라 바로 연결
+    # 51·52번째는 처음 두 개(1000초)가 창을 벗어난 1060초에야 연결을 시작한다(필요한 만큼만).
+    assert all(START + 63 - EPS <= t <= START + 64 for t in late[2:])
+    assert max_in_window(connector.calls, 1.0) <= 2
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    kind=st.sampled_from(["public", "private"]),
+    delay=st.sampled_from([0.0, 0.5, 1.0, 2.5, 5.0]),
+    # 연결 수를 먼저 고르게 뽑는다(그냥 목록을 뽑으면 분당 50개에 닿는 긴 목록이 드물다).
+    quarters=st.integers(min_value=1, max_value=80).flatmap(
+        lambda n: st.lists(st.integers(min_value=0, max_value=240), min_size=n, max_size=n)
+    ),
+)
+@example(kind="public", delay=2.5, quarters=[0] * 60)
+@example(kind="private", delay=5.0, quarters=[0] * 30 + [100] * 30 + [236] * 10)
+def test_concurrent_connections_stay_within_the_websocket_limits(kind, delay, quarters):
+    """INV-13: 동시 연결의 수·시점과 (모든 연결에 같은) 핸드셰이크 시간과 상관없이 연결 초당
+    2회, 구독 메시지 초당 2개·분당 50개를 넘지 않고, 필요한 만큼만 기다린다(R22-05). 송신 허가
+    (예약) 시각 기준이다. 핸드셰이크 시간이 같아 서버 도착 시각도 같은 간격이다."""
+    clock = FakeClock()
+    fake = FakeUpbitWs(clock)
+    connector = DelayedConnector(fake, clock, delay)
+    new = _stream_opener(kind, connector, clock, fake)
+    arrivals = sorted(q * 0.25 for q in quarters)
+    problems: list[dict[str, Any]] = []
+
+    async def one(arrival: float) -> Any:
+        await clock.sleep(arrival)
+        return await open_then_close(new())
+
+    async def main() -> list[Any]:
+        asyncio.get_running_loop().set_exception_handler(lambda _l, ctx: problems.append(ctx))
+        tasks = [asyncio.ensure_future(one(arrival)) for arrival in arrivals]
+        await clock.run_for(arrivals[-1] + delay + 200)
+        unfinished = [task for task in tasks if not task.done()]
+        for task in unfinished:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        assert unfinished == [], f"{len(unfinished)}개 연결이 끝나지 않았다"
+        await settle()
+        assert adapter_tasks() == []
+        return [task.result() for task in tasks]
+
+    opened = asyncio.run(main())
+
+    assert problems == []
+    assert sorted(item.connection_no for item in opened) == list(range(1, len(arrivals) + 1))
+    sent = subscription_times(fake)
+    assert len(sent) == len(arrivals)
+    assert max_in_window(sent, 60.0) <= 50
+    assert max_in_window(sent, 1.0) <= 2
+    assert max_in_window(connector.calls, 1.0) <= 2
+    expected = [START + slot for slot in earliest_slots(arrivals)]
+    assert sorted(connector.calls) == pytest.approx(expected, abs=1e-6)
+    assert sent == pytest.approx([t + delay for t in expected], abs=1e-6)
+    assert [v.rule for v in fake.violations] == []  # rate_limit_half 0건(가짜의 엄격 검사)
+    fake.assert_clean()
+
+
+class VaryingDelayConnector:
+    """연결마다 핸드셰이크 시간이 다른 연결기(delays를 차례로 쓴다). connect를 부른 시각은 calls."""
+
+    def __init__(self, inner: Any, clock: FakeClock, delays: Sequence[float]) -> None:
+        self.inner = inner
+        self.clock = clock
+        self.delays = list(delays)
+        self.calls: list[float] = []
+
+    async def connect(self, url: str, *, headers: Sequence[tuple[str, str]]) -> Any:
+        self.calls.append(self.clock.monotonic())
+        await self.clock.sleep(self.delays[len(self.calls) - 1])
+        return await self.inner.connect(url, headers=headers)
+
+
+@pytest.mark.parametrize(
+    "delays",
+    [(0.9, 0.9, 0.0, 0.0), (2.5, 0.0, 1.0, 0.0, 0.3, 0.0), (0.0, 3.0, 0.0, 0.5, 0.0, 0.0)],
+)
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_the_budget_counts_send_permission_times_when_handshakes_differ(kind, delays):
+    """INV-13(R22-05): 예산은 송신 허가(예약) 시각, 곧 연결을 시작한 시각으로 센다.
+
+    연결마다 핸드셰이크 시간이 다르면 서버에 구독 메시지가 닿는 시각은 1초 안에 몰릴 수 있다
+    (R17-08과 같은 한계). 그래서 연결 시작 시각(connector.calls)으로만 단언한다.
+    """
+    clock = FakeClock()
+    # 안쪽은 대본 연결이다: 가짜 서버는 도착 시각으로 연결 한도를 엄격히 보아 몰린 도착을 거절한다.
+    inner = ScriptedConnector(*[([], None)] * len(delays))
+    connector = VaryingDelayConnector(inner, clock, delays)
+    if kind == "public":
+        public = make_public_stream(connector, clock)
+
+        def new() -> Any:
+            return public.ticker(["KRW-BTC"])
+    else:
+        new = make_private_stream(connector, clock, make_upbit_credentials).events
+
+    async def main() -> list[Any]:
+        tasks = [asyncio.ensure_future(open_then_close(new())) for _ in delays]
+        await clock.run_for(len(delays) + max(delays) + 5)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        await settle()
+        assert adapter_tasks() == []
+        return results
+
+    opened = asyncio.run(main())
+
+    assert sorted(item.connection_no for item in opened) == list(range(1, len(delays) + 1))
+    assert connector.calls == pytest.approx(
+        [START + slot for slot in earliest_slots([0.0] * len(delays))], abs=1e-6
+    )
+    assert max_in_window(connector.calls, 1.0) <= 2
+    assert [len(conn.sent) for conn in inner.connections] == [1] * len(delays)  # 구독 1개씩
+
+
+# ── 비공개: 인증과 구독───────────────────────────────────
 
 
 def test_private_connects_with_a_fresh_hs512_jwt_every_time(env):
@@ -2015,6 +2674,7 @@ async def private_failures(e: Env, stream: UpbitPrivateStream) -> tuple[list[Any
 
 
 def test_secrets_never_reach_logs_exceptions_or_reprs(env, caplog):
+    """INV-07: 비밀이 로그·예외·repr에 나오지 않는다."""
     caplog.set_level(logging.DEBUG)
     stream = env.private()
     result: dict[str, Any] = {}
@@ -2053,6 +2713,7 @@ def test_secrets_never_reach_logs_exceptions_or_reprs(env, caplog):
 
 
 def test_traceback_locals_of_adapter_frames_hold_no_secrets(env):
+    """INV-07: 어댑터 프레임의 지역 변수에도 비밀이 없다."""
     # 예외가 지나는 어댑터 프레임에 토큰·Authorization 헤더가 지역 변수로 남지 않는다.
     stream = env.private()
     result: dict[str, Any] = {}
@@ -2071,6 +2732,215 @@ def test_traceback_locals_of_adapter_frames_hold_no_secrets(env):
         assert token not in blob
     assert JWT_SHAPE.search(blob) is None
     assert BEARER_VALUE.search(blob) is None
+
+
+# ── 감시(StreamSupervisor)와 함께: PONG 상한·핸드셰이크 상태(R22-01·R22-02·D-091 (12)) ──
+
+
+@dataclass
+class Watch:
+    """감시 콜백 기록(가상 시각과 함께)."""
+
+    clock: FakeClock
+    statuses: list[tuple[float, Any]] = field(default_factory=list)
+    events: list[Any] = field(default_factory=list)
+    hooks: list[float] = field(default_factory=list)
+
+    async def on_event(self, event: Any) -> None:
+        self.events.append(event)
+
+    async def on_status(self, status: Any) -> None:
+        self.statuses.append((self.clock.monotonic(), status))
+
+    async def on_reconnected(self) -> None:
+        self.hooks.append(self.clock.monotonic())
+
+    def summary(self) -> list[tuple[float, str, str, str | None, float | None]]:
+        return [(t, s.kind, s.reason, s.error_name, s.retry_in) for t, s in self.statuses]
+
+
+async def supervise(
+    e: Env,
+    kind: str,
+    open_stream: Callable[[], Any],
+    seconds: float,
+    *,
+    ends: bool = False,
+    **options: Any,
+) -> Watch:
+    """어댑터 스트림을 감시로 seconds초 돌리고 취소한다(감시가 만든 태스크는 남지 않는다).
+
+    ends=True면 그 안에 run()이 예외 없이 끝나야 한다(BROKEN·AUTH_CHECK 같은 마지막 상태).
+    """
+    watch = Watch(e.clock)
+    supervisor = StreamSupervisor(
+        stream=kind,
+        open_stream=open_stream,
+        clock=e.clock,
+        on_event=watch.on_event,
+        on_status=watch.on_status,
+        on_reconnected=watch.on_reconnected,
+        **options,
+    )
+    task = asyncio.ensure_future(supervisor.run())
+    try:
+        await e.clock.run_for(seconds)
+        assert task.done() == ends, task
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    return watch
+
+
+def _opener(e: Env, kind: str) -> Callable[[], Any]:
+    if kind == "public":
+        public = e.public()
+        return lambda: public.ticker(["KRW-BTC"])
+    return e.private().events
+
+
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_supervisor_reconnects_after_a_pong_timeout(env, kind):
+    """TS-41, TS-106: 반쯤 열린 연결은 PONG 상한(30초) 뒤 끊기고 감시가 다시 연결한다(R22-01)."""
+    watched: list[Watch] = []
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_no_pong(stream=kind)  # 첫 연결만 PONG이 없다
+        watched.append(await supervise(e, kind, _opener(e, kind), 100))
+
+    env.run(scenario)
+    (watch,) = watched
+    first, second = env.fake.connections
+    assert first.pings == pytest.approx([START + 30])
+    assert first.pongs == []
+    assert first.closed_at == pytest.approx(START + 60)  # PING 30초 뒤 어댑터가 끊었다
+    assert second.opened_at == pytest.approx(START + 61)  # backoff 1초 뒤 다시 연결
+    assert second.pings == pytest.approx([START + 91])
+    assert second.pongs == second.pings
+    assert watch.summary() == [
+        (START, "CONNECTING", "start", None, None),
+        (START, "OPEN", "opened", None, None),
+        (START + 60, "RECONNECTING", "closed", None, 1.0),
+        (START + 61, "OPEN", "opened", None, None),
+    ]
+    assert watch.hooks == [START + 61]  # 재연결 뒤 대조 자리
+
+
+@pytest.mark.parametrize(
+    ("kind", "status"),
+    [
+        (kind, status)
+        for kind in ("public", "private")
+        for status in (401, 403, 429, 503)
+        if not (kind == "private" and status in (401, 403))  # 비공개 401·403은 D-091 (12)
+    ],
+)
+def test_supervisor_reports_the_handshake_status_while_reconnecting(env, kind, status):
+    """TS-41: 핸드셰이크 거절의 HTTP 상태가 RECONNECTING error_name "HTTP_<상태>"로 간다(R22-02)."""
+    watched: list[Watch] = []
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_reject_connect(2, stream=kind, status=status)
+        watched.append(await supervise(e, kind, _opener(e, kind), 10))
+
+    env.run(scenario)
+    (watch,) = watched
+    name = handshake_status_name(status)
+    assert name == f"{HANDSHAKE_STATUS_PREFIX}{status}"
+    assert watch.summary() == [
+        (START, "CONNECTING", "start", None, None),
+        (START, "RECONNECTING", "connect_failed", name, 1.0),
+        (START + 1, "RECONNECTING", "connect_failed", name, 2.0),
+        (START + 3, "OPEN", "opened", None, None),
+    ]
+    assert [r.accepted for r in env.fake.connections] == [False, False, True]
+
+
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_supervisor_keeps_the_one_second_pause_after_a_handshake_429_with_zero_backoff(env, kind):
+    """핸드셰이크 429 뒤에는 backoff 표에 0이 있어도 1초(RATE_LIMIT_RETRY_SECONDS) 멈춘다.
+
+    가짜는 429 뒤 1초 안에 다시 연결하면 rate_limit_pause 위반으로 실패한다(엄격 검사).
+    """
+    watched: list[Watch] = []
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_reject_connect(2, stream=kind, status=429)
+        watched.append(await supervise(e, kind, _opener(e, kind), 10, backoff=(0.0,)))
+
+    env.run(scenario)
+    (watch,) = watched
+    name = handshake_status_name(429)
+    assert watch.summary() == [
+        (START, "CONNECTING", "start", None, None),
+        (START, "RECONNECTING", "connect_failed", name, 1.0),
+        (START + 1, "RECONNECTING", "connect_failed", name, 1.0),
+        (START + 2, "OPEN", "opened", None, None),
+    ]
+    assert [r.opened_at for r in env.fake.connections] == pytest.approx(
+        [START, START + 1, START + 2]
+    )
+    assert [r.accepted for r in env.fake.connections] == [False, False, True]
+
+
+@pytest.mark.parametrize(
+    "statuses", [(401, 401), (403, 403), (401, 403)], ids=["401-401", "403-403", "401-403"]
+)
+def test_supervisor_auth_checks_after_two_private_handshake_auth_rejections(env, statuses):
+    """TS-106·D-091 (12): 비공개 핸드셰이크 401·403이 두 번이면 바로 1번 다시 연결한 뒤 AUTH_CHECK.
+
+    INVALID_AUTH와 같다(D-080): 기다리지 않고 새 JWT로 한 번 다시 연결하고, 정상 이벤트 없이 또
+    거절되면 AUTH_CHECK로 run()이 끝난다(5단계가 REST로 키를 확인한다). 가짜 위반은 없다.
+    """
+    watched: list[Watch] = []
+
+    async def scenario(e: Env) -> None:
+        for status in statuses:
+            e.fake.ws_reject_connect(stream="private", status=status)
+        opener = _opener(e, "private")
+        watched.append(await supervise(e, "private", opener, 10, ends=True))
+
+    env.run(scenario)
+    (watch,) = watched
+    first, second = (handshake_status_name(status) for status in statuses)
+    assert watch.summary() == [
+        (START, "CONNECTING", "start", None, None),
+        (START, "RECONNECTING", "auth_failed", first, 0.0),
+        (START, "AUTH_CHECK", "auth_failed", second, None),
+    ]
+    records = env.fake.connections
+    assert [r.accepted for r in records] == [False, False]
+    assert [r.opened_at for r in records] == pytest.approx([START, START])
+    tokens = [bearer_token(r.headers) for r in records]
+    assert len(set(tokens)) == 2  # 다시 연결할 때 새 JWT
+    assert env.fake.violations == []
+    assert watch.events == []
+    assert watch.hooks == []
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_supervisor_reconnects_at_once_after_one_private_handshake_auth_rejection(env, status):
+    """TS-106·D-091 (12): 비공개 핸드셰이크 401·403 한 번이면 기다리지 않고 새 JWT로 다시 연다."""
+    watched: list[Watch] = []
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_reject_connect(stream="private", status=status)
+        watched.append(await supervise(e, "private", _opener(e, "private"), 10))
+
+    env.run(scenario)
+    (watch,) = watched
+    assert watch.summary() == [
+        (START, "CONNECTING", "start", None, None),
+        (START, "RECONNECTING", "auth_failed", handshake_status_name(status), 0.0),
+        (START, "OPEN", "opened", None, None),
+    ]
+    records = env.fake.connections
+    assert [r.accepted for r in records] == [False, True]
+    assert [r.opened_at for r in records] == pytest.approx([START, START])
+    assert len({bearer_token(r.headers) for r in records}) == 2
+    assert env.fake.violations == []
+    assert watch.hooks == []  # 처음 열린 연결이다
 
 
 # ── WebsocketsConnector(websockets connect를 바꿔 끼워 인자만 본다) ─────
@@ -2353,6 +3223,130 @@ def test_connection_maps_other_library_errors_to_stream_closed(monkeypatch, erro
     assert all(e.reason == type(failure).__name__ for e in asyncio.run(main()))
 
 
+class _PongWs:
+    """ping()이 PONG 대기 Future를 돌려주는 ClientConnection 대역(websockets 17.4의 ping처럼).
+
+    시험이 waits의 Future를 직접 끝낸다: PONG이면 set_result(지연 초), 끊기면 라이브러리처럼
+    set_exception(ConnectionClosed) 뒤 cancel()(terminate_pending_pings와 같다).
+    """
+
+    close_code = None
+
+    def __init__(self) -> None:
+        self.waits: list[asyncio.Future[float]] = []
+
+    async def ping(self) -> asyncio.Future[float]:
+        waiting: asyncio.Future[float] = asyncio.get_running_loop().create_future()
+        self.waits.append(waiting)
+        return waiting
+
+    async def close(self, code: int = 1000) -> None:
+        return None
+
+    def lose(self, waiting: asyncio.Future[float], error: BaseException) -> None:
+        waiting.set_exception(error)
+        waiting.cancel()
+
+
+def test_connection_ping_maps_the_library_pong_wait(monkeypatch):
+    """TS-106: 기본 연결의 PONG 대기는 PONG에 끝나고, 끊기면 StreamClosed(받은 close 코드)다."""
+    from websockets.exceptions import ConnectionClosedError
+    from websockets.frames import Close
+
+    ws = _PongWs()
+    spy_on_websockets_connect(monkeypatch, None, ws=ws)
+
+    async def main() -> StreamClosed:
+        conn = await make_connector().connect("ws://127.0.0.1:9/x", headers=[])
+        answered = asyncio.ensure_future(await conn.ping())
+        lost = asyncio.ensure_future(await conn.ping())
+        await settle()
+        assert not answered.done()
+        assert not lost.done()
+        ws.waits[0].set_result(0.001)  # PONG
+        ws.lose(ws.waits[1], ConnectionClosedError(Close(4000, "srv"), None))
+        await settle()
+        assert answered.done()
+        assert answered.exception() is None
+        with pytest.raises(StreamClosed) as info:
+            await lost
+        return info.value
+
+    error = asyncio.run(main())
+    assert error.close_code == 4000
+    assert error.__cause__ is None  # 라이브러리 예외를 잇지 않는다(recv·send와 같다)
+
+
+def test_connection_pong_wait_that_is_cancelled_or_fails_oddly_is_stream_closed(monkeypatch):
+    """기본 연결의 PONG 대기: 라이브러리 대기가 취소되거나 websockets 밖 예외로 끝나도
+    StreamClosed다(라이브러리 예외를 잇지 않는다). 루프 경고도 없다."""
+    ws = _PongWs()
+    spy_on_websockets_connect(monkeypatch, None, ws=ws)
+    problems: list[dict[str, Any]] = []
+
+    async def main() -> list[StreamClosed]:
+        asyncio.get_running_loop().set_exception_handler(lambda _l, ctx: problems.append(ctx))
+        conn = await make_connector().connect("ws://127.0.0.1:9/x", headers=[])
+        cancelled = await conn.ping()
+        odd = await conn.ping()
+        dropped = await conn.ping()
+        ws.waits[0].cancel()
+        ws.waits[1].set_exception(RuntimeError("odd (test)"))
+        dropped.cancel()  # 받은 쪽이 대기를 먼저 취소했다(라이브러리 대기가 끝나도 조용하다)
+        ws.waits[2].set_result(0.001)
+        await settle()
+        assert dropped.cancelled()
+        found = []
+        for waiting in (cancelled, odd):
+            assert waiting.done()
+            with pytest.raises(StreamClosed) as info:
+                await waiting
+            found.append(info.value)
+        gc.collect()
+        await settle()
+        return found
+
+    first, second = asyncio.run(main())
+    assert first.reason == "PONG 대기가 취소됐다"
+    assert second.reason == "RuntimeError"
+    assert "odd" not in str(second)
+    assert first.__cause__ is None
+    assert second.__cause__ is None
+    assert problems == []
+
+
+@pytest.mark.parametrize("ending", ["pong", "closed"])
+def test_dropped_pong_waits_of_the_default_connection_leave_no_warnings(monkeypatch, ending):
+    """버린 PONG 대기(PONG을 받았든 끊겨 실패했든)는 루프 경고·RuntimeWarning을 남기지 않는다."""
+    from websockets.exceptions import ConnectionClosedError
+
+    ws = _PongWs()
+    spy_on_websockets_connect(monkeypatch, None, ws=ws)
+    problems: list[dict[str, Any]] = []
+
+    async def main() -> None:
+        asyncio.get_running_loop().set_exception_handler(lambda _l, ctx: problems.append(ctx))
+        conn = await make_connector().connect("ws://127.0.0.1:9/x", headers=[])
+        for _ in range(3):
+            await conn.ping()  # 돌려받은 대기를 쓰지 않고 버린다
+        for waiting in ws.waits:
+            if ending == "pong":
+                waiting.set_result(0.001)
+            else:
+                ws.lose(waiting, ConnectionClosedError(None, None))
+        await settle()
+        gc.collect()
+        await settle()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        asyncio.run(main())
+        gc.collect()
+
+    assert problems == []
+    assert [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)] == []
+
+
 def test_connector_user_agent_and_open_timeout_options(monkeypatch):
     spy = spy_on_websockets_connect(monkeypatch, refused())
     connector = make_connector(
@@ -2528,6 +3522,7 @@ def test_connector_maps_connection_failures_to_connect_failed(monkeypatch, failu
 
 
 def test_private_stream_over_the_default_connector_keeps_secrets_out_of_locals(monkeypatch):
+    """INV-07: 기본 연결기 조합에서도 지역 변수에 비밀이 없다."""
     # 실제 조합(UpbitPrivateStream + WebsocketsConnector)의 핸드셰이크 401 경로. 네트워크 없음.
     from websockets.datastructures import Headers
     from websockets.exceptions import InvalidStatus
@@ -2565,3 +3560,421 @@ def test_private_stream_over_the_default_connector_keeps_secrets_out_of_locals(m
     assert token not in blob
     assert find_canaries(blob, [creds.access_key, creds.secret_key]) == []
     assert JWT_SHAPE.search(blob) is None
+
+
+# ── R22-03: 보내기 전 검사(헤더)와 예외 변환 분기 ──────────────────────
+# QA R22-03(PR #22): 헤더 검사의 거부, 주입 연결기의 OSError → core 오류 변환, 그 밖의 예외 변환
+# 분기를 시험한다. 감시 쪽(open_stream이 부르는 순간 core 오류)은 tests/unit/test_streams.py 끝.
+#
+# 정한 동작:
+# - WebsocketsConnector.connect는 연결하기 전에 헤더를 본다. Origin(CLAUDE.md: 보내면 10초에
+#   1회로 제한된다), 같은 이름 두 번(대소문자 무관), User-Agent(연결기의 user_agent로만 정한다)는
+#   ValueError이고 websockets connect를 부르지 않는다. 문구에 헤더 값을 넣지 않는다.
+# - 주입한 연결기(WsConnector)의 OSError: connect에서 나면 StreamConnectFailed(http_status=None),
+#   구독 전송(send)·받기(recv)에서 나면 StreamClosed(close_code는 그때 연결의 close_code). reason에
+#   예외 타입 이름이 들어가고 원래 예외를 잇지 않는다(__cause__·__context__ 없음). 연결은 닫는다.
+# - 연결 close가 StreamClosed(이미 닫힘)를 내면 기록하지 않고 결과를 그대로 둔다.
+# - 연결의 recv가 스스로 취소되면(라이브러리 안의 취소) 소비 태스크를 취소하지 않고 StreamClosed다.
+
+
+@pytest.mark.parametrize("name", ["Origin", "origin", "ORIGIN"])
+@pytest.mark.parametrize("url", [PUBLIC_URL, PRIVATE_URL])
+def test_connector_refuses_an_origin_header_before_connecting(monkeypatch, name, url):
+    """INV-13: Origin 헤더가 있으면 연결하기 전에 거부한다."""
+    spy = spy_on_websockets_connect(monkeypatch, refused())
+    headers = [("Authorization", "Bearer uat-test-0123456789abcdef"), (name, "https://upbit.com")]
+
+    with pytest.raises(ValueError, match="Origin"):
+        asyncio.run(make_connector().connect(url, headers=headers))
+
+    assert spy.calls == []
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        [("X-Test", "1"), ("X-Test", "2")],
+        [("X-Test", "1"), ("x-test", "1")],
+        [("Authorization", "Bearer uat-test-first-0123456789"), ("authorization", "Bearer b")],
+    ],
+    ids=["same-case", "other-case", "authorization"],
+)
+def test_connector_refuses_a_header_name_sent_twice_before_connecting(monkeypatch, headers):
+    spy = spy_on_websockets_connect(monkeypatch, refused())
+
+    with pytest.raises(ValueError) as info:  # noqa: PT011 - 문구는 구현이 정한다
+        asyncio.run(make_connector().connect(PRIVATE_URL, headers=headers))
+
+    assert spy.calls == []
+    text = "\n".join([str(info.value), repr(info.value), *traceback.format_exception(info.value)])
+    for _, value in headers:
+        if len(value) > 2:
+            assert value not in text  # 헤더 값(토큰)을 문구에 넣지 않는다
+
+
+@pytest.mark.parametrize("name", ["User-Agent", "user-agent"])
+def test_connector_refuses_a_user_agent_header_before_connecting(monkeypatch, name):
+    spy = spy_on_websockets_connect(monkeypatch, refused())
+
+    with pytest.raises(ValueError, match="User-Agent"):
+        asyncio.run(make_connector().connect(PUBLIC_URL, headers=[(name, "curl/8 (test)")]))
+
+    assert spy.calls == []
+
+
+class OsErrorConnection(ScriptedConnection):
+    """ScriptedConnection에 OSError를 더한다(주입 연결기가 core 오류로 바꾸지 않은 경우).
+
+    send_error: 구독 전송에서 낸다. recv_error: 프레임을 다 준 뒤 recv에서 낸다.
+    error_close_code: 오류를 낼 때 close_code로 둘 값(None이면 열린 채로 본다).
+    """
+
+    def __init__(
+        self,
+        frames: Sequence[str | bytes] = (),
+        *,
+        send_error: BaseException | None = None,
+        recv_error: BaseException | None = None,
+        error_close_code: int | None = None,
+    ) -> None:
+        super().__init__(frames, None)
+        self._send_error = send_error
+        self._recv_error = recv_error
+        self._error_close_code = error_close_code
+
+    async def send(self, text: str) -> None:
+        if self._send_error is None:
+            await super().send(text)
+            return
+        self.sent.append(text)
+        self.close_code = self._error_close_code
+        raise self._send_error
+
+    async def recv(self) -> str | bytes:
+        if self._recv_error is None or self._frames:
+            return await super().recv()
+        await asyncio.sleep(0)
+        self.close_code = self._error_close_code
+        raise self._recv_error
+
+
+class CancelledRecvConnection(ScriptedConnection):
+    """프레임을 다 준 뒤 recv 안에서 스스로 취소된다(라이브러리 안의 취소 흉내)."""
+
+    async def recv(self) -> str | bytes:
+        if self._frames:
+            return await super().recv()
+        await asyncio.sleep(0)
+        raise asyncio.CancelledError
+
+
+class PlannedConnector:
+    """connect마다 계획 한 칸을 쓴다: 예외면 connect에서 내고, 연결이면 그 연결을 준다."""
+
+    def __init__(self, *plan: BaseException | ScriptedConnection) -> None:
+        self._plan = list(plan)
+        self.calls: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+        self.connections: list[ScriptedConnection] = []
+
+    async def connect(self, url: str, *, headers: Sequence[tuple[str, str]]) -> ScriptedConnection:
+        self.calls.append((url, tuple(headers)))
+        step = self._plan.pop(0)
+        if isinstance(step, BaseException):
+            raise step
+        self.connections.append(step)
+        return step
+
+
+def planned_env(*plan: BaseException | ScriptedConnection) -> Env:
+    return Env(FakeClock(), PlannedConnector(*plan))
+
+
+def planned_iterator(e: Env, kind: str) -> Any:
+    if kind == "public":
+        return e.public().ticker(["KRW-BTC"])
+    return e.private(credentials=make_upbit_credentials).events()
+
+
+def assert_not_chained(error: BaseException) -> None:
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+def _connect_os_errors() -> list[Any]:
+    return [
+        pytest.param(refused(), id="refused"),
+        pytest.param(ConnectionResetError(104, "Connection reset by peer (test)"), id="reset"),
+        pytest.param(OSError(101, "Network is unreachable (test)"), id="unreachable"),
+        pytest.param(ssl.SSLCertVerificationError(1, "verify failed (test)"), id="tls"),
+        pytest.param(TimeoutError(), id="timeout"),
+    ]
+
+
+@pytest.mark.parametrize("failure", _connect_os_errors())
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_oserror_from_an_injected_connect_is_connect_failed(kind, failure):
+    env = planned_env(failure)
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(planned_iterator(e, kind)))
+        assert items == []  # 연결하지 못하면 StreamOpened도 없다
+        assert type(error) is StreamConnectFailed
+        assert error.http_status is None
+        assert type(failure).__name__ in error.reason
+        assert_not_chained(error)
+
+    env.run(scenario)
+    assert len(env.connector.calls) == 1
+
+
+def test_a_connect_oserror_does_not_count_as_an_opened_connection():
+    env = planned_env(refused(), ScriptedConnection([BTC_FRAME], None))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        _, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
+        assert type(error) is StreamConnectFailed
+        _, first = await e.open_ticker(stream, within=1)
+        assert first == opened("public", 1)
+
+    env.run(scenario)
+
+
+def _send_os_errors() -> list[Any]:
+    return [
+        pytest.param(BrokenPipeError(32, "Broken pipe (test)"), id="broken-pipe"),
+        pytest.param(ConnectionResetError(104, "Connection reset by peer (test)"), id="reset"),
+        pytest.param(ssl.SSLError(1, "bad record mac (test)"), id="tls"),
+    ]
+
+
+@pytest.mark.parametrize("close_code", [None, 1006])
+@pytest.mark.parametrize("failure", _send_os_errors())
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_oserror_while_sending_the_subscription_is_stream_closed(kind, failure, close_code):
+    conn = OsErrorConnection(send_error=failure, error_close_code=close_code)
+    env = planned_env(conn)
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(planned_iterator(e, kind)))
+        assert items == []  # 구독을 보내지 못했으니 StreamOpened 전에 끝났다
+        assert type(error) is StreamClosed
+        assert error.close_code == close_code
+        assert type(failure).__name__ in error.reason
+        assert_not_chained(error)
+        assert len(conn.sent) == 1
+        assert conn.close_calls >= 1  # 어댑터가 연결을 닫았다
+
+    env.run(scenario)
+
+
+def _recv_os_errors() -> list[Any]:
+    return [
+        pytest.param(ConnectionResetError(104, "Connection reset by peer (test)"), id="reset"),
+        pytest.param(ConnectionAbortedError(103, "Software caused abort (test)"), id="aborted"),
+        pytest.param(ssl.SSLError(1, "bad record mac (test)"), id="tls"),
+        pytest.param(TimeoutError(), id="timeout"),
+    ]
+
+
+@pytest.mark.parametrize("close_code", [None, 1006])
+@pytest.mark.parametrize("failure", _recv_os_errors())
+def test_public_oserror_while_receiving_is_stream_closed_after_earlier_messages(
+    failure, close_code
+):
+    conn = OsErrorConnection([BTC_FRAME], recv_error=failure, error_close_code=close_code)
+    env = planned_env(conn)
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
+        assert [type(item) for item in items] == [StreamOpened, TickerEvent]
+        assert type(error) is StreamClosed
+        assert error.close_code == close_code
+        assert type(failure).__name__ in error.reason
+        assert_not_chained(error)
+        assert conn.close_calls >= 1
+
+    env.run(scenario)
+
+
+@pytest.mark.parametrize("failure", _recv_os_errors())
+def test_private_oserror_while_receiving_is_stream_closed(failure):
+    conn = OsErrorConnection(recv_error=failure, error_close_code=1006)
+    env = planned_env(conn)
+    stream = env.private(credentials=make_upbit_credentials)
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.events()))
+        assert items == [opened("private", 1)]
+        assert type(error) is StreamClosed
+        assert error.close_code == 1006
+        assert type(failure).__name__ in error.reason
+        assert_not_chained(error)
+        assert conn.close_calls >= 1
+
+    env.run(scenario)
+
+
+def test_a_recv_cancelled_inside_the_connection_is_stream_closed():
+    conn = CancelledRecvConnection([BTC_FRAME], None)
+    env = planned_env(conn)
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        consumer = e.consume(stream.ticker(["KRW-BTC"]))
+        items, error = await e.drain(consumer)
+        assert [type(item) for item in items] == [StreamOpened, TickerEvent]
+        assert type(error) is StreamClosed  # CancelledError가 소비 태스크로 새지 않는다
+        assert not consumer.task.cancelled()
+        assert conn.close_calls >= 1
+
+    env.run(scenario)
+
+
+def test_a_close_that_says_already_closed_is_not_logged(caplog):
+    caplog.set_level(logging.DEBUG)
+    already = StreamClosed(close_code=1006, reason="이미 닫힘(test)")
+    env = scripted_env(([BTC_FRAME], 1006, {"close_error": already}))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
+        assert [type(item) for item in items] == [StreamOpened, TickerEvent]
+        assert type(error) is StreamClosed
+        assert error.close_code == 1006  # 닫기의 StreamClosed가 결과를 덮지 않는다
+        assert e.connector.connections[0].close_calls >= 1
+
+    env.run(scenario)
+    assert app_warnings(caplog) == []
+
+
+def test_aclose_with_a_close_that_says_already_closed_returns_quietly(caplog):
+    caplog.set_level(logging.DEBUG)
+    already = StreamClosed(close_code=1006, reason="이미 닫힘(test)")
+    env = scripted_env(([BTC_FRAME], None, {"close_error": already}))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        iterator, _ = await e.open_ticker(stream)
+        await iterator.aclose()  # 예외 없이 끝난다
+        assert e.connector.connections[0].close_calls >= 1
+
+    env.run(scenario)
+    assert app_warnings(caplog) == []
+
+
+# ── R22-03: 그 밖의 빠진 분기(연결 감싸개·로거·설정·값 검사) ──────────
+
+
+class _OpenWs:
+    """정상 동작하는 websockets ClientConnection 대역(보낸 것과 닫기를 기록한다)."""
+
+    def __init__(self, close_error: BaseException | None = None) -> None:
+        self.close_code: int | None = None
+        self.sent: list[str] = []
+        self.closed_with: list[int] = []
+        self._close_error = close_error
+
+    async def send(self, text: str) -> None:
+        self.sent.append(text)
+
+    async def recv(self) -> str:
+        return "frame"
+
+    async def close(self, code: int = 1000) -> None:
+        self.closed_with.append(code)
+        if self._close_error is not None:
+            raise self._close_error
+        self.close_code = code
+
+
+def test_connection_wrapper_passes_send_recv_and_close_through(monkeypatch):
+    ws = _OpenWs()
+    spy_on_websockets_connect(monkeypatch, None, ws=ws)
+
+    async def main() -> tuple[Any, list[Any]]:
+        conn = await make_connector().connect("ws://127.0.0.1:9/x", headers=[])
+        seen = [conn.close_code]
+        await conn.send("hello")
+        seen.append(await conn.recv())
+        await conn.close(4000)
+        seen.append(conn.close_code)
+        return conn, seen
+
+    _, seen = asyncio.run(main())
+
+    assert seen == [None, "frame", 4000]
+    assert ws.sent == ["hello"]
+    assert ws.closed_with == [4000]
+
+
+def test_connection_wrapper_close_of_an_already_closed_connection_is_quiet(monkeypatch):
+    from websockets.exceptions import ConnectionClosedOK
+    from websockets.frames import Close
+
+    closed = ConnectionClosedOK(Close(1000, ""), Close(1000, ""), rcvd_then_sent=True)
+    ws = _OpenWs(close_error=closed)
+    spy_on_websockets_connect(monkeypatch, None, ws=ws)
+
+    async def main() -> None:
+        conn = await make_connector().connect("ws://127.0.0.1:9/x", headers=[])
+        await conn.close()  # 이미 닫힌 연결: 예외 없이 끝난다
+
+    asyncio.run(main())
+    assert ws.closed_with == [1000]
+
+
+def test_wire_logger_drops_debug_records_even_at_debug_level(monkeypatch, caplog):
+    """INV-07: 라이브러리 DEBUG 로그(헤더 원문)는 DEBUG 단계에서도 버린다."""
+    # websockets는 DEBUG로 요청 헤더(Authorization)·프레임 원문을 남긴다(INV-07).
+    spy = spy_on_websockets_connect(monkeypatch, refused())
+    with pytest.raises(StreamConnectFailed):
+        asyncio.run(make_connector().connect(PUBLIC_URL, headers=[]))
+    ((_, kwargs),) = spy.calls
+    wire = kwargs["logger"]
+    caplog.set_level(logging.DEBUG)
+    wire.logger.setLevel(logging.DEBUG)
+    try:
+        wire.debug("> Authorization: Bearer %s", "uat-test-debug-value")
+        wire.log(logging.DEBUG, "> TEXT %s", "uat-test-frame-value")
+        wire.info("연결 정보(test)")
+    finally:
+        wire.logger.setLevel(logging.NOTSET)
+
+    texts = [r.getMessage() for r in caplog.records if r.name == wire.logger.name]
+    assert texts == ["연결 정보(test)"]
+    assert "uat-test-debug-value" not in caplog.text
+    assert "uat-test-frame-value" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{"open_timeout": 0}, {"open_timeout": -1.0}, {"close_timeout": 0}, {"close_timeout": -0.5}],
+    ids=["open-0", "open-negative", "close-0", "close-negative"],
+)
+def test_connector_timeouts_must_be_positive(options):
+    with pytest.raises(ValueError, match="timeout"):
+        make_connector(**options)
+
+
+@pytest.mark.parametrize("value", [0, -1.0])
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_stream_open_timeout_must_be_positive(kind, value):
+    with pytest.raises(ValueError, match="open_timeout"):
+        _stream_maker(kind)(open_timeout=value)
+
+
+def test_ticker_with_an_unknown_stream_type_is_skipped(caplog):
+    caplog.set_level(logging.DEBUG)
+    env = scripted_env(([btc_frame(stream_type="DELAYED"), BTC_FRAME], 1000))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
+        assert [type(item) for item in items] == [StreamOpened, TickerEvent]
+        assert type(error) is StreamClosed
+
+    env.run(scenario)
+    assert stream.skipped_messages == {"ticker": 1}
+    assert app_warnings(caplog)

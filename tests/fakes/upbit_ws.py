@@ -31,6 +31,7 @@ status UP)가 sleep할 때마다 시간을 당긴다.
 - 같은 연결의 recv를 동시에 두 번 부르면 websockets 17.4처럼 ConcurrencyError(RuntimeError 하위,
   websockets의 클래스)를 던지고 `concurrent_recv` 위반을 남긴다.
 - delisting_date는 "YYYY-MM-DD" 문자열이다(문서 예시는 null뿐).
+- PING에는 받은 그 가상 시각에 바로 PONG으로 답한다(지연 없음, ws_no_pong이면 답하지 않는다).
 - 연결 객체의 백그라운드 타이머(120초, status UP)는 connect를 부른 이벤트 루프의 태스크다.
   같은 asyncio.run 안에서만 쓴다.
 """
@@ -85,6 +86,7 @@ STATUS_UP_DELAY = 10.0
 STATUS_UP_PERIOD = 10.0
 PAUSE_SECONDS = 1.0  # TOO_MANY_REQUEST·429 뒤 멈춤
 EPS = 1e-9  # FakeClock 초(float) 비교 오차
+_NONE: Any = object()  # 주입 목록에서 "찾지 못함"(None은 "모든 종류"라 쓸 수 없다)
 
 # 한도: (창 초, 창 안 최대 수). 연결은 종류마다, 메시지는 연결마다.
 CONNECT_REAL = ((1.0, 5),)
@@ -220,6 +222,7 @@ class WsConnectionRecord:
     # 보낸 프레임. 바이너리도 텍스트로 남긴다(ws_raw의 UTF-8 아닌 bytes만 bytes 그대로).
     delivered: list[tuple[float, str | bytes]] = field(default_factory=list)
     pings: list[float] = field(default_factory=list)
+    pongs: list[float] = field(default_factory=list)  # 서버가 PONG으로 답한 시각(R22-01)
     closed_at: float | None = None
     close_code: int | None = None
 
@@ -232,7 +235,7 @@ class WsConnectionRecord:
             f"WsConnectionRecord(url={self.url!r}, headers={headers!r}, stream={self.stream!r}, "
             f"accepted={self.accepted!r}, opened_at={self.opened_at!r}, "
             f"received={len(self.received)}건, delivered={len(self.delivered)}건, "
-            f"pings={len(self.pings)}건, closed_at={self.closed_at!r}, "
+            f"pings={len(self.pings)}건, pongs={len(self.pongs)}건, closed_at={self.closed_at!r}, "
             f"close_code={self.close_code!r})"
         )
 
@@ -270,6 +273,8 @@ class FakeWsConnection:
         self._status_up_started = False
         self.last_activity = record.opened_at
         self.drop_after: int | None = None
+        self.no_pong = False  # ws_no_pong: PING에 PONG으로 답하지 않는다
+        self._pong_waits: list[asyncio.Future[None]] = []  # 답하지 않은 PING의 PONG 대기
 
     def __repr__(self) -> str:
         return f"FakeWsConnection(stream={self.stream!r}, close_code={self.close_code!r})"
@@ -310,12 +315,24 @@ class FakeWsConnection:
         finally:
             self._receiving = False
 
-    async def ping(self) -> None:
-        """PING 프레임. 응답(PONG)은 기다리지 않는다. 메시지 한도에 세지 않는다."""
+    async def ping(self) -> asyncio.Future[None]:
+        """PING 프레임. PONG 대기 Future를 돌려준다(websockets 17.4의 ping처럼). 메시지 한도에
+        세지 않고, 120초 무송수신 규칙의 활동으로 센다.
+
+        기본은 같은 가상 시각에 바로 답한다(PONG은 서버 메시지가 아니라 recv로 오지 않는다).
+        ws_no_pong이면 답하지 않고, 연결이 끊기면 대기가 StreamClosed로 끝난다.
+        """
         self._raise_if_closed()
         now = self._fake.clock.monotonic()
         self.record.pings.append(now)
         self.last_activity = now
+        waiting: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        if self.no_pong:
+            self._pong_waits.append(waiting)
+        else:
+            waiting.set_result(None)
+            self.record.pongs.append(now)
+        return waiting
 
     async def close(self, code: int = 1000) -> None:
         self._fake._close(self, code)
@@ -335,6 +352,16 @@ class FakeWsConnection:
             if not waiter.done():
                 waiter.set_result(None)
         self._waiters.clear()
+
+    def _lose_pongs(self, code: int) -> None:
+        """끊겼다: 답하지 않은 PONG 대기를 StreamClosed로 끝낸다."""
+        for waiting in self._pong_waits:
+            if not waiting.done():
+                waiting.set_exception(StreamClosed(close_code=code, reason="연결이 닫혔다"))
+            # 끝난 Future의 cancel()은 상태를 바꾸지 않고 "never retrieved" 기록만 끈다
+            # (websockets의 terminate_pending_pings와 같다). 버린 대기가 경고를 남기지 않는다.
+            waiting.cancel()
+        self._pong_waits.clear()
 
     def _subscribed(self, type_name: str) -> dict[str, Any] | None:
         return next((obj for obj in self._subscription if obj["type"] == type_name), None)
@@ -418,6 +445,7 @@ class FakeUpbitWs:
         self._errors: list[_ErrorInjection] = []
         self._rejects: list[_RejectInjection] = []
         self._pending_drops: list[tuple[str | None, int | None]] = []
+        self._pending_no_pongs: list[str | None] = []
 
     # ── 검사 API ─────────────────────────────────────────
 
@@ -505,6 +533,10 @@ class FakeUpbitWs:
         if drop is not None:
             self._pending_drops.remove(drop)
             self._arm_drop(conn, drop[1])
+        no_pong = next((s for s in self._pending_no_pongs if s in (None, stream)), _NONE)
+        if no_pong is not _NONE:
+            self._pending_no_pongs.remove(no_pong)
+            conn.no_pong = True
         return conn
 
     # ── 주입 ─────────────────────────────────────────────
@@ -720,6 +752,20 @@ class FakeUpbitWs:
             return
         for conn in targets:
             self._arm_drop(conn, after)
+
+    def ws_no_pong(self, *, stream: str | None = None) -> None:
+        """열린 연결(stream이면 그 종류만)이 그 뒤 PING에 PONG으로 답하지 않는다(반쯤 열린 연결).
+
+        PING은 그대로 받아 pings에 남고 120초 무송수신의 활동으로 센다(가짜는 끊지 않는다).
+        이미 답한 PING은 그대로다. 열린 연결이 없으면 다음에 받아들이는 연결 하나에 건다.
+        """
+        _check_stream(stream)
+        targets = [c for c in self._open if stream in (None, c.stream)]
+        if not targets:
+            self._pending_no_pongs.append(stream)
+            return
+        for conn in targets:
+            conn.no_pong = True
 
     def ws_silence(self, seconds: float, *, stream: str | None = None) -> None:
         """[지금, 지금 + seconds) 동안 서버 메시지를 보내지 않고 버린다(UP 주기는 계속 돈다)."""
@@ -1026,6 +1072,7 @@ class FakeUpbitWs:
         if conn in self._open:
             self._open.remove(conn)
         conn._wake()
+        conn._lose_pongs(code)
         current = asyncio.current_task() if _loop_running() else None
         for task in conn._tasks:
             if task is not current:

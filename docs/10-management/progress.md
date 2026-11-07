@@ -33,6 +33,46 @@
   - 기획/문서: D-104·D-100이 정해지면 LLM 시그널 명세 4·5장과 화면 정의서(시그널 표시)를 고친다. R22-01이 병합되면 D-091 (4)를 보완한다.
 - 다음 단계: 남은 대기 결정 뒤 4단계(LLM 시그널, 뉴스 없음).
 
+## 2026-11-07 — 프론트/백엔드: 3단계 정리 PR(QA R17·R22, D-094 B 어댑터, D-092 A 확인, D-091 (12)) (클라우드 세션)
+
+- 한 일: 지휘 세션 요청으로 QA 권장 항목과 사용자 결정 2건의 코드 몫을 처리했다. 작업마다 테스터 → 워커 → 리뷰어 → 수정 1회(D-077)로 했고, 작업별 모델·노력은 PR 설명에 적었다. 결정 로그와 docs 명세 문서는 고치지 않았다(아래 제안).
+  - R22-01(반쯤 열린 연결): 공개·비공개 스트림이 PING마다 PONG을 `pong_timeout`(기본 30초, Clock) 안에 기다린다. 넘으면 연결을 닫고 `StreamClosed(reason="pong_timeout")`로 끝내며 WARNING 1줄을 남긴다. 감시는 다른 끊김처럼 backoff로 다시 연다. 나중 PING의 PONG은 앞 PING도 확인한 것으로 본다(RFC 6455). 웹소켓 가짜에 `ws_no_pong()`과 `WsConnectionRecord.pongs`를 더했다.
+  - R22-02(핸드셰이크 HTTP 상태): 핸드셰이크가 HTTP 상태로 거절되면 RECONNECTING의 `error_name`이 `HTTP_<상태>`(예: `HTTP_401`)다. HTTP 응답이 없는 실패는 None이다. 핸드셰이크 429면 대기를 max(backoff 값, 1초)로 한다.
+  - D-091 (12)(main #26의 보완): 비공개 스트림의 핸드셰이크 401·403은 `INVALID_AUTH`와 허용 횟수 하나를 같이 쓴다. 처음이면 바로 1번 다시 연결하고(backoff 칸은 그대로), 또 오면 AUTH_CHECK(`error_name` `HTTP_401`·`HTTP_403`)로 끝낸다. 공개 스트림의 401·403은 backoff대로다. 인증 허용 횟수와 `TOO_MANY_REQUEST` 허용 횟수가 서로 쓰거나 되살리지 않음을 테스트로 확인했다(변이 4종을 모두 잡음).
+  - R22-05(구독 예산 경합): 구독 메시지 예산을 연결을 기록하는 같은 순간(헤더 계산 뒤, 핸드셰이크 전)에 예약하고, 실패해도 되돌리지 않는다. 같은 스트림 객체로 연결을 동시에 여는 속성 테스트(INV-13)를 더했다.
+  - R22-06(루프백 프록시 우회): 네트워크 차단이 프록시 설정을 비우기 전에, 호스트가 로컬인 프록시 주소(`*_proxy` 환경 변수, OS 설정, `CLOUDSDK_PROXY_ADDRESS`·`PORT`)의 포트를 기록하고 그 포트로의 로컬 연결을 막는다. 포트가 없으면 스킴 기본 포트(http 80, https 443, socks 계열 1080)로 본다. 자식 pytest로 httpx·websockets의 프록시 경로가 막히는지 확인했다. 기록되지 않은 루프백·AF_UNIX 포워더는 한계로 docstring에 적었다.
+  - R17-06·R22-03(분기 테스트): 거래 어댑터의 보내기 전 검사(OrderRequest 검사를 우회한 값), HTTP 계층의 남은 분기(Date 해석, base_url 슬래시), 웹소켓 헤더 검사(같은 이름 두 번, Origin, User-Agent), OSError와 그 밖의 예외 → core 오류 변환, `open_stream`이 부를 때 core 오류를 내는 경우.
+  - R17-07: `OrderChance.order_types`에 "폐기 예정, 판단에 쓰지 않는다(`bid_types`·`ask_types`로 판단)"를 적고, `src/`가 이 속성을 읽지 않는지 AST로 검사한다.
+  - R17-04·R22-04: 테스트 함수 docstring 첫 줄에 TS·INV ID가 있는 것이 2개에서 200개(15개 파일)로 늘었다. R22-04가 짚은 우선 위치를 모두 포함한다.
+  - D-094 B(어댑터 몫): `ExchangeApi.lookup_order(*, identifier) -> OrderLookup`을 더했다. 개별 조회 1회의 결과를 `snapshot`과 `not_found` 중 하나로 준다.
+    - 404 `order_not_found` → `not_found="order_not_found"`.
+    - `error.name` 없는 404(본문 없음·JSON 아님, error 객체 없음, name 없음·null·빈 문자열, 문자열·숫자가 아닌 name) → `not_found="unnamed"`. 경로와 `Remaining-Req` 유무를 WARNING으로 남긴다(identifier·본문은 남기지 않는다).
+    - 다른 이름의 404(대소문자만 다른 이름, 숫자 404, 공백만 있는 이름 포함) → `UpbitNotFound`.
+    - `get_order`는 두 "없음"을 합쳐 None을 준다(호환). 주문 취소와 목록 조회 3개(`get_orders`, 미체결, 종료)의 404는 이름과 상관없이 오류다.
+  - D-092 A 확인: 구현이 A(제안 그대로)와 같다는 것을 "D-092 A 확인" 테스트 묶음(TS-26·TS-104·TS-155)으로 확인했다. 코드는 바꾸지 않았다.
+  - 확인: `uv sync --locked`, `uv run ruff check .` 통과. `QT_QPA_PLATFORM=offscreen uv run pytest -q --cov`는 4,292개 통과, 9개 건너뜀(IPv6 소켓 없음 8, Windows 전용 1)이다. 커버리지 합계 98%(`exchange.py` 100%, `websocket.py` 99%, `streams.py` 94%)다. PR 직전 최신 main(`abb69a7`, #25~#28)을 병합했고 충돌은 없었다.
+  - 지휘 세션에 직접 답하는 세션 간 메시지가 이 클라우드 세션에서 권한 검사로 막혀, 결과는 이 기록과 PR 설명으로 전한다.
+- 결정: 새 결정 없음. 반영한 결정: D-094 B(어댑터 몫), D-092 A(구현 확인), D-091 (12).
+- 문서 변경 제안(기획/문서가 반영한다. 이 PR은 고치지 않았다):
+  1. D-091 (4) 보완(R22-01): "PING을 보낸 시각부터 `pong_timeout`(기본 30초, Clock) 안에 그 PING의 PONG이 오지 않으면 반쯤 열린 연결로 보고, 어댑터가 연결을 닫고 `StreamClosed`(reason `pong_timeout`)로 끝낸다. 감시는 다른 끊김처럼 backoff로 다시 연다. 공개·비공개가 같다. 비공개는 무수신 감시가 없어 이것이 끊김을 알아채는 길이다(끊긴 뒤 최대 ping_interval + pong_timeout, 기본 약 60초). PONG을 기다리는 동안에도 받기와 PING 일정은 그대로다. 나중 PING의 PONG은 앞선 PING도 확인한 것으로 본다(RFC 6455)." [업비트 API 연동 명세](../05-integration/upbit-api.md) 2장 PING 줄에도 PONG 30초 상한을 잇는다.
+  2. 업비트 API 연동 명세 4장(웹소켓 한도): "구독 메시지 예산은 연결을 시작하는 시각에 예약하고, 연결이 실패해도 되돌리지 않는다(보수적, R22-05)."
+  3. [시스템 구성도](../06-architecture/system-architecture.md) 6장: `ExchangeApi.lookup_order(*, identifier) -> OrderLookup`과 `OrderLookup`(snapshot, not_found = `order_not_found`·`unnamed`, 둘 중 하나만) 추가. `get_order`는 "두 없음을 합쳐 None(호환용). UNKNOWN 확인·재조정은 lookup_order". 목록 조회 3개는 "404는 이름과 상관없이 오류". `OrderChance.order_types`는 "폐기 예정". 스트림 어댑터 계약에 "PONG 상한, 나중 PONG이 앞 PING을 확인, `ping()`의 상한은 그 호출 자신의 것".
+  4. [매매 로직 명세](../03-functional/trading-logic.md) 9장 "이름 없는 404 처리" 보충: 숫자·공백만 있는 이름은 "다른 이름"(`UpbitNotFound`)이고, 문자열·숫자가 아닌 name(true·{}·[])은 이름 없음이다. 어댑터가 WARNING(경로, Remaining-Req 유무)을 남긴다. 확정 전 목록 조회가 404 등으로 실패하면 "없음"으로 보지 않고 확정하지 않는다.
+  5. [가짜 구현 명세](../08-quality/fakes-spec.md) 2.3절 차단 설명에 덧붙임: "비우기 전 프록시 설정(`*_proxy` 환경 변수, OS 설정, `CLOUDSDK_PROXY_ADDRESS`·`PORT`(읽기만 하고 지우지 않는다)) 중 호스트가 로컬인 주소의 포트로 가는 로컬 연결도 막는다. 외부 프록시는 외부 차단이 막으므로 기록하지 않는다. 포트가 없으면 스킴 기본 포트(http 80, https 443, socks·socks4·socks4a·socks5·socks5h 1080)로 본다. 한계: 환경 변수·OS 설정에 기록되지 않은 루프백·AF_UNIX 포워더는 허용된다."
+  6. 가짜 구현 명세 2.5절: "`FakeWsConnection.ping()`은 PONG 대기 Future를 돌려준다. 기본은 같은 가상 시각에 바로 답하고 `WsConnectionRecord.pongs`에 남긴다. `ws_no_pong(*, stream=None)`이면 그 뒤 PING에 답하지 않는다(열린 연결이 없으면 다음 연결 하나). PING은 120초 무송수신의 활동으로 계속 센다. 끊기면 기다리던 대기는 `StreamClosed`로 끝난다."
+  7. D-092 A 문구(업비트 API 연동 명세 9장 D-092 절): "유의" 예외는 "바로 뒤에(공백 허용) '사항'"이다(구현이 "유의 사항"도 예외로 본다). "빈 티커·빈 이름"은 정규화 뒤 빈 문자열이다(공백만 있는 값은 빈 값이 아니다. 종목 목록 API에서는 생기지 않는다).
+  8. 결정 제안(대기, 5단계): 웹소켓 핸드셰이크가 HTTP 418로 거절되면 REST 418과 같이 매매를 멈추고 알린다(CLAUDE.md 418 규칙). 핸드셰이크 429가 이어지면(예: 같은 감시 세션에서 2회 연속) REST RateLimiter와 IP 단위 대기를 공유한다. 지금은 RECONNECTING `HTTP_418`·`HTTP_429`로 알리고, 429 뒤 1초 이상 기다리는 것만 한다.
+  9. 코드 제안(대기): 이름 없는 404의 출처를 가리기 위해 `UpbitError`에 Content-Type 같은 응답 메타를 담거나, HTTP 오류 로그에 Content-Type·Remaining-Req 유무를 더한다.
+- 남은 일:
+  - 5단계(조립·정책):
+    - D-094 B: 재조정이 `lookup_order().not_found`로 "없음"을 센다. `"unnamed"`이면 셀 때마다 경고 이벤트 UNNAMED_NOT_FOUND를 남긴다. REJECTED 확정 조건(60초, "없음" 3회 이상, 목록 조회 2개에도 없음)은 그대로다.
+    - AUTH_CHECK는 감시의 마지막 상태다. 비공개 핸드셰이크 401·403이나 `INVALID_AUTH`로 AUTH_CHECK가 되면 REST로 키를 확인하고, 정상이면 감시를 새로 시작한다(업비트의 일시적 핸드셰이크 401도 AUTH_CHECK로 이어질 수 있다). 시스템 구성도 7장 처리 표와 5단계 조립 목록에 "키 확인 정상이면 감시를 새로 시작"을 넣는다.
+    - 위 제안 8(핸드셰이크 418·429)이 정해지면 반영한다.
+    - 기존 조립 목록(RateLimiter 공유, 스트림 객체 하나씩, 재연결 뒤 대조 내용, 상태를 매매 상태로, 24시간 상한 긴급 알림, 418 확인 요청을 가벼운 조회로)은 그대로다.
+  - 기획/문서: 위 제안 1~7을 반영하고, 8·9는 결정 로그에 "제안"으로 올린다.
+  - QA: 정리 PR 반영 확인. R17-04·R17-06·R17-07, R22-01~R22-06은 이 PR에서 처리했고, R17-05는 인프라가 #25에서 처리했다.
+- 다음 단계: 사용자 결정 뒤 4단계(뉴스 + LLM 시그널).
+
 ## 2026-11-07 — 기획/문서: 4단계 결정 묶음 검증 결과 12건 반영 (클라우드 세션)
 
 - 한 일:

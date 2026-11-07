@@ -7,13 +7,16 @@
 - 비밀(UpbitCredentials)은 dataclass가 아니다. 복제·피클·asdict로 값이 나오지 않는다.
 """
 
+import ast
 import copy
 import dataclasses
 import pickle
 import secrets
 import string
+import typing
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from types import MappingProxyType
 
 import pytest
@@ -695,3 +698,111 @@ def test_models_have_the_designed_fields(cls):
     missing = set(MODEL_FIELDS[cls]) - {f.name for f in dataclasses.fields(cls)}
 
     assert not missing, f"{cls.__name__}: {sorted(missing)}"
+
+
+# ── R17-07: OrderChance.order_types는 폐기 예정 ───────────────
+# 공식 주문 가능 정보 문서에서 market.order_types는 폐기 예정이다(대체: bid_types·ask_types).
+# 필드는 남기되(응답에 있으면 읽는다) 설명에 "폐기 예정, 판단에 쓰지 않는다"를 적는다. 테스트는
+# 설명 문구가 아니라 구조(앱 코드가 그 값을 읽지 않음)만 본다.
+
+SRC_DIR = Path(models.__file__).resolve().parents[1]  # src/autotrader
+
+
+def test_order_types_stays_a_tuple_of_text():
+    # 응답에서 빠질 수 있어 어댑터가 빈 튜플로 둔다(tests/unit/upbit/test_exchange.py R17-07).
+    hints = typing.get_type_hints(models.OrderChance)
+
+    assert hints["order_types"] == tuple[str, ...]
+    assert hints["bid_types"] == tuple[str, ...]
+    assert hints["ask_types"] == tuple[str, ...]
+
+
+def test_no_app_code_reads_order_types():
+    # 판단에 쓰지 않는다를 구조로 강제한다: 앱 코드 어디에서도 `.order_types`를 읽지 않는다.
+    # 응답 키 "order_types"를 읽는 곳은 거래 어댑터의 변환 한 곳뿐이다.
+    readers: list[str] = []
+    response_keys: list[str] = []
+    for path in sorted(SRC_DIR.rglob("*.py")):
+        relative = path.relative_to(SRC_DIR).as_posix()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Attribute) and node.attr == "order_types":
+                readers.append(f"{relative}:{node.lineno}")
+            if isinstance(node, ast.Constant) and node.value == "order_types":
+                response_keys.append(relative)
+
+    assert readers == []
+    assert response_keys == ["adapters/upbit/exchange.py"]
+
+
+# ── OrderLookup(D-094 B): 개별 주문 조회 결과 ──────────────────
+# 찾았으면 (snapshot, None), 없으면 (None, "order_not_found" | "unnamed"). 이름 없는 404도
+# "없음"이지만 5단계가 경고 이벤트(UNNAMED_NOT_FOUND)를 남기도록 구별한다. 어긋난 조합은
+# 만들 때 ValueError다(ApiKeyInfo·OrderRequest와 같은 관례).
+
+NOT_FOUND_KINDS = ("order_not_found", "unnamed")
+
+
+def test_order_lookup_is_a_frozen_slotted_dataclass():
+    cls = models.OrderLookup
+
+    assert dataclasses.is_dataclass(cls)
+    assert cls.__dataclass_params__.frozen
+    assert "__slots__" in cls.__dict__
+    assert [f.name for f in dataclasses.fields(cls)] == ["snapshot", "not_found"]
+
+
+def test_order_lookup_field_types():
+    hints = typing.get_type_hints(models.OrderLookup)
+
+    assert hints["snapshot"] == models.OrderSnapshot | None
+    assert hints["not_found"] == models.NotFoundKind | None
+    assert typing.get_args(models.NotFoundKind) == NOT_FOUND_KINDS
+
+
+def test_order_lookup_with_a_snapshot_has_no_not_found():
+    found = models.OrderLookup(snapshot=snapshot(), not_found=None)
+
+    assert found.snapshot == snapshot()
+    assert found.not_found is None
+
+
+@pytest.mark.parametrize("kind", NOT_FOUND_KINDS)
+def test_order_lookup_without_a_snapshot_says_which_not_found(kind):
+    found = models.OrderLookup(snapshot=None, not_found=kind)
+
+    assert found.snapshot is None
+    assert found.not_found == kind
+
+
+def test_the_two_kinds_of_not_found_are_different_values():
+    named = models.OrderLookup(snapshot=None, not_found="order_not_found")
+    unnamed = models.OrderLookup(snapshot=None, not_found="unnamed")
+
+    assert named != unnamed
+    assert named == models.OrderLookup(snapshot=None, not_found="order_not_found")
+
+
+def test_order_lookup_needs_a_snapshot_or_a_not_found():
+    with pytest.raises(ValueError):  # noqa: PT011 - 문구는 구현이 정한다
+        models.OrderLookup(snapshot=None, not_found=None)
+
+
+@pytest.mark.parametrize("kind", NOT_FOUND_KINDS)
+def test_order_lookup_with_a_snapshot_cannot_also_be_not_found(kind):
+    with pytest.raises(ValueError):  # noqa: PT011
+        models.OrderLookup(snapshot=snapshot(), not_found=kind)
+
+
+@pytest.mark.parametrize("kind", ["", "UNNAMED", "Order_Not_Found", "not_found", "404"])
+def test_order_lookup_rejects_other_not_found_values(kind):
+    with pytest.raises(ValueError):  # noqa: PT011
+        models.OrderLookup(snapshot=None, not_found=kind)
+
+
+def test_order_lookup_cannot_be_modified():
+    found = models.OrderLookup(snapshot=None, not_found="unnamed")
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        found.not_found = "order_not_found"  # type: ignore[misc]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        found.snapshot = snapshot()  # type: ignore[misc]

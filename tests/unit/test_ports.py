@@ -8,7 +8,7 @@ import typing
 
 import pytest
 
-from autotrader.core import ports
+from autotrader.core import models, ports
 
 QUOTATION_METHODS = {
     "list_markets",
@@ -25,6 +25,7 @@ EXCHANGE_METHODS = {
     "create_order",
     "test_order",
     "get_order",
+    "lookup_order",  # D-094 B: 두 "없음"(order_not_found·이름 없는 404)을 구별한다
     "get_orders",
     "list_open_orders",
     "list_closed_orders",
@@ -124,3 +125,23 @@ def test_candle_units():
 
     assert len(units) == len(set(units))
     assert set(units) == {"m1", "m3", "m5", "m10", "m15", "m30", "m60", "m240", "d1"}
+
+
+# ── lookup_order(D-094 B) ─────────────────────────────────
+
+
+def test_lookup_order_takes_identifier_by_keyword():
+    func = ports.ExchangeApi.lookup_order
+
+    assert keyword_only(func) == {"identifier"}
+    assert list(inspect.signature(func).parameters) == ["self", "identifier"]
+
+
+def test_lookup_order_returns_an_order_lookup_and_get_order_stays_optional():
+    # get_order는 호환을 위해 그대로 OrderSnapshot | None(두 "없음" 모두 None)이다.
+    lookup = typing.get_type_hints(ports.ExchangeApi.lookup_order)
+    get = typing.get_type_hints(ports.ExchangeApi.get_order)
+
+    assert lookup["return"] is models.OrderLookup
+    assert lookup["identifier"] is str
+    assert get["return"] == models.OrderSnapshot | None

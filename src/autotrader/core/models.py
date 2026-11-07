@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from functools import cache
-from typing import Literal, NoReturn
+from typing import Literal, NoReturn, get_args
 
 
 @cache
@@ -460,7 +460,9 @@ class AnnouncementEvent:
 class StreamStatus:
     """감시(StreamSupervisor)가 알리는 스트림 상태.
 
-    error_name은 서버 오류 이름(error.name), 재연결 훅 실패면 예외 클래스 이름, 없으면 None.
+    error_name은 서버 오류 이름(error.name), 재연결 훅 실패면 예외 클래스 이름, 핸드셰이크
+    HTTP 상태가 있는 연결 실패의 RECONNECTING이면 "HTTP_<상태>"(예: "HTTP_401", R22-02), 없으면
+    None. 앱은 이것으로 인증·한도 문제(401·403·429)와 네트워크 끊김을 구분한다.
     retry_in은 다시 열기 전에 기다릴 초(RECONNECTING), 없으면 None.
     """
 
@@ -474,7 +476,7 @@ class StreamStatus:
 # ── 개별 주문 조회 결과(D-094 B) ──────────────────────────
 
 NotFoundKind = Literal["order_not_found", "unnamed"]
-_NOT_FOUND_KINDS: frozenset[str] = frozenset({"order_not_found", "unnamed"})
+_NOT_FOUND_KINDS: frozenset[str] = frozenset(get_args(NotFoundKind))
 
 
 @dataclass(frozen=True, slots=True)
@@ -482,9 +484,10 @@ class OrderLookup:
     """identifier로 한 개별 주문 조회(ExchangeApi.lookup_order)의 결과.
 
     찾았으면 (snapshot, None), 없으면 (None, not_found)이다. not_found는 404의 error.name이
-    order_not_found면 "order_not_found", 이름이 없으면(본문·error 객체·name 없음, null, 빈 문자열)
-    "unnamed"다. 둘 다 "없음"이지만 5단계가 "unnamed"에 경고 이벤트(UNNAMED_NOT_FOUND)를 남기도록
-    구별한다(D-094 B). 어긋난 조합과 다른 값은 만들 때 ValueError다.
+    order_not_found면 "order_not_found", 이름이 없으면(본문·error 객체·name 없음, null, 빈 문자열,
+    문자열·숫자가 아닌 name) "unnamed"다. 숫자 404·공백 같은 다른 이름의 404는 "없음"이 아니다
+    (어댑터가 UpbitNotFound로 낸다). 둘 다 "없음"이지만 5단계가 "unnamed"에 경고 이벤트
+    (UNNAMED_NOT_FOUND)를 남기도록 구별한다(D-094 B). 어긋난 조합과 다른 값은 만들 때 ValueError다.
     """
 
     snapshot: OrderSnapshot | None

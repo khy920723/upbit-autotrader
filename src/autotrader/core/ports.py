@@ -51,7 +51,11 @@ class QuotationApi(Protocol):
 
 
 class ExchangeApi(Protocol):
-    """비공개 REST(키 필요). 자동 재시도 없음."""
+    """비공개 REST(키 필요). 자동 재시도 없음.
+
+    목록 조회(get_orders·list_open_orders·list_closed_orders)의 404는 이름과 상관없이 오류다
+    ("없음"·빈 목록이 아니다). 이름 없는 404를 "없음"으로 보는 D-094 B는 개별 조회에만 쓴다.
+    """
 
     async def get_accounts(self) -> list[Balance]: ...
 
@@ -61,7 +65,12 @@ class ExchangeApi(Protocol):
 
     async def test_order(self, req: OrderRequest) -> OrderSnapshot: ...
 
-    async def get_order(self, *, identifier: str) -> OrderSnapshot | None: ...
+    async def get_order(self, *, identifier: str) -> OrderSnapshot | None:
+        """identifier로 개별 조회. 두 "없음"(order_not_found·이름 없는 404)을 합쳐 None이다.
+
+        UNKNOWN 확인·재조정에는 lookup_order를 쓴다(D-094 B, 이름 없는 404 경고).
+        """
+        ...
 
     async def lookup_order(self, *, identifier: str) -> OrderLookup:
         """get_order와 같은 개별 조회. 두 "없음"(order_not_found·이름 없는 404)을 구별한다.
@@ -104,6 +113,9 @@ class PublicStream(Protocol):
       기록만 된다. 두 번째 취소가 오면 닫기를 서둘러 끝낸다(예외를 삼키고 버티지 않는다).
     - PING은 연결이 가진 별도 태스크가 Clock으로 보낸다. 그 태스크는 연결을 닫을 때(finally)
       정리한다. 그 태스크가 실패하면 연결을 끊고 이터레이터를 core 오류로 끝낸다.
+    - PONG 상한(반쯤 열린 연결, R22-01): PING을 보낸 시각부터 pong_timeout(Clock) 안에 그 PING의
+      PONG이 오지 않으면 연결을 닫고 StreamClosed(reason "pong_timeout")로 끝낸다. 감시는 이것을
+      다른 끊김처럼 다시 연다. 비공개 스트림은 무수신 감시가 없어 이것이 끊김을 알아채는 길이다.
     - StreamOpened까지 걸리는 시간에 상한(open_timeout)을 둔다. 감시는 StreamOpened 전에는
       무수신을 재지 않는다.
     """

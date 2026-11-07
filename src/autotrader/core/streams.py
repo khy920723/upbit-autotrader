@@ -15,6 +15,9 @@
 - 끊김(NetworkError 계열, 오류 없이 끝남): backoff 표대로 기다린다. 연속 실패마다 표를 한 칸씩
   내려가고 끝 값을 계속 쓴다. StreamOpened부터 끊길 때까지 stable_after초 이상 유지됐으면 표와
   D-080 허용 횟수를 처음으로 돌린다. 대기가 0이어도 이벤트 루프를 한 번 놓는다.
+  연결 실패(StreamConnectFailed)에 핸드셰이크 HTTP 상태가 있으면 그 RECONNECTING의 error_name은
+  "HTTP_<상태>"(예: "HTTP_401")다(R22-02). 앱이 인증·한도 문제와 네트워크 끊김을 구분하게 한다.
+  backoff는 그대로 내려간다(401·403이 이어질 때의 처리는 5단계).
 - 무수신(공개 스트림만, StreamOpened 뒤에만): 감시가 다음 수신을 기다리기 시작한 뒤
   silence_timeout초가 지나면 check_interval마다 하는 점검에서 DEGRADED("silence")를 알리고
   연결을 닫고 다시 연다. 콜백(on_event·on_reconnected)이 도는 시간은 세지 않는다.
@@ -480,12 +483,14 @@ class StreamSupervisor:
         if isinstance(error, StreamError):
             await self._report("BROKEN", REASON_REQUEST_ERROR, error_name=error.error_name)
             return False
-        return await self._back_off(session, _disconnect_reason(error))
+        return await self._back_off(session, _disconnect_reason(error), _handshake_status(error))
 
-    async def _back_off(self, session: _Session, reason: str) -> bool:
+    async def _back_off(
+        self, session: _Session, reason: str, error_name: str | None = None
+    ) -> bool:
         index = min(session.backoff_index, len(self._backoff) - 1)
         session.backoff_index += 1
-        return await self._retry(session, reason, self._backoff[index])
+        return await self._retry(session, reason, self._backoff[index], error_name)
 
     async def _retry(
         self, session: _Session, reason: str, delay: float, error_name: str | None = None
@@ -534,6 +539,13 @@ class StreamSupervisor:
                 retry_in=retry_in,
             )
         )
+
+
+def _handshake_status(error: NetworkError | StreamError | None) -> str | None:
+    """핸드셰이크 HTTP 상태가 있는 연결 실패면 "HTTP_<상태>", 아니면 None(R22-02)."""
+    if isinstance(error, StreamConnectFailed) and error.http_status is not None:
+        return f"HTTP_{error.http_status}"
+    return None
 
 
 def _disconnect_reason(error: NetworkError | StreamError | None) -> str:

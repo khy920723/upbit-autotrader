@@ -47,8 +47,8 @@ INV-07·13·14·16, tests/unit/upbit/test_websocket.py docstring.
 import asyncio
 import contextlib
 import json
-import math
 import logging
+import math
 import ssl
 import uuid
 from collections import deque
@@ -331,7 +331,9 @@ class _WebsocketsConnection:
                 if isinstance(error, WebSocketException):
                     error = self._failure(error)
                 elif error is not None:
-                    error = StreamClosed(close_code=self._ws.close_code, reason=type(error).__name__)
+                    error = StreamClosed(
+                        close_code=self._ws.close_code, reason=type(error).__name__
+                    )
             if target.done():
                 return
             if error is None:
@@ -767,8 +769,8 @@ class _UpbitStream:
 
         답을 기다리는 PING은 보낸 순서대로 waits에 둔다(상한도 그 순서다). 다음 PING 시각과 가장
         오래된 PING의 상한 가운데 이른 쪽까지 자고 깨어 본다. 그래서 PONG을 기다리느라 PING이
-        밀리지 않는다. 상한이 지나면 StreamClosed(reason "pong_timeout"). ping() 호출이 끝나지 않아도
-        같은 상한으로 끊는다. 실패하면 예외로 끝난다(_receive가 연결을 끝낸다).
+        밀리지 않는다. 상한이 지나면 StreamClosed(reason "pong_timeout"). ping() 호출이 끝나지
+        않아도 같은 상한으로 끊는다. 실패하면 예외로 끝난다(_receive가 연결을 끝낸다).
         """
         due = self._clock.monotonic() + self._ping_interval
         waits: deque[tuple[float, asyncio.Future[Any]]] = deque()

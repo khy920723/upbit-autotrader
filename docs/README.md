@@ -33,6 +33,7 @@
 | | [알림 정의서](03-functional/notifications.md) | 초안 |
 | | [설정 항목 정의서](03-functional/settings.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [분할 매수·매도 설계](03-functional/split-trading.md) | 확정(D-082~D-086) |
+| | [4단계 시작 전 결정 묶음](03-functional/stage4-decisions.md) | 사용자 결정 대기(D-095~D-102 등) |
 | 04 데이터 | [데이터 모델](04-data/data-model.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [로그·감사 기록 정의서](04-data/logging-audit.md) | 초안 |
 | 05 연동 | [업비트 API 연동 명세](05-integration/upbit-api.md) | 확정(2026-11 기준 사실, 2026-11-05 재확인, 결정 대기 있음) |

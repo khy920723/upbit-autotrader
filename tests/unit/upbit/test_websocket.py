@@ -1887,7 +1887,10 @@ def test_concurrent_handshakes_reserve_the_minute_budget_before_connecting(
 @given(
     kind=st.sampled_from(["public", "private"]),
     delay=st.sampled_from([0.0, 0.5, 1.0, 2.5, 5.0]),
-    quarters=st.lists(st.integers(min_value=0, max_value=240), min_size=1, max_size=80),
+    # 연결 수를 먼저 고르게 뽑는다(그냥 목록을 뽑으면 분당 50개에 닿는 긴 목록이 드물다).
+    quarters=st.integers(min_value=1, max_value=80).flatmap(
+        lambda n: st.lists(st.integers(min_value=0, max_value=240), min_size=n, max_size=n)
+    ),
 )
 @example(kind="public", delay=2.5, quarters=[0] * 60)
 @example(kind="private", delay=5.0, quarters=[0] * 30 + [100] * 30 + [236] * 10)

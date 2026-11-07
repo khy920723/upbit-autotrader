@@ -2133,6 +2133,93 @@ def test_handshake_auth_rejection_and_invalid_auth_share_one_allowance(first, se
     assert rec.events() == []
 
 
+@pytest.mark.parametrize("auth", AUTH_FAILURES)
+def test_auth_retry_does_not_use_up_the_rate_limit_allowance(auth):
+    """TS-106·D-080·D-091 (12): 인증 허용 횟수(401·403·INVALID_AUTH)와 한도 허용 횟수는 따로 간다.
+
+    인증 실패로 다시 연 뒤 TOO_MANY_REQUEST가 와도 한도 허용은 남아 있어 1초 뒤 1번 다시 연다.
+    """
+    make_auth, auth_name = AUTH_FAILURES[auth]
+
+    script, rec, result = simulate(
+        "private", make_auth(), [OPEN, rate_limited()], [OPEN, asset_event(1)], seconds=600
+    )
+
+    assert result == "running"
+    assert [c.opened_at - T0 for c in script.opened] == pytest.approx([0, 0, 1])
+    assert reconnecting_fields(rec) == [
+        ("auth_failed", auth_name, 0.0),
+        ("rate_limited", "TOO_MANY_REQUEST", 1.0),
+    ]
+    assert {s.kind for _, s in rec.statuses()} == {"CONNECTING", "RECONNECTING", "OPEN"}
+    assert [e for _, e in rec.events()] == [asset_event(1)]
+
+
+@pytest.mark.parametrize("auth", AUTH_FAILURES)
+def test_auth_retry_does_not_restore_the_rate_limit_allowance(auth):
+    """TS-106·D-080·D-091 (12): 사이의 인증 재연결은 정상 이벤트가 아니어서 한도 허용을 못 돌린다.
+
+    TOO_MANY_REQUEST 뒤 인증 실패로 한 번 더 열고 또 TOO_MANY_REQUEST면 BROKEN이다.
+    """
+    make_auth, auth_name = AUTH_FAILURES[auth]
+
+    script, rec, result = simulate(
+        "private",
+        [OPEN, rate_limited()],
+        make_auth(),
+        [OPEN, rate_limited()],
+        [OPEN, asset_event(1)],
+        seconds=600,
+    )
+
+    assert result == "returned"
+    assert [c.opened_at - T0 for c in script.opened] == pytest.approx([0, 1, 1])
+    assert reconnecting_fields(rec) == [
+        ("rate_limited", "TOO_MANY_REQUEST", 1.0),
+        ("auth_failed", auth_name, 0.0),
+    ]
+    last_at, last = rec.statuses()[-1]
+    assert (last_at, last.kind, last.reason, last.error_name) == (
+        pytest.approx(T0 + 1),
+        "BROKEN",
+        "rate_limited",
+        "TOO_MANY_REQUEST",
+    )
+    assert rec.log[-1][2] is last
+    assert rec.events() == []
+
+
+@pytest.mark.parametrize("auth", AUTH_FAILURES)
+def test_rate_limit_retry_does_not_restore_the_auth_allowance(auth):
+    """TS-106·D-080·D-091 (12): 반대도 같다. 사이의 한도 재연결은 인증 허용을 돌려주지 않는다."""
+    make_auth, auth_name = AUTH_FAILURES[auth]
+
+    script, rec, result = simulate(
+        "private",
+        make_auth(),
+        [OPEN, rate_limited()],
+        make_auth(),
+        [OPEN, asset_event(1)],
+        seconds=600,
+    )
+
+    assert result == "returned"
+    assert [c.opened_at - T0 for c in script.opened] == pytest.approx([0, 0, 1])
+    assert reconnecting_fields(rec) == [
+        ("auth_failed", auth_name, 0.0),
+        ("rate_limited", "TOO_MANY_REQUEST", 1.0),
+    ]
+    last_at, last = rec.statuses()[-1]
+    assert (last_at, last.kind, last.reason, last.error_name) == (
+        pytest.approx(T0 + 1),
+        "AUTH_CHECK",
+        "auth_failed",
+        auth_name,
+    )
+    assert rec.log[-1][2] is last
+    assert rec.events() == []
+
+
 BETWEEN_WITHOUT_DATA = {
     "opened_only": (lambda: [OPEN, closed()], ("closed", None, 1.0)),
     "connect_failed": (lambda: [connect_failed()], ("connect_failed", None, 1.0)),
@@ -2340,8 +2427,9 @@ PRIVATE_OTHER_STEPS = {
     "data_closed": lambda: [OPEN, asset_event(1), closed()],
     "stable_closed": lambda: [OPEN, Wait(STABLE_AFTER), closed()],
     "data_invalid_auth": lambda: [OPEN, asset_event(2), auth_error()],
+    "opened_rate_limited": lambda: [OPEN, rate_limited()],
 }
-"""비공개 대본에서 401·403 사이에 섞는 연결(인증 실패가 아닌 것과 데이터 뒤 INVALID_AUTH)."""
+"""비공개 대본에서 401·403 사이에 섞는 연결(인증 실패가 아닌 것, 데이터 뒤 INVALID_AUTH, 한도)."""
 
 
 @settings(max_examples=40, deadline=None)

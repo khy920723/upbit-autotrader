@@ -10,7 +10,8 @@
   되던져(athrow) 오류가 사라지지 않게 한다.
 - 상태: run() 시작에 CONNECTING. 첫 StreamOpened에서 OPEN. 재연결의 StreamOpened에서는
   on_reconnected가 끝난 뒤 OPEN(실패면 OPEN "reconnect_hook_failed")을 알린다(훅이 도는 동안
-  앱이 DEGRADED를 풀지 않게). 끊김마다 RECONNECTING(retry_in)을 알린 뒤 기다린다.
+  앱이 DEGRADED를 풀지 않게). 끊김마다 RECONNECTING(retry_in)을 알린 뒤 기다린다. retry_in은
+  감시가 기다리는 시간이고, 다시 연 뒤 어댑터의 요청 한도 대기가 더해질 수 있다.
   BROKEN·AUTH_CHECK는 마지막 상태이고 run()은 예외 없이 끝난다.
 - 끊김(NetworkError 계열, 오류 없이 끝남): backoff 표대로 기다린다. 연속 실패마다 표를 한 칸씩
   내려가고 끝 값을 계속 쓴다. StreamOpened부터 끊길 때까지 stable_after초 이상 유지됐으면 표와
@@ -21,7 +22,7 @@
   내려가되 429면 대기를 max(backoff 값, RATE_LIMIT_RETRY_SECONDS)로 한다(표에 0이 있어도 1초
   멈춤). 단 비공개 스트림의 401·403(AUTH_HANDSHAKE_STATUSES)은 backoff가 아니라 아래 D-080의
   StreamAuthError(INVALID_AUTH)와 같이 다룬다. 공개 스트림의 401·403과 418·3xx·404·5xx 등은
-  backoff대로 계속한다.
+  backoff대로 계속한다. 공개 401·403·418·429가 이어질 때의 처리(매매 정지 등)는 5단계.
 - 무수신(공개 스트림만, StreamOpened 뒤에만): 감시가 다음 수신을 기다리기 시작한 뒤
   silence_timeout초가 지나면 check_interval마다 하는 점검에서 DEGRADED("silence")를 알리고
   연결을 닫고 다시 연다. 콜백(on_event·on_reconnected)이 도는 시간은 세지 않는다.
@@ -485,11 +486,9 @@ class StreamSupervisor:
             session.rate_limit_retried = True
             delay = MINUTE_LIMIT_RETRY_SECONDS if error.minute_limited else RATE_LIMIT_RETRY_SECONDS
             return await self._retry(session, REASON_RATE_LIMITED, delay, error.error_name)
-        if isinstance(error, StreamAuthError) or self._is_auth_handshake(error):
+        name = self._auth_failure_name(error)
+        if name is not None:
             # INVALID_AUTH와 비공개 핸드셰이크 401·403은 허용 횟수 하나를 같이 쓴다(D-091 (12)).
-            name = (
-                error.error_name if isinstance(error, StreamAuthError) else _handshake_status(error)
-            )
             if session.auth_retried:
                 await self._report("AUTH_CHECK", REASON_AUTH_FAILED, error_name=name)
                 return False
@@ -508,13 +507,21 @@ class StreamSupervisor:
             session, _disconnect_reason(error), _handshake_status(error), at_least=at_least
         )
 
-    def _is_auth_handshake(self, error: NetworkError | StreamError | None) -> bool:
-        """비공개 스트림의 핸드셰이크 401·403인지(D-091 (12)). 공개 스트림은 backoff대로 한다."""
-        return (
+    def _auth_failure_name(self, error: NetworkError | StreamError | None) -> str | None:
+        """인증 실패면 상태의 error_name, 아니면 None(D-080, D-091 (12)).
+
+        StreamAuthError는 그 error_name, 비공개 스트림의 핸드셰이크 401·403은 "HTTP_<상태>".
+        공개 스트림의 401·403은 인증 실패로 보지 않고 backoff대로 한다.
+        """
+        if isinstance(error, StreamAuthError):
+            return error.error_name
+        if (
             self._stream == "private"
             and isinstance(error, StreamConnectFailed)
             and error.http_status in AUTH_HANDSHAKE_STATUSES
-        )
+        ):
+            return handshake_status_name(error.http_status)
+        return None
 
     async def _back_off(
         self,

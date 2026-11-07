@@ -21,6 +21,7 @@ from autotrader.core.models import (
     MyOrderEvent,
     Orderbook,
     OrderChance,
+    OrderLookup,
     OrderRequest,
     OrderSnapshot,
     StreamOpened,
@@ -61,6 +62,13 @@ class ExchangeApi(Protocol):
     async def test_order(self, req: OrderRequest) -> OrderSnapshot: ...
 
     async def get_order(self, *, identifier: str) -> OrderSnapshot | None: ...
+
+    async def lookup_order(self, *, identifier: str) -> OrderLookup:
+        """get_order와 같은 개별 조회. 두 "없음"(order_not_found·이름 없는 404)을 구별한다.
+
+        D-094 B. get_order는 이 결과의 snapshot이다(두 "없음" 모두 None).
+        """
+        ...
 
     async def get_orders(self, *, identifiers: Sequence[str]) -> list[OrderSnapshot]: ...
 

@@ -122,6 +122,10 @@ class OrderChance:
     bid_types: tuple[str, ...]
     ask_types: tuple[str, ...]
     order_types: tuple[str, ...]
+    """market.order_types: 폐기 예정(공식 주문 가능 정보 문서). 판단에 쓰지 않는다.
+
+    주문 유형 판단은 bid_types(매수)·ask_types(매도)로 한다. 응답에서 빠지면 빈 튜플이다(R17-07).
+    """
     order_sides: tuple[str, ...]
     bid_balance: Decimal
     """bid_account.balance: 주문 가능 호가 자산(KRW 마켓이면 원화). live의 주문 가능 원화."""
@@ -465,3 +469,31 @@ class StreamStatus:
     reason: str
     error_name: str | None
     retry_in: float | None
+
+
+# ── 개별 주문 조회 결과(D-094 B) ──────────────────────────
+
+NotFoundKind = Literal["order_not_found", "unnamed"]
+_NOT_FOUND_KINDS: frozenset[str] = frozenset({"order_not_found", "unnamed"})
+
+
+@dataclass(frozen=True, slots=True)
+class OrderLookup:
+    """identifier로 한 개별 주문 조회(ExchangeApi.lookup_order)의 결과.
+
+    찾았으면 (snapshot, None), 없으면 (None, not_found)이다. not_found는 404의 error.name이
+    order_not_found면 "order_not_found", 이름이 없으면(본문·error 객체·name 없음, null, 빈 문자열)
+    "unnamed"다. 둘 다 "없음"이지만 5단계가 "unnamed"에 경고 이벤트(UNNAMED_NOT_FOUND)를 남기도록
+    구별한다(D-094 B). 어긋난 조합과 다른 값은 만들 때 ValueError다.
+    """
+
+    snapshot: OrderSnapshot | None
+    not_found: NotFoundKind | None
+
+    def __post_init__(self) -> None:
+        if self.not_found is not None and (
+            not isinstance(self.not_found, str) or self.not_found not in _NOT_FOUND_KINDS
+        ):
+            raise ValueError(f"not_found는 order_not_found·unnamed·None만 쓴다: {self.not_found!r}")
+        if (self.snapshot is None) == (self.not_found is None):
+            raise ValueError("OrderLookup은 snapshot과 not_found 가운데 하나만 가진다")

@@ -1976,7 +1976,7 @@ def order_lookup(**fields: Any) -> Any:
 
 def test_lookup_order_of_an_existing_order_gives_its_snapshot(exchange):
     async def scenario(api):
-        await api.create_order(market_buy(ID1))
+        await api.create_order(limit_buy(ID1))  # 체결되지 않고 wait로 남는다
         return await api.lookup_order(identifier=ID1), await api.get_order(identifier=ID1)
 
     found, snapshot = exchange.run(scenario)
@@ -1986,7 +1986,7 @@ def test_lookup_order_of_an_existing_order_gives_its_snapshot(exchange):
     assert isinstance(found.snapshot, OrderSnapshot)
     assert found.snapshot == snapshot
     assert found.snapshot.identifier == ID1
-    assert found.snapshot.trades == ()  # 개별 조회는 trades를 담는다
+    assert found.snapshot.trades == ()  # 개별 조회는 trades를 담는다(체결 없음 → 빈 튜플)
 
 
 def test_lookup_order_of_order_not_found_is_the_named_not_found(exchange):

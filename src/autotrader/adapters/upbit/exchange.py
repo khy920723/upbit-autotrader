@@ -11,6 +11,10 @@
 - 보내기 전에 주문 유형별 필수값, time_in_force, identifier 형식, 마켓 코드 형식, 값 범위를
   검사하고 어기면 ValueError다(요청을 보내지 않는다). 반올림은 정책 몫이라 고치지 않고 거부한다.
 - 일괄 취소(DELETE /v1/orders/open)는 없다(D-069). 취소는 identifier로 하나씩.
+- 개별 주문 조회(GET /v1/order)의 404는 error.name이 order_not_found이든 없든(본문 없음, error
+  객체·name 없음, null, 빈 문자열) "없음"이다(D-094 B). lookup_order는 둘을 OrderLookup.not_found
+  ("order_not_found"·"unnamed")로 구별하고 get_order는 둘 다 None이다. 다른 이름의 404는
+  UpbitNotFound다. 주문 취소의 404는 이름이 없어도 UpbitNotFound다(B는 개별 조회에만).
 - 응답의 선택 필드는 키째 빠질 수 있다 → None(모름). 주문 객체에서 꼭 있어야 하는 필드는
   업비트 Order 스키마의 required 가운데 식별에 쓰는 것(uuid, market, side, ord_type, state,
   created_at, trades_count)뿐이다. 시각은 UTC로 바꾼다.
@@ -20,7 +24,7 @@
 - 전체 Access Key는 결과·로그·예외·traceback(지역 변수, `__context__` 포함) 어디에도 남기지
   않는다(INV-07). 키 목록은 앞 4자만.
 근거: docs/05-integration/upbit-api.md 2·5장, docs/06-architecture/system-architecture.md 6장,
-docs/03-functional/trading-logic.md 6·7·10·11장.
+docs/03-functional/trading-logic.md 6·7·9·10·11장.
 """
 
 import functools
@@ -38,6 +42,7 @@ from autotrader.core.models import (
     ApiKeyInfo,
     Balance,
     OrderChance,
+    OrderLookup,
     OrderRequest,
     OrderSnapshot,
     Trade,
@@ -319,16 +324,28 @@ class UpbitExchangeApi:
 
     # ── 조회 ──
 
-    async def get_order(self, *, identifier: str) -> OrderSnapshot | None:
-        """identifier로 개별 조회(trades 포함). 404 order_not_found만 None이다."""
+    async def lookup_order(self, *, identifier: str) -> OrderLookup:
+        """identifier로 개별 조회(trades 포함) 1회. 두 "없음"을 구별한다(D-094 B).
+
+        404 order_not_found → (None, "order_not_found"), 이름 없는 404(error.name이 없음·null·빈
+        문자열, 본문 없음 포함) → (None, "unnamed"). 다른 이름의 404는 UpbitNotFound, 404가 아닌
+        오류는 상태대로 낸다. 다시 보내지 않는다(INV-03).
+        """
         params = [("identifier", check_identifier(identifier))]
         try:
             response = await self._http.get("/v1/order", params, auth=True)
         except UpbitNotFound as exc:
             if exc.error_name == "order_not_found":
-                return None
+                return OrderLookup(snapshot=None, not_found="order_not_found")
+            if exc.http_status == 404 and not exc.error_name:
+                return OrderLookup(snapshot=None, not_found="unnamed")
             raise
-        return convert.parse_response(response, "default", _snapshot)
+        snapshot = convert.parse_response(response, "default", _snapshot)
+        return OrderLookup(snapshot=snapshot, not_found=None)
+
+    async def get_order(self, *, identifier: str) -> OrderSnapshot | None:
+        """lookup_order의 snapshot(호환). 두 "없음" 모두 None이다."""
+        return (await self.lookup_order(identifier=identifier)).snapshot
 
     async def get_orders(self, *, identifiers: Sequence[str]) -> list[OrderSnapshot]:
         """identifier 목록으로 조회(최대 100개, trades 없음). 없는 identifier는 결과에 없다."""
@@ -413,7 +430,7 @@ class UpbitExchangeApi:
     # ── 취소 ──
 
     async def cancel_order(self, *, identifier: str) -> OrderSnapshot:
-        """identifier로 하나 취소(쿼리만, 본문 없음). 대상이 없으면 UpbitNotFound."""
+        """identifier로 하나 취소(쿼리만, 본문 없음). 대상이 없으면 이름이 없어도 UpbitNotFound."""
         params = [("identifier", check_identifier(identifier))]
         response = await self._http.delete("/v1/order", params)
         return convert.parse_response(response, "default", _snapshot)

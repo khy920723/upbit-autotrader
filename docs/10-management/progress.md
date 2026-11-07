@@ -2,6 +2,67 @@
 
 세션이 끝날 때마다 맨 위에 추가한다. 형식: 날짜 — 단계 / 한 일 / 결정 / 남은 일 / 다음 단계.
 
+## 2026-11-07 — 기획/문서: 4단계 시작 전 결정 묶음 (클라우드 세션)
+
+- 한 일:
+  - [4단계 시작 전 결정 묶음](../03-functional/stage4-decisions.md)을 새로 썼다. 4단계 전에 사용자가 정할 항목을 질문, 선택지, 선택별 영향, 순서로 모았다. 추천과 수익 판단은 없고, 다른 문서에 있던 제안은 "(문서 제안안)"으로 표시했다.
+    - 대상: 뉴스 출처(D-095~D-097, 확인 C-1), Gemini 호출 API(D-054)·SDK 버전(D-102)·기본 모델(D-098)·추가 약관 문장(확인 C-2), 규칙 조건(ADR-0007, D-021·D-072)·평가 시각(D-057)·시그널 유효 시간(D-045), 지표 요약(D-099)·프롬프트 첫 버전(D-100)·RSS 티커 겹침(D-101), 기반 결정(D-041·D-042·D-044).
+  - 외부 사실을 공식 문서로 다시 확인했다(2026-11-07).
+    - 네이버 검색 API 약관(2026-10-07 개정): 검색 API 특약 2.3이 데이터를 "AI에 입력"하는 행위와 2.4 범위(기기 24시간 또는 새 질의까지, 서버 이력 조회 21일)를 넘는 저장을 금지한다. 개발자센터의 검색 API 신규 신청은 2026-07-30에 끝났다(기존 이용자는 2027-06-30까지, 그 뒤 NAVER API HUB). 뉴스 검색 형식과 공통 오류(401, 429 두 종류)도 확인했다.
+    - Cointelegraph 약관 3절: 서면 동의 없는 AI·LLM 이용(학습, 운영 등)을 금지한다.
+    - CoinDesk 약관: 페이지가 자동 접근 검사 화면을 보여 읽지 못했다. 검사를 우회하지 않았고 사용자가 브라우저에서 확인한다(C-1).
+    - Gemini: 무료 등급 모델 5개의 종료 일정·사고 수준·가격, 한도, Interactions GA와 v1 기능 지원, 429 오류 코드, 추가 약관의 사용 제한 문장을 다시 확인했다. google-genai 3.0.0(2026-11-06)은 HTTP 전송 기본값을 httpx2로 바꿨다(PyPI와 sdist).
+    - 업비트 공개 시세 API `GET /v1/market/all`을 1회 불러 KRW 마켓 300개에서 티커가 흔한 영어 단어와 같은 코인과 영문명이 티커와 같은 코인(62개)을 셌다. RSS 두 피드를 받아 제목 55개에 지금 티커 규칙을 적용해 봤다(IN 9개, A 3개 제목에 맞음).
+  - 이 클라우드 환경의 네트워크 허용 목록에 developers.naver.com, www.coindesk.com, cointelegraph.com을 더했다(사용자 승인).
+  - [결정 로그](decision-log.md)에 D-095~D-102를 "대기"로 추가하고, D-066 행에 세부 결정 번호를 적었다.
+  - 확인 결과와 링크를 반영한 문서: [로드맵](roadmap.md) 4단계와 외부 사실 표, [LLM 시그널 명세](../05-integration/llm-signal.md) 2·3·10장, [뉴스 수집 명세](../05-integration/news-collection.md) 2·3·5장, [ADR-0005](../06-architecture/adr/0005-news-sources.md)와 ADR 목록, [법·약관 검토](../07-security-legal/legal-compliance.md) 6장, [리스크 관리 대장](../07-security-legal/risk-register.md) RSK-20, [가짜 구현 명세](../08-quality/fakes-spec.md)(네이버 오류 형식), [설치·초기 설정 가이드](../09-operations/install-guide.md)(네이버 절), [문서 지도](../README.md). ADR-0005, D-013, 설정 기본값 같은 결정 자체는 바꾸지 않았다.
+  - 상대 링크와 표 열 수 검사 문제 0건, mermaid 그림 렌더링 확인.
+- 결정: 없음(새 항목은 모두 대기)
+- 남은 일:
+  - 사용자: [결정 묶음](../03-functional/stage4-decisions.md) 1장의 질문에 답한다. C-1(CoinDesk 약관)과 C-2(Gemini 추가 약관 문장)를 확인한다.
+  - 기획/문서: 답을 받으면 ADR-0005, ADR-0007, 관련 명세를 고친다. D-097이 B면 새 뉴스 출처를 조사한다. R22-01이 병합되면 D-091 (4)를 보완한다.
+  - 인프라: D-102가 정해지면 google-genai를 고정한다(라이선스 목록, PyInstaller 묶음 확인 포함).
+- 다음 단계: 사용자 결정 뒤 4단계(뉴스 + LLM 시그널).
+
+## 2026-11-07 — 기획/문서: 결정 D-092·D-094 반영, R22-02 문서 보완, 3단계 완료 표시 (클라우드 세션)
+
+- 한 일:
+  - 지휘 세션이 전달한 사용자 결정 2건(2026-11-07)을 반영했다. [결정 로그](decision-log.md)의 두 행을 "유효"로 바꾸고 근거에 "사용자 결정(2026-11-07, 지휘 세션 전달)"을 덧붙였다.
+    - D-092 A(공지·시세 상태 매수 차단 세부, 제안 그대로): [업비트 API 연동 명세](../05-integration/upbit-api.md) 9장에 "D-092 공지·시세 상태 판단 세부" 절을 새로 썼다(정한 규칙, 근거, 선택지 기록). [테스트 시나리오](../08-quality/test-scenarios.md) TS-26(PREVIEW·값 없음도 차단)·TS-104를 고치고 TS-155(글자 맞추기 예)를 추가했다. 추적표 Q-06에 D-092를 이었다.
+    - D-094 B(개별 주문 조회의 이름 없는 404를 "없음"으로 셈): [매매 로직 명세](../03-functional/trading-logic.md) 9장 표와 "이름 없는 404 처리" 절을 확정 문구로 바꾸고 15장을 유효로 고쳤다. 로그·감사 기록 정의서에 경고 이벤트 UNNAMED_NOT_FOUND, 가짜 구현 명세에 이름 없는 404 주입, TS-154를 추가했다. 어댑터(3a) 코드는 프론트/백엔드 정리 PR이 맞춘다.
+  - QA R22-02의 문서 몫: 핸드셰이크 HTTP 401·403·429 거절을 감시 상태(RECONNECTING)에 싣고, 비공개 401·403은 `INVALID_AUTH`처럼(새 JWT로 한 번 다시 연결, 또 오면 5단계에서 REST 키 확인), 공개 401·403과 429는 backoff대로 다시 연결한다는 보완을 D-091 (12)로 썼다. D-080 행과 업비트 명세 9장 D-080 절, 시스템 구성도 7장 오류 처리 표에 같은 내용을 이었다. D-080은 "유효", D-091은 "유효(초안)" 그대로다.
+  - R22-01(반쯤 열린 연결, PONG 대기)의 문서 변경은 프론트/백엔드 정리 PR이 아직 병합되지 않아 넣지 않았다.
+  - [로드맵](roadmap.md) 3단계를 "(완료)"로 바꾸고 진행 줄을 완료 기록(QA 확인 2026-11-06, PR #24)으로 고쳤다.
+- 결정: D-092 유효, D-094 유효. D-091 (12) 보완(초안).
+- 남은 일:
+  - 프론트/백엔드: 정리 PR(R17·R22, D-094 어댑터 처리, R22-02 상태 전달). R22-01이 병합되면 D-091 (4)의 보완 문구를 기획/문서가 넣는다.
+  - 기획/문서: 4단계 시작 전 결정 묶음(다음 PR).
+- 다음 단계: 4단계(뉴스 + LLM 시그널) 시작 전 결정.
+
+## 2026-11-06 — 인프라: 라이선스 목록 excludes 설명(R17-05)과 websockets 번들 확인 (클라우드 세션)
+
+- 한 일:
+  - QA R17-05: [의존성 라이선스 목록](../07-security-legal/dependency-licenses.md) 4장의 excludes 설명을 `packaging/autotrader.spec` 주석과 맞췄다.
+    - 제외 항목 4묶음(setuptools 계열, `PySide6.QtNetwork`, `_pytest`·`pytest`, `httpx._main`·`pygments`)을 끌려오는 경로와 빼도 되는 이유로 표에 정리했다.
+    - typing_extensions는 런타임에 들어간다고 고쳤다.
+    - 제외 이유는 패키지 코드로 확인했다: anyio `_backends/_asyncio.py`의 pytest 연동 함수 두 곳, `httpx/__init__.py`의 `_main` ImportError 처리, `PySide6/__init__.py`의 실행되지 않는 분기.
+    - 수치는 같은 spec의 Linux 빌드(main d6242b6)로 다시 쟀다. 번들 Python 모듈은 excludes가 없으면 1,089개, 있으면 535개다. excludes를 모두 빼면 spec이 `_distutils_hack, _pytest, packaging, pygments, setuptools`에서 멈춘다. 이전 문구의 "531개 → 247개"와 "typing_extensions에서 멈춤"은 지금과 맞지 않았다.
+  - websockets 번들 확인: PR #22의 build-exe windows 작업 로그(run 42137330425, job 127628692398, head cbe4a1d)를 읽었다.
+    - PyInstaller가 contrib 훅 `hook-websockets.py`(websockets 하위 모듈 전체 수집)를 처리했다. 빌드와 개발 전용 모듈 검사를 통과했다.
+    - `--self-test` 6/6 통과. 모듈 import 점검이 autotrader 모듈 30개를 모두 import하므로, 웹소켓 어댑터가 쓰는 `websockets.asyncio.client`·`websockets.exceptions`·`websockets.uri`가 Windows exe 안에서 import됐다.
+    - TLS 줄은 "certifi 2026.10.23 묶음, CA 인증서 118개, OpenSSL 3.5.9 29 Sep 2026, 최소 TLSv1_2"로 certifi 묶음을 가리킨다.
+    - 작업 로그에는 번들 파일 목록이 없다. 그래서 같은 spec의 Linux 빌드로 보충 확인했다: websockets 하위 모듈 52개, C 확장 `websockets/speedups`, `websockets-17.4.dist-info/licenses/LICENSE`, `certifi/cacert.pem`이 번들에 들어갔다.
+  - 3b에서 바뀐 런타임 의존성 확인
+    - 3장 표는 `uv.lock`과 맞다(검사 스크립트). 3장 첫 문장의 런타임 패키지 목록이 "PySide6, keyring"뿐이라 httpx, PyJWT, websockets, certifi를 더했다.
+    - `packaging/NOTICE.txt`에는 certifi 2026.10.23(MPL-2.0) 고지와 소스 위치가 이미 있다. websockets(BSD-3-Clause)는 2장 규칙상 NOTICE 대상이 아니고, 라이선스 원문은 dist-info에 들어간다. NOTICE.txt는 고칠 것이 없었다.
+  - [CI 변경 제안](ci-proposals.md) 2번(Windows에서 네트워크 차단·웹소켓 루프백 테스트)은 사용자 승인(2026-11-07)으로 build-exe.yml에 반영되어(main 554757f, 변경안과 같은 내용) 지웠다.
+  - 린트 통과, 테스트 3,763개 통과(9개 건너뜀), 줄·분기 커버리지 합계 96%
+- 결정: 없음
+- 남은 일:
+  - Windows 번들 안의 websockets 파일 목록을 직접 보려면 build-exe를 수동 실행해 올린 결과물을 열어야 한다(이번에는 로그와 Linux 빌드로 확인).
+  - PR: 이 세션의 PR 생성(REST)은 auto 모드 권한 검사에서 "외부 시스템 쓰기"로 거부됐고, 지휘 세션이 [PR #25](https://github.com/khy920723/upbit-autotrader/pull/25)를 열었다. 이 세션은 main 병합과 충돌 해결만 했다.
+- 다음 단계: 3단계 QA 검토 뒤 정리 PR(R17-04·R17-06·R17-07)
+
 ## 2026-11-06 — QA: PR #22(3단계 3b 업비트 웹소켓) 검토와 3단계 완료 확인 (클라우드 세션)
 
 - 한 일:

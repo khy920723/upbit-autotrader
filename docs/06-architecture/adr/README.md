@@ -23,7 +23,7 @@
 | [0002](0002-gemini-free-tier-signal.md) | 시그널은 Gemini API 무료 등급 | 확정 |
 | [0003](0003-paper-first-risk-precedence.md) | 페이퍼 우선, 위험 관리 우선 | 확정 |
 | [0004](0004-github-actions-windows-build.md) | GitHub Actions Windows 빌드와 워크플로 관리 | 확정 |
-| [0005](0005-news-sources.md) | 뉴스 출처: 네이버 검색 API + 영어 RSS | 확정 |
+| [0005](0005-news-sources.md) | 뉴스 출처: 네이버 검색 API + 영어 RSS | 확정(2026-11-07 약관 확인 결과 출처 재검토 대기, D-095~D-097) |
 | [0006](0006-upbit-client.md) | 업비트 클라이언트: httpx 기반 자체 클라이언트 | 확정(D-038) |
 | 0007 | 규칙 조건 | 대기(비교 리포트 완료, 사용자 선택 대기: [규칙 조건 후보 비교 리포트](../../research/rule-candidates.md), D-021·D-072) |
 | [0008](0008-buy-method.md) | 매수·매도 분할: 매수 최대 2단계(2단계는 평균 단가보다 내렸을 때), 익절만 최대 2단계 | 확정(D-082~D-085, D-043) |

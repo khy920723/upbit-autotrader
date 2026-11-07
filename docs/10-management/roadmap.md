@@ -78,17 +78,18 @@ PR이 생기면 Changes 카드에서 PR의 ⋮ 메뉴를 열어 Auto-fix를 켠�
 - uv 프로젝트, 빈 창 앱, 설정·로그·SQLite 초기화, `--self-test`, `packaging/autotrader.spec`, 의존성 라이선스 목록
 - 완료 기준: CI와 Windows 빌드 통과. 사용자가 Windows 10 PC에서 빈 앱 실행과 self-test 통과를 확인
 
-### 3단계: 업비트 연동
+### 3단계: 업비트 연동 (완료)
 
 - 시작 전에 정할 것: 업비트 클라이언트(D-038, [ADR-0006](../06-architecture/adr/0006-upbit-client.md))와 GUI–asyncio 연결(D-040, [ADR-0009](../06-architecture/adr/0009-gui-asyncio-bridge.md)). 둘 다 2026-11-05 사용자 결정으로 정했다(추천안 A)
 - JWT 서명(알려진 값 테스트), 요청 한도, 오류 매핑, `/v1/orders/chance`, 호가 단위, 종목 목록과 경고, 시세·비공개 웹소켓(재연결 후 REST로 대조), 가짜 거래소
 - 완료 기준: 가짜 거래소로 테스트 통과
-- 진행: 3a(REST 클라이언트·서명·요청 한도·오류 매핑·주문 가능 정보·호가 단위·종목 경고·REST 가짜 거래소) PR #17 병합(2026-11-05). 3b(시세·비공개 웹소켓, 재연결 감시와 재연결 뒤 대조 자리, 웹소켓 가짜, TLS 설정 통일, 테스트 중 네트워크 차단) PR(2026-11-06)
+- 완료(QA 확인 2026-11-06, [PR #24](https://github.com/khy920723/upbit-autotrader/pull/24)): 3a(REST 클라이언트·서명·요청 한도·오류 매핑·주문 가능 정보·호가 단위·종목 경고·REST 가짜 거래소) [PR #17](https://github.com/khy920723/upbit-autotrader/pull/17) 병합(2026-11-05). 3b(시세·비공개 웹소켓, 재연결 감시와 재연결 뒤 대조 자리, 웹소켓 가짜, TLS 설정 통일, 테스트 중 네트워크 차단) [PR #22](https://github.com/khy920723/upbit-autotrader/pull/22) 병합(2026-11-06). QA 권장 지적(R17·R22)은 프론트/백엔드 정리 PR에서 고친다
 
 ### 4단계: 뉴스 + LLM 시그널
 
-- 시작 전에 네이버 검색 API 약관 확인(사용자)
-- 시작 전에 정할 것(D-066 대기): 추천 기본 모델 ID, 지표 요약 항목(ADR-0007 확정 뒤), 프롬프트 첫 버전, RSS에서 티커가 일반 단어와 겹칠 때의 처리. `llm.max_output_tokens` 값은 이 단계에서 실제 응답 길이를 재서 정한다
+- 시작 전에 정할 것: [4단계 시작 전 결정 묶음](../03-functional/stage4-decisions.md)(2026-11-07)에 바로 물을 수 있는 형태로 모았다. 뉴스 출처(D-095~D-097), Gemini 호출 API·SDK 버전·기본 모델(D-054, D-102, D-098), 규칙 조건(ADR-0007, D-021·D-072)과 평가 시각·시그널 유효 시간(D-057, D-045), 지표 요약·프롬프트 첫 버전·RSS 티커 겹침(D-099~D-101, D-066 세부), 기반 결정(D-041, D-042, D-044)
+- 약관 확인(2026-11-07): 네이버 검색 API 약관은 검색 결과를 AI에 입력하는 행위와 정한 기간을 넘는 저장을 금지하고, 개발자센터의 검색 API 신규 신청은 2026-07-30에 끝났다(D-095). Cointelegraph 약관은 서면 동의 없는 LLM 이용을 금지한다(D-096). CoinDesk 약관은 자동 접근 검사 화면 때문에 읽지 못해 사용자가 확인한다
+- `llm.max_output_tokens` 값은 이 단계에서 실제 응답 길이를 재서 정한다(D-066)
 - 네이버·RSS 수집, Gemini 호출(스키마 검증, 실패 시 중립, 429 처리, 토큰 제한), 입출력 원문 기록, 가짜 LLM
 - 완료 기준: signal-only 모드 동작
 
@@ -141,7 +142,7 @@ exit 0
 - 빌드 받기: [빌드·배포 절차](../09-operations/build-release.md)
 - 계정·키 준비, Windows 설정, 설치: [설치·초기 설정 가이드](../09-operations/install-guide.md)
 
-## 검증된 외부 사실 (2026-11-03 기준, 2026-11-05 1단계에서 추가)
+## 검증된 외부 사실 (2026-11-03 기준, 2026-11-05 1단계에서 추가, 2026-11-07 4단계 전 확인 추가)
 
 | 주제 | 내용 | 출처 |
 |---|---|---|
@@ -161,6 +162,8 @@ exit 0
 | Gemini SDK | google-genai(Python 3.11+), 구 SDK 지원 종료, gemini-2.5-pro·2.5-flash 폐기(2026-11-02) | pypi.org/project/google-genai, aistudio.google.com/docs/changelog |
 | 검색 연동 | Gemini 3 이상은 무료 등급에서 Google 검색 연동 불가 | aistudio.google.com/docs/pricing |
 | 뉴스 | 네이버 검색 API 하루 25,000회 무료, CryptoPanic 무료 플랜 없음, Google 뉴스 RSS는 개인 리더 용도로 제한 | developers.naver.com, cryptopanic.com |
+| 뉴스 약관 | 네이버 검색 API 특약 2.3: 데이터를 AI에 입력·학습·평가 등에 쓰는 행위와 2.4 범위(기기 24시간 또는 새 질의까지, 서버 이력 조회 21일)를 넘는 저장 금지. 개발자센터 검색 API 신규 신청은 2026-07-30 종료, 기존 이용자는 2027-06-30까지, 그 뒤 NAVER API HUB. Cointelegraph 약관 3절: 서면 동의 없는 AI·LLM 이용(학습, 운영 등) 금지. CoinDesk 약관은 자동 접근 검사 화면 때문에 읽지 못함(2026-11-07 확인) | developers.naver.com/products/terms(2026-10-07 개정), cointelegraph.com/terms-and-privacy |
+| Gemini SDK 3.0 | google-genai 3.0.0(2026-11-06): HTTP 전송 기본값이 httpx2로 바뀌어 httpx2가 필수 의존성, httpx는 선택 extra. Python 3.11 이상(2026-11-07 확인) | pypi.org/project/google-genai, 3.0.0 sdist |
 | 법 | 가상자산이용자보호법 불공정거래 처벌, API 고빈도 반복 주문을 시세조종으로 수사 의뢰한 사례(2025-11-05) | fsc.go.kr |
 | Windows 10 | 지원 종료 2025-10-14, 개인용 ESU는 2027-10-12까지 | microsoft.com/windows/extended-security-updates |
 | 백테스트 | LLM 감성 시그널에는 look-ahead bias가 있음 | arxiv.org/abs/2309.17322 |

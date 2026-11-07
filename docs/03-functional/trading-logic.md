@@ -12,7 +12,7 @@ flowchart TD
     S -- 아니요 --> R0[건너뜀 기록]
     S -- 예 --> B{경고 종목?}
     B -- 예 --> R1[매수 차단 기록]
-    B -- 아니요 --> N[뉴스 수집 + 지표 요약]
+    B -- 아니요 --> N[지표 요약]
     N --> L["LLM 시그널<br/>실패하면 중립"]
     L --> P{"긍정이고<br/>확신도 ≥ 임계값?"}
     P -- 아니요 --> NEG{"부정이고<br/>확신도 ≥ 임계값?"}
@@ -321,9 +321,8 @@ UNKNOWN이 되는 경우: 주문 생성 요청을 보낸 뒤 응답을 받지 �
 on_signal_tick(coin):
     if trading_state not in (RUNNING, PAUSED, BUY_BLOCKED): record_decision(coin, SKIP, "SKIP_STATE"); return
     if market_blocked(coin): record_decision(coin, BLOCKED, "MARKET_WARNING"); return
-    news = collect_news(coin)                   # 실패해도 빈 목록으로 계속
-    features = summarize_indicators(coin)
-    sig = llm.evaluate(coin, features, news)    # 실패하면 neutral
+    features = summarize_indicators(coin)      # 뉴스는 수집하지 않는다(D-097)
+    sig = llm.evaluate(coin, features)          # 실패하면 neutral
     if sig.signal == POSITIVE and sig.confidence >= cfg.confidence_threshold:
         if trading_state != RUNNING: record_decision(coin, HOLD, "NOT_RUNNING"); return
         if not rules.entry_ok(coin, features): record_decision(coin, HOLD, "RULE_NOT_MET"); return

@@ -61,7 +61,7 @@
 | `upbit.access_key`, `upbit.secret_key` | 업비트 API 키(자산조회·주문조회·주문하기 권한) | - | keyring |
 | `upbit.key_issued_at` | 키 발급일(보조 값). 만료일은 `GET /v1/api_keys`의 `expire_at`을 우선 쓰고, 조회하지 못할 때만 발급일 + 1년으로 계산한다(D-050) | - | 설정 파일 |
 | `gemini.api_key` | Gemini API 키 | - | keyring |
-| `naver.client_id`, `naver.client_secret` | 네이버 검색 API | - | keyring |
+| `naver.client_id`, `naver.client_secret` | (없음, D-097) 네이버 검색 API. 뉴스를 수집하지 않아 키를 받지 않는다 | - | - |
 | `discord.webhook_url` | 디스코드 `app-alarm` 채널의 웹후크 주소(선택). 비밀값이라 입력 후 가린다 | - | keyring |
 
 ### 코인
@@ -80,9 +80,7 @@
 | `llm.model_id` | Gemini 모델 ID | 마법사에서 선택 | 2.5 계열 불가 |
 | `llm.timeout_sec` | 응답 대기 시간 | 30 | 10~120 |
 | `llm.max_output_tokens` | 출력 토큰 상한 | 미정(남은 일, [LLM 시그널 명세](../05-integration/llm-signal.md) 10장) | - |
-| `news.lookback_hours` | 뉴스 수집 기간 | 24 | 1~72 |
-| `news.max_headlines` | 코인당 최대 제목 수 | 10 | 1~30 |
-| `news.sources` | 사용할 출처 | naver, coindesk, cointelegraph | 이 3개 중에서 선택(다른 출처는 약관 확인 후 결정 로그에 기록하고 추가) |
+| `news.lookback_hours`, `news.max_headlines`, `news.sources` | (없음, D-097) 뉴스 설정. 뉴스를 수집하지 않아 두지 않는다. 다시 넣을 때의 조건은 [뉴스 수집 명세](../05-integration/news-collection.md) 0장 | - | - |
 
 ### 매매 규칙
 

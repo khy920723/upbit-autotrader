@@ -2,7 +2,7 @@
 
 상태: 초안 · 2026-11-05 · 구현은 각 단계의 개발 세션이 한다(8장) · 관련: [테스트 전략](test-strategy.md) 3·4장, [불변식 명세](invariants.md), [추적표](traceability.md), [녹화 응답](../../tests/fixtures/upbit/README.md), [업비트 API 연동 명세](../05-integration/upbit-api.md), [LLM 시그널 명세](../05-integration/llm-signal.md), [뉴스 수집 명세](../05-integration/news-collection.md), [디스코드 연동 명세](../05-integration/discord.md)
 
-테스트가 쓰는 가짜 구현 다섯 가지(FakeExchange, FakeLLM, FakeNews, FakeClock, FakeNotifier)가 흉내 낼 응답 형식, 오류 이름, 주입 기능을 정한다. 응답 형식과 오류 이름은 2026-11-05에 받은 공식 문서(업비트 개발자 센터 docs.upbit.com/kr, Gemini API 문서 aistudio.google.com/docs)와 같은 날 녹화한 업비트 공개 시세 응답을 기준으로 했다. 디스코드 웹후크는 디스코드 개발자 문서의 공식 원본 저장소(discord/discord-api-docs, 커밋 da52492)를 기준으로 했다. 네이버 문서는 이 세션의 네트워크 정책이 막아 원문을 읽지 못했다(9장).
+테스트가 쓰는 가짜 구현 다섯 가지(FakeExchange, FakeLLM, FakeNews, FakeClock, FakeNotifier)가 흉내 낼 응답 형식, 오류 이름, 주입 기능을 정한다. 응답 형식과 오류 이름은 2026-11-05에 받은 공식 문서(업비트 개발자 센터 docs.upbit.com/kr, Gemini API 문서 aistudio.google.com/docs)와 같은 날 녹화한 업비트 공개 시세 응답을 기준으로 했다. 디스코드 웹후크는 디스코드 개발자 문서의 공식 원본 저장소(discord/discord-api-docs, 커밋 da52492)를 기준으로 했다. 네이버 문서는 이 세션의 네트워크 정책이 막아 원문을 읽지 못했고, 2026-11-07에 뉴스 검색 문서와 공통 오류 코드 문서를 확인했다(4.2절, 9장).
 
 ## 1. 원칙
 
@@ -302,7 +302,7 @@
 ### 4.2 응답 형식
 
 - **네이버 뉴스 검색:** `GET https://openapi.naver.com/v1/search/news.json?query=&display=&start=&sort=`, 헤더 `X-Naver-Client-Id`, `X-Naver-Client-Secret`. 응답 `{lastBuildDate, total, start, display, items: [{title, originallink, link, description, pubDate}]}`. `title`에는 `<b>` 태그와 HTML 엔티티(`&quot;` 등)가 섞이고 `pubDate`는 `Thu, 05 Nov 2026 10:00:00 +0900` 형식이다.
-- **네이버 오류:** JSON `{errorMessage, errorCode}`. `SE01`(400, 쿼리 요청 오류), `SE02`(400, display 값), `SE03`(400, start 값), `SE04`(400, sort 값), `SE05`(404, 없는 API), `SE06`(400, 인코딩), `SE99`(500, 시스템 오류). 인증 실패·호출 한도 초과의 응답 형식은 확인하지 못했다(9장).
+- **네이버 오류:** JSON `{errorMessage, errorCode}`. `SE01`(400, 쿼리 요청 오류), `SE02`(400, display 값), `SE03`(400, start 값), `SE04`(400, sort 값), `SE05`(404, 없는 API), `SE06`(400, 인코딩), `SE99`(500, 시스템 오류). 인증 실패는 401, 호출 한도 초과는 429(하루 허용량 초과, 검색 API 초당 호출량 초과)이고 본문은 같은 `{errorMessage, errorCode}` 형식이다(예: 인증 실패 `errorCode` "024", API 공통 가이드 오류 코드 문서, 2026-11-07 확인). 네이버를 계속 쓸지는 D-095(대기)다.
 - **RSS:** `<rss><channel><item><title>`, `<link>`, `<pubDate>`(RFC 822), `<guid>`, `<description>`. 제목에 CDATA와 엔티티가 올 수 있다. 출처: CoinDesk `https://www.coindesk.com/arc/outboundfeeds/rss/`, Cointelegraph `https://cointelegraph.com/rss`([뉴스 수집 명세](../05-integration/news-collection.md)).
 
 ### 4.3 주입 기능
@@ -418,6 +418,6 @@
 | Gemini 생성 차단 코드가 HTTP 오류로 오는지 `status=failed`로 오는지 | 오류 문서에 "이 코드를 받으면"으로만 나온다 | 4단계 실호출(사용자 PC) |
 | Interactions 응답의 `model`이 실제 응답 모델인지 | 문서에 없다(LLM 시그널 명세 6장도 같은 지적) | 4단계 실호출 |
 | 디스코드 개발자 문서 사이트 원문 | 이 세션에서 discord.com 접근이 막혔다 | 공식 원본 저장소(discord/discord-api-docs, 커밋 da52492)로 확인(디스코드 연동 명세). 7단계 전에 사이트와 대조 |
-| 네이버 검색 API 원문(인증 실패·호출 한도 초과 오류 형식 포함) | developers.naver.com 접근이 막혔다 | 4단계 전 약관 확인 때 함께 대조 |
+| 네이버 검색 API 원문(인증 실패·호출 한도 초과 오류 형식 포함) | 2026-11-07에 확인했다(4.2절). 네이버를 계속 쓸지는 D-095(대기) | 계속 쓰게 되면 4단계 세션이 녹화 응답과 대조 |
 | RSS 피드 실제 형식 | 이 세션에서 받지 않았다 | 4단계 세션이 녹화 |
 | Windows 10에서 잠자기 동안 `time.monotonic()`이 흐르는지 | 리눅스 세션에서 확인할 수 없다 | [수동 점검표](manual-checklist-windows10.md) M-25 |

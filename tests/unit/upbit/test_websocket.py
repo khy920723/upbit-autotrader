@@ -2817,8 +2817,15 @@ def test_supervisor_reconnects_after_a_pong_timeout(env, kind):
     assert watch.hooks == [START + 61]  # 재연결 뒤 대조 자리
 
 
-@pytest.mark.parametrize("status", [401, 403, 429, 503])
-@pytest.mark.parametrize("kind", ["public", "private"])
+@pytest.mark.parametrize(
+    ("kind", "status"),
+    [
+        (kind, status)
+        for kind in ("public", "private")
+        for status in (401, 403, 429, 503)
+        if not (kind == "private" and status in (401, 403))  # 비공개 401·403은 D-091 (12)
+    ],
+)
 def test_supervisor_reports_the_handshake_status_while_reconnecting(env, kind, status):
     """TS-41: 핸드셰이크 거절의 HTTP 상태가 RECONNECTING error_name "HTTP_<상태>"로 간다(R22-02)."""
     watched: list[Watch] = []

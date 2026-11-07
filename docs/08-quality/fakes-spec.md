@@ -131,7 +131,7 @@
 | 주문 거절 | `reject(name)` | 400 `insufficient_funds_bid`, `insufficient_funds_ask`, `under_min_total_bid`, `under_min_total_ask`, `over_krw_funds_bid`, `invalid_parameter`, `validation_error`, `invalid_time_in_force`, `invalid_post_only`, `create_bid_error`, `create_ask_error`, `duplicated_identifier`, `notfoundmarket`, `bad_request`, 403 `market_offline`. `duplicated_identifier`는 앱이 REJECTED가 아니라 UNKNOWN으로 두고 조회로 확정해야 한다(D-070) | TS-11, TS-17, TS-38, TS-89 |
 | | `unknown_error(name, status)` | 문서에 없는 이름. 앱이 HTTP 상태로 분류하고 원문 이름을 기록하는지 본다 | TS-118 |
 | 주문 진행 | `fill(identifier, plan)` | 전량, 일부(비율), 여러 번 나눠 체결(`trades`), 미체결 후 `cancel`, 부분 체결 후 `cancel`, `prevented` | TS-63, TS-64, TS-69 |
-| | `not_found_for(identifier, times)` | 조회에 N번 404를 준 뒤 나타난다(늦게 나타난 주문) | TS-02, TS-67 |
+| | `not_found_for(identifier, times, named=True)` | 조회에 N번 404를 준 뒤 나타난다(늦게 나타난 주문). `named=False`면 `error.name` 없는 404를 준다(D-094) | TS-02, TS-67, TS-154 |
 | | `lookup_error(kind, times)` | 조회가 429·5xx·타임아웃으로 N번 실패 | TS-67 |
 | | `cancel_error(name)` | 취소가 실패(`order_not_found`, 5xx, 타임아웃) | TS-125 |
 | | `manual_order(...)` | identifier가 없거나 `uat-`로 시작하지 않는 사용자 주문을 대기 목록에 넣는다 | TS-70 |

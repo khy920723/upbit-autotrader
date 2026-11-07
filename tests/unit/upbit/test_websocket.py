@@ -2733,7 +2733,7 @@ def test_traceback_locals_of_adapter_frames_hold_no_secrets(env):
     assert BEARER_VALUE.search(blob) is None
 
 
-# ── 감시(StreamSupervisor)와 함께: PONG 상한·핸드셰이크 상태(R22-01·R22-02) ──
+# ── 감시(StreamSupervisor)와 함께: PONG 상한·핸드셰이크 상태(R22-01·R22-02·D-091 (12)) ──
 
 
 @dataclass
@@ -2759,9 +2759,18 @@ class Watch:
 
 
 async def supervise(
-    e: Env, kind: str, open_stream: Callable[[], Any], seconds: float, **options: Any
+    e: Env,
+    kind: str,
+    open_stream: Callable[[], Any],
+    seconds: float,
+    *,
+    ends: bool = False,
+    **options: Any,
 ) -> Watch:
-    """어댑터 스트림을 감시로 seconds초 돌리고 취소한다(감시가 만든 태스크는 남지 않는다)."""
+    """어댑터 스트림을 감시로 seconds초 돌리고 취소한다(감시가 만든 태스크는 남지 않는다).
+
+    ends=True면 그 안에 run()이 예외 없이 끝나야 한다(BROKEN·AUTH_CHECK 같은 마지막 상태).
+    """
     watch = Watch(e.clock)
     supervisor = StreamSupervisor(
         stream=kind,
@@ -2775,7 +2784,7 @@ async def supervise(
     task = asyncio.ensure_future(supervisor.run())
     try:
         await e.clock.run_for(seconds)
-        assert not task.done(), task
+        assert task.done() == ends, task
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -2872,6 +2881,65 @@ def test_supervisor_keeps_the_one_second_pause_after_a_handshake_429_with_zero_b
         [START, START + 1, START + 2]
     )
     assert [r.accepted for r in env.fake.connections] == [False, False, True]
+
+
+@pytest.mark.parametrize(
+    "statuses", [(401, 401), (403, 403), (401, 403)], ids=["401-401", "403-403", "401-403"]
+)
+def test_supervisor_auth_checks_after_two_private_handshake_auth_rejections(env, statuses):
+    """TS-106·D-091 (12): 비공개 핸드셰이크 401·403이 두 번이면 바로 1번 다시 연결한 뒤 AUTH_CHECK.
+
+    INVALID_AUTH와 같다(D-080): 기다리지 않고 새 JWT로 한 번 다시 연결하고, 정상 이벤트 없이 또
+    거절되면 AUTH_CHECK로 run()이 끝난다(5단계가 REST로 키를 확인한다). 가짜 위반은 없다.
+    """
+    watched: list[Watch] = []
+
+    async def scenario(e: Env) -> None:
+        for status in statuses:
+            e.fake.ws_reject_connect(stream="private", status=status)
+        opener = _opener(e, "private")
+        watched.append(await supervise(e, "private", opener, 10, ends=True))
+
+    env.run(scenario)
+    (watch,) = watched
+    first, second = (handshake_status_name(status) for status in statuses)
+    assert watch.summary() == [
+        (START, "CONNECTING", "start", None, None),
+        (START, "RECONNECTING", "auth_failed", first, 0.0),
+        (START, "AUTH_CHECK", "auth_failed", second, None),
+    ]
+    records = env.fake.connections
+    assert [r.accepted for r in records] == [False, False]
+    assert [r.opened_at for r in records] == pytest.approx([START, START])
+    tokens = [bearer_token(r.headers) for r in records]
+    assert len(set(tokens)) == 2  # 다시 연결할 때 새 JWT
+    assert env.fake.violations == []
+    assert watch.events == []
+    assert watch.hooks == []
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_supervisor_reconnects_at_once_after_one_private_handshake_auth_rejection(env, status):
+    """TS-106·D-091 (12): 비공개 핸드셰이크 401·403 한 번이면 기다리지 않고 새 JWT로 다시 연다."""
+    watched: list[Watch] = []
+
+    async def scenario(e: Env) -> None:
+        e.fake.ws_reject_connect(stream="private", status=status)
+        watched.append(await supervise(e, "private", _opener(e, "private"), 10))
+
+    env.run(scenario)
+    (watch,) = watched
+    assert watch.summary() == [
+        (START, "CONNECTING", "start", None, None),
+        (START, "RECONNECTING", "auth_failed", handshake_status_name(status), 0.0),
+        (START, "OPEN", "opened", None, None),
+    ]
+    records = env.fake.connections
+    assert [r.accepted for r in records] == [False, True]
+    assert [r.opened_at for r in records] == pytest.approx([START, START])
+    assert len({bearer_token(r.headers) for r in records}) == 2
+    assert env.fake.violations == []
+    assert watch.hooks == []  # 처음 열린 연결이다
 
 
 # ── WebsocketsConnector(websockets connect를 바꿔 끼워 인자만 본다) ─────

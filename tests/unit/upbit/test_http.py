@@ -967,7 +967,7 @@ OK_FIXTURES = [entry for entry in MANIFEST if entry["status"] == 200]
 
 @pytest.mark.parametrize("entry", OK_FIXTURES, ids=[entry["file"] for entry in OK_FIXTURES])
 def test_recorded_quotation_responses_parse_to_decimal_without_floats(entry, caplog):
-    """INV-14: 녹화 시세 응답의 숫자는 float 없이 Decimal로 읽힌다."""
+    """INV-14·TS-73: 녹화 시세 응답의 숫자는 float 없이 Decimal로 읽힌다."""
     path, _, query = entry["path"].partition("?")
     params = parse_qsl(query, keep_blank_values=True)
     body = (FIXTURES / entry["file"]).read_bytes()
@@ -993,7 +993,7 @@ def test_recorded_quotation_responses_parse_to_decimal_without_floats(entry, cap
 
 
 def test_long_acc_trade_price_keeps_every_recorded_digit():
-    """INV-14: 긴 숫자도 녹화된 자릿수를 그대로 Decimal로 지킨다."""
+    """INV-14·TS-73: 긴 숫자도 녹화된 자릿수를 그대로 Decimal로 지킨다."""
     body = (FIXTURES / "ticker_krw_btc_eth_xrp.json").read_bytes()
 
     async def scenario():
@@ -1012,7 +1012,7 @@ def test_long_acc_trade_price_keeps_every_recorded_digit():
 
 
 def test_exponent_notation_numbers_become_decimal():
-    """INV-14: 지수 표기 숫자도 Decimal이 된다."""
+    """INV-14·TS-73: 지수 표기 숫자도 Decimal이 된다."""
     body = b'[{"trade_volume": 9.101e-05, "trade_price": 1.5E+3, "timestamp": 1793844124280}]'
 
     async def scenario():
@@ -1152,7 +1152,7 @@ LIMITED = [
     ("call", "half"), [case[1:] for case in LIMITED], ids=[case[0] for case in LIMITED]
 )
 def test_requests_wait_for_the_half_budget_of_their_path_group(call, half):
-    """INV-13: 요청은 경로 그룹의 한도 절반 예산을 기다려 나간다."""
+    """INV-13·TS-143: 요청은 경로 그룹의 한도 절반 예산을 기다려 나간다."""
 
     async def scenario():
         async with connect(reply(remaining=None)) as h:

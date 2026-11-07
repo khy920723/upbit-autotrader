@@ -967,7 +967,7 @@ def test_recorded_snapshots_become_ticker_events(env):
 
 
 def test_ticker_numbers_become_exact_decimals_without_float(env):
-    """INV-14: ticker 숫자는 float 없이 정확한 Decimal이 된다."""
+    """INV-14·TS-73: ticker 숫자는 float 없이 정확한 Decimal이 된다."""
     stream = env.public()
     long_price = Decimal("44216351009.95755000000000001")  # float로 읽으면 끝자리가 바뀐다
 
@@ -1645,7 +1645,7 @@ def test_unreadable_announcement_is_skipped_without_its_content(caplog):
     ids=["bad-date-text", "date-not-text", "bad-date-while-active", "state-not-text"],
 )
 def test_unreadable_market_state_or_delisting_date_blocks_new_buys(changes, caplog):
-    """TS-104: 읽을 수 없는 market_state·delisting_date는 신규 매수를 막는 쪽으로 넣는다."""
+    """TS-26·TS-104: 읽을 수 없는 market_state·delisting_date는 신규 매수를 막는 쪽으로 넣는다."""
     # 버리면 마지막 상태(ACTIVE 등)가 남아 상장 폐지 예고를 놓친다. 둘 다 None으로 넣는다.
     from autotrader.core.notices import ticker_blocks_buy
 
@@ -1999,6 +1999,7 @@ def test_connections_wait_to_stay_within_two_per_second(env, kind):
 
 
 def test_subscriptions_wait_to_stay_within_fifty_per_minute(env):
+    """INV-13·TS-106: 구독 메시지는 분당 50개·초당 2개(한도의 절반) 안에서 기다려 보낸다."""
     # 구독 메시지는 스트림 객체 하나의 모든 연결을 합쳐 센다(정한 동작 10).
     stream = env.public()
 
@@ -2017,7 +2018,7 @@ def test_subscriptions_wait_to_stay_within_fifty_per_minute(env):
 
 @pytest.mark.parametrize(("nth", "minute_limited"), [(1, False), (49, False), (50, True)])
 def test_too_many_request_says_whether_the_minute_budget_was_reached(env, nth, minute_limited):
-    """INV-13·TS-106: TOO_MANY_REQUEST 오류가 분당 예산 도달 여부를 알린다."""
+    """TS-106: TOO_MANY_REQUEST 오류가 분당 예산 도달 여부를 알린다."""
     stream = env.public()
 
     async def scenario(e: Env) -> None:

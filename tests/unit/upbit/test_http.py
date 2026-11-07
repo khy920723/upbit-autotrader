@@ -19,6 +19,7 @@ import logging
 import math
 import re
 import ssl
+import time
 import traceback
 import warnings
 from collections import Counter
@@ -1913,4 +1914,30 @@ def test_date_header_without_or_with_another_zone_becomes_utc(date, expected):
 
     assert server_date == expected
     assert server_date.tzinfo is not None
+    assert server_date.utcoffset() == timedelta(0)
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset이 없다(Windows)")
+def test_date_header_without_a_zone_is_utc_whatever_the_local_zone(monkeypatch):
+    """TS-42 서버 시각: 시간대 없는 Date("-0000")는 PC의 시간대(여기서는 KST)와 상관없이 UTC다.
+
+    TZ=UTC인 기계에서는 "PC 시간대로 읽음"과 "UTC로 읽음"이 같아 앞 테스트가 아무것도 가르지
+    못한다. tzdata가 없어도 되는 POSIX 표기 "KST-9"(UTC+9)로 바꾸고, 끝나면 되돌린다.
+    """
+    date = "Thu, 05 Nov 2026 02:02:01 -0000"
+    try:
+        with monkeypatch.context() as patch:
+            patch.setenv("TZ", "KST-9")
+            time.tzset()
+            assert time.timezone == -9 * 3600  # 전제: 지역 시간대가 정말 UTC+9로 바뀌었다
+
+            async def scenario():
+                async with connect(reply(date=date)) as h:
+                    return await h.http.get("/v1/market/all", [("is_details", "true")])
+
+            server_date = run(scenario).server_date
+    finally:
+        time.tzset()  # monkeypatch가 TZ를 되돌린 뒤 지역 시간대를 다시 읽는다
+
+    assert server_date == datetime(2026, 11, 5, 2, 2, 1, tzinfo=UTC)
     assert server_date.utcoffset() == timedelta(0)

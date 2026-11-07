@@ -55,6 +55,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fakes.canary import find_canaries, make_upbit_credentials
 from hypothesis import HealthCheck, given, settings
@@ -79,6 +80,7 @@ from autotrader.core.models import (
     ApiKeyInfo,
     Balance,
     OrderChance,
+    OrderLookup,
     OrderRequest,
     OrderSnapshot,
     Trade,
@@ -1965,13 +1967,13 @@ UNNAMED_404 = {
     "error-without-name": (_json({"error": {"message": "찾을 수 없음"}}), JSON_ERROR),
     "name-null": (_json({"error": {"name": None, "message": "찾을 수 없음"}}), JSON_ERROR),
     "name-empty": (_json({"error": {"name": "", "message": "찾을 수 없음"}}), JSON_ERROR),
+    # 문자열·숫자가 아닌 name은 이름으로 읽지 않는다(어댑터 오류 변환 `_as_text`) → 이름 없음.
+    # 지금 동작을 고정한다(숫자 404와 공백 " "은 이름이 있는 404다: 아래 another-name 테스트).
+    "name-true": (_json({"error": {"name": True, "message": "찾을 수 없음"}}), JSON_ERROR),
+    "name-object": (_json({"error": {"name": {}, "message": "찾을 수 없음"}}), JSON_ERROR),
+    "name-list": (_json({"error": {"name": [], "message": "찾을 수 없음"}}), JSON_ERROR),
 }
-
-
-def order_lookup(**fields: Any) -> Any:
-    from autotrader.core.models import OrderLookup
-
-    return OrderLookup(**fields)
+EXCHANGE_LOGGER = "autotrader.adapters.upbit.exchange"
 
 
 def test_lookup_order_of_an_existing_order_gives_its_snapshot(exchange):
@@ -1981,7 +1983,7 @@ def test_lookup_order_of_an_existing_order_gives_its_snapshot(exchange):
 
     found, snapshot = exchange.run(scenario)
 
-    assert type(found).__name__ == "OrderLookup"
+    assert isinstance(found, OrderLookup)
     assert found.not_found is None
     assert isinstance(found.snapshot, OrderSnapshot)
     assert found.snapshot == snapshot
@@ -1992,7 +1994,7 @@ def test_lookup_order_of_an_existing_order_gives_its_snapshot(exchange):
 def test_lookup_order_of_order_not_found_is_the_named_not_found(exchange):
     found = exchange.run(lambda api: api.lookup_order(identifier=NEVER))
 
-    assert found == order_lookup(snapshot=None, not_found="order_not_found")
+    assert found == OrderLookup(snapshot=None, not_found="order_not_found")
     [sent] = exchange.sent("GET", "/v1/order")
     assert exchange.params(sent) == [("identifier", NEVER)]
 
@@ -2003,7 +2005,7 @@ def test_lookup_order_of_an_unnamed_404_is_the_unnamed_not_found(exchange, conte
 
     found = exchange.run(lambda api: api.lookup_order(identifier=NEVER))
 
-    assert found == order_lookup(snapshot=None, not_found="unnamed")
+    assert found == OrderLookup(snapshot=None, not_found="unnamed")
     # 한 번만 묻는다(자동 재시도 없음, INV-03).
     [sent] = exchange.sent("GET", "/v1/order")
     assert exchange.params(sent) == [("identifier", NEVER)]
@@ -2047,9 +2049,20 @@ def test_an_order_found_after_unnamed_404s_is_returned(exchange):
     assert len(exchange.sent("GET", "/v1/order")) == 3
 
 
-@pytest.mark.parametrize("name", ["some_other_not_found", "ORDER_NOT_FOUND"])
+@pytest.mark.parametrize(
+    ("name", "error_name"),
+    [
+        ("some_other_not_found", "some_other_not_found"),
+        ("ORDER_NOT_FOUND", "ORDER_NOT_FOUND"),
+        # 숫자 이름(시세 API 모양)은 문자열 "404"로 보존되고, 공백만 있는 이름도 이름이다.
+        # 둘 다 "없음"이 아니다(이름 없음은 없음·null·빈 문자열·문자열과 숫자가 아닌 값뿐).
+        (404, "404"),
+        (" ", " "),
+    ],
+    ids=["other-name", "upper-case", "number-404", "blank"],
+)
 @pytest.mark.parametrize("method", ["lookup_order", "get_order"])
-def test_a_404_with_another_name_is_still_raised_as_not_found(exchange, method, name):
+def test_a_404_with_another_name_is_still_raised_as_not_found(exchange, method, name, error_name):
     body = _json({"error": {"name": name, "message": "찾을 수 없음"}})
     exchange.replace_response("/v1/order", 404, body)
 
@@ -2061,7 +2074,7 @@ def test_a_404_with_another_name_is_still_raised_as_not_found(exchange, method, 
     error = exchange.run(scenario)
 
     # error.name은 정확히 order_not_found일 때만 "없음"이다(대소문자도 다르면 다른 이름).
-    assert error.error_name == name
+    assert error.error_name == error_name
     assert error.http_status == 404
 
 
@@ -2143,3 +2156,117 @@ def test_cancel_of_an_unnamed_404_is_still_not_found(exchange):
 
     assert error.error_name is None
     assert len(exchange.sent("DELETE", "/v1/order")) == 1
+
+
+# --- D-094 B 보완: 목록 조회의 404는 오류, 이름 없는 404 경고 로그 -----------------------------
+# D-094 B("없음")는 개별 조회(GET /v1/order)에만 쓴다. 상위 계층이 "없음"으로 확정하려면 목록
+# 조회(uuids·open·closed)가 성공하고 거기에도 없어야 하므로, 목록 조회의 404는 이름과 상관없이
+# 빈 목록이 아니라 UpbitNotFound다. 이름 없는 404를 "없음"으로 볼 때는 근거를 WARNING으로 남긴다
+# (경로와 Remaining-Req 유무만. identifier·본문은 남기지 않는다).
+
+LIST_LOOKUPS = {
+    "get_orders": ("/v1/orders/uuids", lambda api: api.get_orders(identifiers=[NEVER])),
+    "list_open_orders": ("/v1/orders/open", lambda api: api.list_open_orders()),
+    "list_closed_orders": (
+        "/v1/orders/closed",
+        lambda api: api.list_closed_orders(
+            market=None, start=START - timedelta(hours=1), end=START + timedelta(hours=1)
+        ),
+    ),
+}
+LIST_404 = {
+    "unnamed": (b"", None, None),
+    "order-not-found": (
+        _json({"error": {"name": "order_not_found", "message": "찾을 수 없음"}}),
+        JSON_ERROR,
+        "order_not_found",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("content", "content_type", "name"), LIST_404.values(), ids=LIST_404.keys()
+)
+@pytest.mark.parametrize(("path", "call"), LIST_LOOKUPS.values(), ids=LIST_LOOKUPS.keys())
+def test_a_404_on_a_list_lookup_is_an_error_not_an_empty_list(
+    exchange, caplog, path, call, content, content_type, name
+):
+    """TS-02·INV-04·D-094 B: 목록 조회의 404는 이름과 상관없이 UpbitNotFound다(빈 목록 아님)."""
+    caplog.set_level(logging.DEBUG)
+    exchange.replace_response(path, 404, content, content_type=content_type)
+
+    async def scenario(api):
+        with pytest.raises(UpbitNotFound) as caught:
+            await call(api)
+        return caught.value
+
+    error = exchange.run(scenario)
+
+    assert error.http_status == 404
+    assert error.error_name == name
+    assert len(exchange.sent("GET", path)) == 1  # 다시 보내지 않는다(INV-03)
+    assert [r for r in caplog.records if r.name == EXCHANGE_LOGGER] == []
+
+
+def _strip_remaining_req(env: Any) -> None:
+    """env의 응답에서 Remaining-Req 헤더를 뺀다(앞서 넣은 감싸개 바깥에서)."""
+    previous = env.wrap
+
+    def wrap(inner: httpx.AsyncBaseTransport) -> httpx.AsyncBaseTransport:
+        if previous is not None:
+            inner = previous(inner)
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            response = await inner.handle_async_request(request)
+            await response.aread()
+            headers = [
+                (k, v)
+                for k, v in response.headers.multi_items()
+                if k.lower() not in ("remaining-req", "content-length")
+            ]
+            return httpx.Response(response.status_code, headers=headers, content=response.content)
+
+        return httpx.MockTransport(handler)
+
+    env.wrap = wrap
+
+
+@pytest.mark.parametrize("remaining_req", [True, False], ids=["with-remaining-req", "without"])
+def test_an_unnamed_404_taken_as_not_found_is_logged_as_a_warning(exchange, caplog, remaining_req):
+    """D-094 B: 이름 없는 404를 "없음"으로 볼 때 경로·Remaining-Req 유무를 WARNING으로 남긴다."""
+    caplog.set_level(logging.DEBUG)
+    body = _json({"error": {"message": "찾을 수 없음-본문"}})
+    exchange.replace_response("/v1/order", 404, body, content_type=JSON_ERROR)
+    if not remaining_req:
+        _strip_remaining_req(exchange)
+
+    found = exchange.run(lambda api: api.lookup_order(identifier=NEVER))
+
+    assert found.not_found == "unnamed"
+    [record] = [r for r in caplog.records if r.name == EXCHANGE_LOGGER]
+    assert record.levelno == logging.WARNING
+    message = record.getMessage()
+    assert "/v1/order" in message
+    assert ("Remaining-Req 있음" if remaining_req else "Remaining-Req 없음") in message
+    # identifier와 본문은 남기지 않는다(로그 잡음). Content-Type은 예외에 담기지 않아 남기지 못한다.
+    assert NEVER not in message
+    assert "찾을 수 없음-본문" not in caplog.text
+
+
+def test_named_404s_leave_no_unnamed_warning(exchange, caplog):
+    """D-094 B: 경고 로그는 이름 없는 404에만 남긴다(order_not_found·다른 이름에는 없다)."""
+    caplog.set_level(logging.DEBUG)
+
+    # 가짜의 404 order_not_found → "없음"(이름 있음)
+    named = exchange.run(lambda api: api.lookup_order(identifier=NEVER))
+    exchange.replace_response("/v1/order", 404, _json({"error": {"name": "some_other_not_found"}}))
+
+    async def other_name(api):
+        with pytest.raises(UpbitNotFound):
+            await api.lookup_order(identifier=NEVER)
+
+    exchange.run(other_name)
+
+    assert named.not_found == "order_not_found"
+    assert len(exchange.sent("GET", "/v1/order")) == 2
+    assert [r for r in caplog.records if r.name == EXCHANGE_LOGGER] == []

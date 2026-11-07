@@ -12,9 +12,11 @@
   검사하고 어기면 ValueError다(요청을 보내지 않는다). 반올림은 정책 몫이라 고치지 않고 거부한다.
 - 일괄 취소(DELETE /v1/orders/open)는 없다(D-069). 취소는 identifier로 하나씩.
 - 개별 주문 조회(GET /v1/order)의 404는 error.name이 order_not_found이든 없든(본문 없음, error
-  객체·name 없음, null, 빈 문자열) "없음"이다(D-094 B). lookup_order는 둘을 OrderLookup.not_found
-  ("order_not_found"·"unnamed")로 구별하고 get_order는 둘 다 None이다. 다른 이름의 404는
-  UpbitNotFound다. 주문 취소의 404는 이름이 없어도 UpbitNotFound다(B는 개별 조회에만).
+  객체·name 없음, null, 빈 문자열, 문자열·숫자가 아닌 값) "없음"이다(D-094 B). lookup_order는
+  둘을 OrderLookup.not_found("order_not_found"·"unnamed")로 구별하고 get_order는 둘 다 None이다.
+  "unnamed"면 근거를 WARNING 로그로 남긴다. 다른 이름의 404(숫자 404, 공백 포함)는 UpbitNotFound다.
+  주문 취소와 목록 조회(uuids·open·closed)의 404는 이름과 상관없이 UpbitNotFound다(B는 개별
+  조회에만. 상위 계층은 목록 조회가 성공하고 거기에도 없어야 "없음"으로 확정한다).
 - 응답의 선택 필드는 키째 빠질 수 있다 → None(모름). 주문 객체에서 꼭 있어야 하는 필드는
   업비트 Order 스키마의 required 가운데 식별에 쓰는 것(uuid, market, side, ord_type, state,
   created_at, trades_count)뿐이다. 시각은 UTC로 바꾼다.
@@ -29,6 +31,7 @@ docs/03-functional/trading-logic.md 6·7·9·10·11장.
 
 import functools
 import hmac
+import logging
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -61,6 +64,8 @@ ORDER_SIDES = frozenset({"bid", "ask"})
 ORDER_TYPES = frozenset({"limit", "price", "market", "best"})
 IMMEDIATE_TIF = frozenset({"ioc", "fok"})
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+logger = logging.getLogger(__name__)
 
 
 # ── 보내기 전 검사 ─────────────────────────────────────────
@@ -327,9 +332,13 @@ class UpbitExchangeApi:
     async def lookup_order(self, *, identifier: str) -> OrderLookup:
         """identifier로 개별 조회(trades 포함) 1회. 두 "없음"을 구별한다(D-094 B).
 
-        404 order_not_found → (None, "order_not_found"), 이름 없는 404(error.name이 없음·null·빈
-        문자열, 본문 없음 포함) → (None, "unnamed"). 다른 이름의 404는 UpbitNotFound, 404가 아닌
-        오류는 상태대로 낸다. 다시 보내지 않는다(INV-03).
+        404 order_not_found → (None, "order_not_found"). 이름 없는 404 → (None, "unnamed"):
+        본문 없음·JSON 아님, error 객체 없음, error.name 없음·null·빈 문자열, 그리고 문자열·숫자가
+        아닌 name(true, {}, [] 등. 오류 변환이 이름으로 읽지 않는다). 이때 경로와 Remaining-Req
+        유무를 WARNING으로 남긴다(identifier·본문은 남기지 않는다. Content-Type은 예외에 없어
+        못 남긴다). 다른 이름의 404는 UpbitNotFound다: 대소문자만 다른 이름, 숫자 404(문자열
+        "404"로 보존), 공백만 있는 이름(" ")도 이름이다. 404가 아닌 오류는 상태대로 낸다.
+        다시 보내지 않는다(INV-03).
         """
         params = [("identifier", check_identifier(identifier))]
         try:
@@ -338,6 +347,12 @@ class UpbitExchangeApi:
             if exc.error_name == "order_not_found":
                 return OrderLookup(snapshot=None, not_found="order_not_found")
             if exc.http_status == 404 and not exc.error_name:
+                # 5단계가 UNNAMED_NOT_FOUND 경고 이벤트를 남기기 전, 응답이 업비트에서 왔는지
+                # 가늠할 근거(Remaining-Req는 업비트 API 서버가 붙인다)만 남긴다.
+                logger.warning(
+                    "이름 없는 404를 주문 없음으로 본다(D-094 B): GET /v1/order, Remaining-Req %s",
+                    "있음" if exc.remaining_sec is not None else "없음",
+                )
                 return OrderLookup(snapshot=None, not_found="unnamed")
             raise
         snapshot = convert.parse_response(response, "default", _snapshot)
@@ -348,7 +363,10 @@ class UpbitExchangeApi:
         return (await self.lookup_order(identifier=identifier)).snapshot
 
     async def get_orders(self, *, identifiers: Sequence[str]) -> list[OrderSnapshot]:
-        """identifier 목록으로 조회(최대 100개, trades 없음). 없는 identifier는 결과에 없다."""
+        """identifier 목록으로 조회(최대 100개, trades 없음). 없는 identifier는 결과에 없다.
+
+        404는 이름과 상관없이 UpbitNotFound다("없음"·빈 목록이 아니다. D-094 B는 개별 조회에만).
+        """
         if isinstance(identifiers, str):
             raise TypeError("identifiers는 identifier의 목록이다")
         wanted = [check_identifier(i) for i in identifiers]
@@ -365,7 +383,8 @@ class UpbitExchangeApi:
 
         덜 찬 쪽이 오면 끝이다. 쪽 사이에 목록이 바뀌어 같은 주문이 두 번 오면 uuid로 한 번만
         담는다(쪽 사이에 끝난 주문 때문에 놓친 주문은 다음 대조에서 잡는다). 100쪽(1만 개)을
-        넘으면 일부만 돌려주지 않고 UpbitServerError다.
+        넘으면 일부만 돌려주지 않고 UpbitServerError다. 404는 이름과 상관없이 UpbitNotFound다
+        ("없음"·빈 목록이 아니다. D-094 B는 개별 조회에만).
         """
         base: list[tuple[str, str]] = []
         if market is not None:
@@ -398,6 +417,7 @@ class UpbitExchangeApi:
 
         오래된 것부터(order_by=asc) 한 번에 최대 1,000개를 받는다. 1,000개가 꽉 차면 잘렸을 수
         있으므로 일부를 돌려주지 않고 UpbitServerError다(호출하는 쪽이 구간을 나눠 다시 부른다).
+        404는 이름과 상관없이 UpbitNotFound다("없음"·빈 목록이 아니다. D-094 B는 개별 조회에만).
         """
         convert.check_aware(start, "start")
         convert.check_aware(end, "end")

@@ -10,11 +10,9 @@
 import ast
 import copy
 import dataclasses
-import itertools
 import pickle
 import secrets
 import string
-import types
 import typing
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -704,37 +702,10 @@ def test_models_have_the_designed_fields(cls):
 
 # ── R17-07: OrderChance.order_types는 폐기 예정 ───────────────
 # 공식 주문 가능 정보 문서에서 market.order_types는 폐기 예정이다(대체: bid_types·ask_types).
-# 필드는 남기되(응답에 있으면 읽는다) 설명에 "폐기 예정, 판단에 쓰지 않는다"를 적고, 앱 코드가
-# 그 값을 읽지 않는지 구조로 본다.
+# 필드는 남기되(응답에 있으면 읽는다) 설명에 "폐기 예정, 판단에 쓰지 않는다"를 적는다. 테스트는
+# 설명 문구가 아니라 구조(앱 코드가 그 값을 읽지 않음)만 본다.
 
 SRC_DIR = Path(models.__file__).resolve().parents[1]  # src/autotrader
-
-
-def attribute_docstrings(cls: type) -> dict[str, str]:
-    """클래스 본문에서 필드 표기 바로 뒤의 문자열(속성 설명)을 필드 이름별로 모은다."""
-    tree = ast.parse(Path(models.__file__).read_text(encoding="utf-8"))
-    (node,) = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls.__name__]
-    found: dict[str, str] = {}
-    for before, after in itertools.pairwise(node.body):
-        if (
-            isinstance(before, ast.AnnAssign)
-            and isinstance(before.target, ast.Name)
-            and isinstance(after, ast.Expr)
-            and isinstance(after.value, ast.Constant)
-            and isinstance(after.value.value, str)
-        ):
-            found[before.target.id] = after.value.value
-    return found
-
-
-def test_order_types_is_documented_as_deprecated_and_not_for_decisions():
-    doc = attribute_docstrings(models.OrderChance).get("order_types", "")
-
-    assert "폐기 예정" in doc, doc
-    assert "판단에 쓰지 않는다" in doc, doc
-    # 판단은 대체 필드로 한다.
-    assert "bid_types" in doc, doc
-    assert "ask_types" in doc, doc
 
 
 def test_order_types_stays_a_tuple_of_text():
@@ -771,21 +742,6 @@ def test_no_app_code_reads_order_types():
 NOT_FOUND_KINDS = ("order_not_found", "unnamed")
 
 
-def literal_values(annotation) -> set:
-    """Literal[...] | None 같은 표기에서 Literal 값과 None을 모은다."""
-    origin = typing.get_origin(annotation)
-    if origin is typing.Literal:
-        return set(typing.get_args(annotation))
-    if annotation is type(None):
-        return {None}
-    if origin in (typing.Union, types.UnionType):
-        values: set = set()
-        for arg in typing.get_args(annotation):
-            values |= literal_values(arg)
-        return values
-    raise AssertionError(f"Literal이 아닌 표기: {annotation!r}")
-
-
 def test_order_lookup_is_a_frozen_slotted_dataclass():
     cls = models.OrderLookup
 
@@ -799,7 +755,8 @@ def test_order_lookup_field_types():
     hints = typing.get_type_hints(models.OrderLookup)
 
     assert hints["snapshot"] == models.OrderSnapshot | None
-    assert literal_values(hints["not_found"]) == {*NOT_FOUND_KINDS, None}
+    assert hints["not_found"] == models.NotFoundKind | None
+    assert typing.get_args(models.NotFoundKind) == NOT_FOUND_KINDS
 
 
 def test_order_lookup_with_a_snapshot_has_no_not_found():

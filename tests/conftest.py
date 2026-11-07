@@ -17,7 +17,10 @@
     (`socket.gethostname()`)만.
     "127.0.0.1%lo"처럼 IPv4에 %를 붙인 값은 주소가 아니므로 이름으로 보고 막는다.
     단 비우기 전 프록시 주소로의 루프백 연결은 허용에서 뺀다.
-  - 프록시 설정을 비운다. 비우기 전 프록시 주소로의 루프백 연결도 막는다(QA R22-06).
+  - 프록시 설정을 비운다. 비우기 전 로컬 프록시 주소의 포트로의 로컬 연결도 막는다(QA R22-06).
+    `CLOUDSDK_PROXY_ADDRESS`·`CLOUDSDK_PROXY_PORT`는 읽기만 하고 지우지 않는다.
+  - 한계: 환경 변수·OS 설정에 기록되지 않은 루프백·AF_UNIX 포워더는 허용된다(그 밖의 한계는
+    fakes/network_guard.py).
   - 막은 시도는 기록하고, 테스트 정리 단계(`pytest_runtest_teardown`)에서 기록이 남아 있으면 그
     테스트를 실패로 만든다. 예외가 `except Exception`이나 asyncio 내부에서 삼켜져도 그렇다. 수집
     중의 기록은 수집을 실패로 만든다. 일부러 막는 테스트는 `network_guard.expect_blocked()`로

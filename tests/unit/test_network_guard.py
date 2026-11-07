@@ -31,18 +31,24 @@ tests/unit/test_self_test.py의 test_self_test_uses_no_network_and_no_credential
   httpx(trust_env 기본값)와 websockets(proxy=True 기본값)가 허용된 루프백 프록시를 거쳐 밖으로
   나간다.
 - 비우기 전의 프록시 주소로 직접 연결하는 길도 막는다(QA R22-06). `install`은 설정을 비우기 전에
-  프록시 주소(호스트, 포트)를 기록하고(`network_guard.blocked_proxy_endpoints()`, frozenset), 그
-  포트로의 연결은 루프백이어도 막는다(문구에 "프록시"와 포트, 자격 증명은 없음). 같은 루프백의 다른
-  포트(테스트용 로컬 서버)는 그대로 허용한다.
+  호스트가 로컬인 프록시 주소(호스트, 포트)를 기록하고(`network_guard.blocked_proxy_endpoints()`,
+  frozenset), 그 포트로의 연결은 루프백이어도 막는다(문구에 "프록시"와 포트, 자격 증명은 없음). 같은
+  루프백의 다른 포트(테스트용 로컬 서버)는 그대로 허용한다. `socket.create_connection`은 숫자
+  문자열 포트도 정수로 보고 소켓을 만들기 전에 막는다. 환경 변수·OS 설정에 기록되지 않은
+  루프백·AF_UNIX 포워더는 허용된다(한계).
   - 읽는 곳: 이름이 `_proxy`로 끝나는 환경 변수 전부(install이 지우는 것과 같다. 대소문자가 다른 두
     변수는 둘 다. `no_proxy`류는 주소 목록이라 뺀다)와 OS 설정(`urllib.request.getproxies_registry`·
-    `getproxies_macosx_sysconf`가 있으면 그 결과. 환경 변수가 있어도 따로 읽는다).
+    `getproxies_macosx_sysconf`가 있으면 그 결과. 환경 변수가 있어도 따로 읽는다),
+    `CLOUDSDK_PROXY_ADDRESS`·`CLOUDSDK_PROXY_PORT`가 둘 다 있으면 그 쌍(읽기만 하고 지우지 않는다).
   - 주소 읽기 `network_guard.proxy_endpoints(env)`: 값은 URL이다. 호스트는 소문자, IPv6는 대괄호를
-    뗀다. 자격 증명은 버린다. 포트가 없으면 스킴 기본 포트(http 80, https 443, socks5·socks5h 1080),
-    스킴이 없으면 http로 본다(curl·requests와 같다). 주소가 아닌 값은 예외 없이 무시한다.
-  - 대상 판정 `network_guard.is_proxy_target(address, endpoints)`: 루프백 프록시의 포트로 가는
-    루프백 별칭(127.0.0.1, "localhost", ::ffff:127.0.0.1, 0.0.0.0 등)을 모두 맞춘다. 외부 프록시는
-    이미 외부 차단이 막으므로 같은 포트의 로컬 서버를 막지 않는다.
+    뗀다. 자격 증명은 버린다. 포트가 없으면 스킴 기본 포트(http 80, https 443,
+    socks·socks4·socks4a·socks5·socks5h 1080), 스킴이 없으면 http로 본다(curl·requests와 같다).
+    주소가 아닌 값은 예외 없이 무시한다. 호스트가 로컬이 아닌 값(외부 프록시, 잡음 값 "1", 잘못 쓴
+    URL의 조각)도 버린다.
+  - 대상 판정 `network_guard.is_proxy_target(address, endpoints)`: 대상이 로컬이고 포트가 로컬
+    프록시의 포트 중 하나면 맞춘다(127.0.0.1, 127.0.0.2, "localhost", ::ffff:127.0.0.1, 0.0.0.0,
+    "", :: 등 별칭 모두). 외부 프록시는 이미 외부 차단이 막으므로 같은 포트의 로컬 서버를 막지
+    않는다.
   - 실제 연결 시험은 바깥 테스트가 루프백에 연 리스너의 포트를 프록시 변수와 가짜 OS 설정으로 넘긴
     자식 pytest가 한다. 이 세션의 실제 프록시에는 연결하지 않는다(대상 검사 `check_address`만 본다).
 - 외부 주소는 문서용 주소(203.0.113.0/24, 2001:db8::/32)와 api.upbit.com이다. 차단이 걸려 있지
@@ -53,6 +59,7 @@ tests/unit/test_self_test.py의 test_self_test_uses_no_network_and_no_credential
 import ast
 import asyncio
 import contextlib
+import gc
 import os
 import secrets
 import socket
@@ -62,6 +69,7 @@ import sys
 import textwrap
 import urllib.request
 import uuid
+import warnings
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -497,10 +505,13 @@ def run_child_pytest(
 
 
 def child_outcomes(root: Path) -> dict[str, tuple[str, str]]:
-    """junit 보고서에서 테스트 이름 → (결과, 문구)."""
+    """junit 보고서에서 테스트 이름 → (결과, 문구).
+
+    결과는 error·failure·skipped를 이은 것이고 없으면 "passed"다(건너뛴 테스트는 통과가 아니다).
+    """
     outcomes: dict[str, tuple[str, str]] = {}
     for case in ET.parse(root / "report.xml").getroot().iter("testcase"):
-        problems = [child for child in case if child.tag in ("error", "failure")]
+        problems = [child for child in case if child.tag in ("error", "failure", "skipped")]
         text = " ".join(f"{child.get('message', '')} {child.text or ''}" for child in problems)
         outcome = "+".join(sorted(child.tag for child in problems)) or "passed"
         outcomes[case.get("name", "")] = (outcome, text)
@@ -1138,11 +1149,13 @@ PROXY_FORMATS = [
     ("https://127.0.0.1", ("127.0.0.1", 443)),
     ("socks5://127.0.0.1", ("127.0.0.1", 1080)),
     ("socks5h://localhost", ("localhost", 1080)),
+    ("socks4://127.0.0.1", ("127.0.0.1", 1080)),
+    ("socks4a://127.0.0.1", ("127.0.0.1", 1080)),
+    ("socks://localhost", ("localhost", 1080)),
     ("http://[::1]:8080", ("::1", 8080)),  # IPv6는 대괄호를 뗀다
     ("http://[::1]", ("::1", 80)),
     ("127.0.0.1:3128", ("127.0.0.1", 3128)),  # 스킴이 없으면 http(curl·requests와 같다)
     ("localhost:3128", ("localhost", 3128)),
-    ("http://203.0.113.10:3128", ("203.0.113.10", 3128)),  # 외부 주소도 읽는다(이미 막힌다)
 ]
 PROXY_NOT_ADDRESSES = [
     "",
@@ -1152,6 +1165,17 @@ PROXY_NOT_ADDRESSES = [
     "http://127.0.0.1:99999",  # 포트 범위 밖
     "http://[::1",  # 대괄호가 닫히지 않았다(urlsplit이 ValueError)
     "http://[not-ip]:80",
+]
+# 주소 모양이지만 로컬 호스트가 아니라 기록하지 않는 값. 외부 프록시는 외부 차단이 이미 막는다.
+# 잡음 값과 잘못 쓴 URL의 조각이 기록·막은 문구에 드러나지 않는다.
+PROXY_NOT_LOCAL = [
+    "http://203.0.113.10:3128",
+    "203.0.113.10:3128",
+    "http://[2001:db8::10]:3128",
+    "http://api.upbit.com:3128",
+    "1",  # 플래그 값(→ ("1", 80))
+    "true",
+    "http://user:1234/x@127.0.0.1:3128",  # 경로의 @ 앞이 호스트가 된다(→ ("user", 1234))
 ]
 PROXY_PORT = 18080  # 순수 함수 시험용(연결하지 않는다)
 
@@ -1165,6 +1189,13 @@ def test_proxy_endpoints_reads_the_host_and_port_of_a_proxy_url(value, expected)
 def test_proxy_endpoints_ignores_values_that_are_not_addresses(value):
     # install이 잘못된 값 때문에 멈추면 테스트 세션 전체가 돌지 않는다. 예외 없이 무시한다.
     assert network_guard.proxy_endpoints({"HTTP_PROXY": value}) == frozenset()
+
+
+@pytest.mark.parametrize("value", PROXY_NOT_LOCAL, ids=repr)
+def test_proxy_endpoints_keeps_only_local_proxies(value):
+    assert network_guard.proxy_endpoints({"HTTPS_PROXY": value}) == frozenset()
+    env = {"HTTPS_PROXY": value, "HTTP_PROXY": "http://127.0.0.1:3128"}
+    assert network_guard.proxy_endpoints(env) == frozenset({("127.0.0.1", 3128)})
 
 
 def test_proxy_endpoints_reads_every_variable_that_install_clears():
@@ -1205,6 +1236,8 @@ def test_proxy_endpoints_reads_the_cloudsdk_address_and_port_pair_only_when_both
     assert network_guard.proxy_endpoints({"CLOUDSDK_PROXY_PORT": "4001"}) == frozenset()
     bad_port = {"CLOUDSDK_PROXY_ADDRESS": "127.0.0.1", "CLOUDSDK_PROXY_PORT": "port"}
     assert network_guard.proxy_endpoints(bad_port) == frozenset()
+    external = {"CLOUDSDK_PROXY_ADDRESS": "203.0.113.10", "CLOUDSDK_PROXY_PORT": "4001"}
+    assert network_guard.proxy_endpoints(external) == frozenset()
 
 
 def test_proxy_endpoints_keeps_valid_values_next_to_invalid_ones_and_merges_duplicates():
@@ -1222,12 +1255,15 @@ def test_proxy_endpoints_keeps_valid_values_next_to_invalid_ones_and_merges_dupl
     ("endpoint", "address"),
     [
         (("127.0.0.1", PROXY_PORT), ("127.0.0.1", PROXY_PORT)),
+        (("127.0.0.1", PROXY_PORT), ("127.0.0.2", PROXY_PORT)),  # 127.0.0.0/8 전체가 루프백
         (("127.0.0.1", PROXY_PORT), (b"127.0.0.1", PROXY_PORT)),
         (("127.0.0.1", PROXY_PORT), ("localhost", PROXY_PORT)),  # 이름으로 돌아가기
         (("127.0.0.1", PROXY_PORT), ("LOCALHOST.", PROXY_PORT)),
         (("127.0.0.1", PROXY_PORT), ("::ffff:127.0.0.1", PROXY_PORT, 0, 0)),  # IPv4 대응 주소
         # 리눅스는 미지정 주소로의 연결을 루프백으로 보낸다.
         (("127.0.0.1", PROXY_PORT), ("0.0.0.0", PROXY_PORT)),
+        (("127.0.0.1", PROXY_PORT), ("", PROXY_PORT)),  # 빈 문자열은 INADDR_ANY
+        (("::1", PROXY_PORT), ("::", PROXY_PORT, 0, 0)),
         # httpx·asyncio는 이름을 해석한 주소로 연결한다.
         (("localhost", PROXY_PORT), ("127.0.0.1", PROXY_PORT)),
         (("localhost", PROXY_PORT), ("::1", PROXY_PORT, 0, 0)),
@@ -1268,6 +1304,7 @@ def test_blocked_proxy_endpoints_are_host_port_pairs_without_credentials():
     assert isinstance(recorded, frozenset)
     for host, port in recorded:
         assert isinstance(host, str), recorded
+        assert is_local_host(host), recorded  # 외부 프록시는 기록하지 않는다
         assert "@" not in host, "자격 증명이 남았다"
         assert "://" not in host
         assert isinstance(port, int), recorded
@@ -1282,6 +1319,28 @@ def test_proxies_of_this_session_are_blocked_without_connecting():
         with pytest.raises(RealNetworkBlocked) as caught:
             check_address(family, (host, port))
         assert str(port) in str(caught.value)
+
+
+@pytest.mark.parametrize("port_type", [str, lambda port: str(port).encode()], ids=["str", "bytes"])
+def test_create_connection_with_a_numeric_string_port_to_a_proxy_is_blocked_without_a_socket(
+    monkeypatch, v4_listener, port_type
+):
+    # getaddrinfo는 숫자 문자열 포트도 받는다. 정수로 바꿔 검사하고, 소켓을 만들기 전에 막는다
+    # (만든 뒤 connect에서 막으면 create_connection이 소켓을 닫지 않아 ResourceWarning이 난다).
+    # 프록시 기록은 이 테스트의 리스너로 바꾼다(실제 프록시에는 연결하지 않는다).
+    port = v4_listener.getsockname()[1]
+    monkeypatch.setattr(network_guard, "_proxy_endpoints", frozenset({("127.0.0.1", port)}))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for host in ("127.0.0.1", "localhost"):
+            error = assert_blocked(
+                lambda host=host: socket.create_connection((host, port_type(port)), timeout=SHORT)
+            )
+            assert "프록시" in str(error), error
+            assert str(port) in str(error), error
+        gc.collect()
+    assert [w for w in caught if issubclass(w.category, ResourceWarning)] == []
+    assert not has_pending(v4_listener)
 
 
 def canary_word() -> str:
@@ -1333,6 +1392,7 @@ import httpx
 import pytest
 from fakes import network_guard
 from fakes.network_guard import RealNetworkBlocked
+from websockets.asyncio.client import connect as ws_connect
 
 
 def note(text):
@@ -1369,6 +1429,7 @@ def test_install_recorded_the_proxies_before_clearing_them():
     recorded = network_guard.blocked_proxy_endpoints()
     note(repr(sorted(recorded)))
     assert set(PORTS.values()) <= {port for _host, port in recorded}, recorded
+    assert all(network_guard.is_local_host(host) for host, _port in recorded), recorded
     if IPV6_PORT is not None:
         assert ("::1", IPV6_PORT) in recorded, recorded
     proxies = {k: v for k, v in urllib.request.getproxies().items() if k != "no"}
@@ -1439,6 +1500,27 @@ def test_clients_given_the_proxy_address_explicitly_are_blocked():
         client.get("https://203.0.113.10/v1/market/all")
     assert find_blocked(caught.value) is not None, repr(caught.value)
 
+    async def through(call):
+        try:
+            await asyncio.wait_for(call(), 0.5)
+        except BaseException as exc:
+            return exc
+        raise AssertionError("연결이 됐다")
+
+    async def httpx_async():
+        async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", timeout=0.5) as client:
+            await client.get("https://203.0.113.10/v1/market/all")
+
+    async def websockets_proxy():
+        url, proxy = "wss://203.0.113.10/websocket/v1", f"http://localhost:{port}"
+        async with ws_connect(url, proxy=proxy, open_timeout=0.5):
+            pass
+
+    for call in (httpx_async, websockets_proxy):
+        with network_guard.expect_blocked():
+            error = asyncio.run(through(call))
+        assert find_blocked(error) is not None, f"{call.__name__}: {error!r}"
+
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
 def test_other_loopback_ports_still_work(host):
@@ -1473,7 +1555,6 @@ CHILD_PROXY_EXPECTED = [
             "macos-localhost",
         )
     ),
-    "test_connect_to_a_recorded_ipv6_loopback_proxy_is_blocked",
     "test_other_socket_paths_to_a_recorded_proxy_are_blocked",
     "test_clients_given_the_proxy_address_explicitly_are_blocked",
     "test_other_loopback_ports_still_work[127.0.0.1]",
@@ -1504,6 +1585,10 @@ def test_direct_connections_to_proxies_seen_before_clearing_are_blocked(tmp_path
             # Windows는 환경 변수 이름의 대소문자를 가리지 않으므로 이름이 겹치지 않게 고른다.
             "https_proxy": f"http://{user}:{password}@localhost:{ports['https']}",
             "ALL_PROXY": f"socks5://127.0.0.1:{ports['all']}",
+            # 로컬이 아닌 값은 기록하지 않는다(잡음 값, 잘못 쓴 URL, 외부 프록시).
+            "NOISE_FLAG_PROXY": "1",
+            "BROKEN_URL_PROXY": f"http://user:{ports['http']}/x@127.0.0.1:{ports['http']}",
+            "OUTSIDE_PROXY": "http://203.0.113.10:3128",
         }
         if ipv6_port is not None:
             env["FTP_PROXY"] = f"http://[::1]:{ipv6_port}"
@@ -1522,7 +1607,10 @@ def test_direct_connections_to_proxies_seen_before_clearing_are_blocked(tmp_path
         outcomes = child_outcomes(tmp_path)
         detail = f"{outcomes}\n{result.stdout[-4000:]}\n{result.stderr[-2000:]}"
         assert result.returncode == 0, detail
-        for name in CHILD_PROXY_EXPECTED:
+        expected = list(CHILD_PROXY_EXPECTED)
+        if ipv6_port is not None:  # 없으면 건너뛴다(통과로 세지 않는다)
+            expected.append("test_connect_to_a_recorded_ipv6_loopback_proxy_is_blocked")
+        for name in expected:
             assert outcomes.get(name, ("없음", ""))[0] == "passed", f"{name}\n{detail}"
         # 막은 문구·기록·자식 출력에 프록시 자격 증명이 없다.
         texts = [result.stdout, result.stderr, (tmp_path / "report.xml").read_text("utf-8")]

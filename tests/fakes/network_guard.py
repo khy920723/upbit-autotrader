@@ -23,13 +23,15 @@ tests/conftest.py의 hook이 `pytest_configure`에서 `install`을 부르고 `py
   테스트는 `expect_blocked()`로 감싼다.
 - 프록시 설정을 비운다(`*_proxy` 환경 변수, Windows 레지스트리·macOS 시스템 설정 읽기). 클라우드
   세션의 프록시는 127.0.0.1에 있어 루프백 허용을 타고 밖으로 나갈 수 있다(httpx trust_env,
-  websockets proxy=True 기본값). 비우기 전 프록시 주소(호스트, 포트)를 기록해 두고
-  (`blocked_proxy_endpoints()`) 그 주소로의 루프백 연결도 막는다(QA R22-06). 같은 루프백의 다른
-  포트는 허용한다.
+  websockets proxy=True 기본값). 비우기 전 프록시 주소 중 호스트가 로컬인 것(호스트, 포트)을
+  기록해 두고(`blocked_proxy_endpoints()`) 그 포트로의 로컬 연결도 막는다(QA R22-06). 외부 프록시는
+  외부 차단이 이미 막으므로 기록하지 않는다. 같은 루프백의 다른 포트는 허용한다.
+  `CLOUDSDK_PROXY_ADDRESS`·`CLOUDSDK_PROXY_PORT`(gcloud)는 읽기만 하고 지우지 않는다.
 
 한계(막지 못하는 것): C 타입 `_socket.socket`(= `socket.SocketType`)을 직접 만들어 쓰는 코드,
 Python `socket`을 거치지 않는 확장 모듈(예: QtNetwork. 앱은 쓰지 않는다, test_architecture),
-자식 프로세스, 테스트 코드가 일부러 원래 함수를 되돌려 놓는 경우.
+자식 프로세스, 테스트 코드가 일부러 원래 함수를 되돌려 놓는 경우. 환경 변수·OS 설정에 기록되지
+않은 루프백·AF_UNIX 포워더(밖으로 이어 주는 로컬 프로세스)는 허용된다.
 """
 
 import ipaddress
@@ -51,10 +53,11 @@ _REPORT_LIMIT = 10  # 보고 문구에 적는 시도 수
 _lock = threading.Lock()
 _attempts: list[str] = []  # 막은 시도(문구). 정리 단계에서 비운다
 _installed: dict[tuple[object, str], object] = {}  # install이 바꿔 놓은 (대상, 이름) → 감싼 함수
-# install이 비우기 전에 읽은 프록시 주소(호스트, 포트). 자격 증명은 담지 않는다.
+# install이 비우기 전에 읽은 로컬 프록시 주소(호스트, 포트). 자격 증명은 담지 않는다.
 # patch.setattr로 바꾸므로 patch를 되돌리면 비워진다.
 _proxy_endpoints: frozenset[tuple[str, int]] = frozenset()
-_DEFAULT_PROXY_PORTS = {"http": 80, "https": 443, "socks5": 1080, "socks5h": 1080}
+_SOCKS_SCHEMES = ("socks", "socks4", "socks4a", "socks5", "socks5h")
+_DEFAULT_PROXY_PORTS = {"http": 80, "https": 443} | dict.fromkeys(_SOCKS_SCHEMES, 1080)
 
 
 class RealNetworkBlocked(AssertionError):
@@ -117,7 +120,11 @@ def _blocked(what: str, target: object) -> RealNetworkBlocked:
 
 
 def _endpoint(value: str) -> tuple[str, int] | None:
-    """프록시 URL의 (호스트, 포트). 자격 증명은 버린다. 주소가 아니면 예외 없이 None."""
+    """로컬 프록시 URL의 (호스트, 포트). 자격 증명은 버린다.
+
+    주소가 아니거나 호스트가 로컬(`is_local_host`)이 아니면 예외 없이 None. 외부 프록시는 외부
+    차단이 이미 막고, 잡음 값(`"1"` → ("1", 80))이나 잘못 쓴 URL의 조각을 기록·문구에 남기지 않는다.
+    """
     text = value.strip()
     if not text:
         return None
@@ -129,7 +136,7 @@ def _endpoint(value: str) -> tuple[str, int] | None:
         host = parts.hostname  # 소문자, IPv6는 대괄호 없이
     except ValueError:
         return None
-    if not host:
+    if not host or not is_local_host(host):
         return None
     if port is None:
         port = _DEFAULT_PROXY_PORTS.get(parts.scheme.lower())
@@ -139,10 +146,11 @@ def _endpoint(value: str) -> tuple[str, int] | None:
 
 
 def proxy_endpoints(env: Mapping[str, str]) -> frozenset[tuple[str, int]]:
-    """환경 변수 모양의 매핑에서 프록시 주소 (호스트, 포트)를 읽는다.
+    """환경 변수 모양의 매핑에서 로컬 프록시 주소 (호스트, 포트)를 읽는다.
 
     install이 지우는 변수(이름이 `_proxy`로 끝남, `no_proxy`류 제외)를 모두 읽고,
-    `CLOUDSDK_PROXY_ADDRESS`·`CLOUDSDK_PROXY_PORT`가 둘 다 있으면 그 쌍도 읽는다(gcloud).
+    `CLOUDSDK_PROXY_ADDRESS`·`CLOUDSDK_PROXY_PORT`가 둘 다 있으면 그 쌍도 읽는다(gcloud. install은
+    이 둘을 읽기만 하고 지우지 않는다). 호스트가 로컬이 아닌 값은 버린다.
     """
     found: set[tuple[str, int]] = set()
     cloudsdk: dict[str, str] = {}
@@ -166,10 +174,25 @@ def proxy_endpoints(env: Mapping[str, str]) -> frozenset[tuple[str, int]]:
 
 
 def is_proxy_target(address: Any, endpoints: Iterable[tuple[str, int]]) -> bool:
-    """루프백 프록시의 포트로 가는 루프백 대상이면 True. 외부 프록시는 외부 차단 몫이다."""
+    """대상이 로컬이고 그 포트가 로컬 프록시의 포트 중 하나면 True. 외부 프록시는 외부 차단 몫."""
     if not isinstance(address, tuple) or len(address) < 2 or not is_local_host(address[0]):
         return False
-    return any(port == address[1] and is_local_host(host) for host, port in endpoints)
+    return address[1] in {port for host, port in endpoints if is_local_host(host)}
+
+
+def _numeric_port(address: Any) -> Any:
+    """`(호스트, "3128")`처럼 포트가 숫자 문자열이면 정수로 바꾼 주소. 아니면 그대로.
+
+    getaddrinfo·create_connection은 숫자 문자열 포트도 받는다.
+    """
+    if not isinstance(address, tuple) or len(address) < 2:
+        return address
+    port = address[1]
+    if isinstance(port, bytes | bytearray):
+        port = bytes(port).decode("ascii", "replace")
+    if isinstance(port, str) and port.isascii() and port.strip().isdigit():
+        return (address[0], int(port), *address[2:])
+    return address
 
 
 def blocked_proxy_endpoints() -> frozenset[tuple[str, int]]:
@@ -362,11 +385,8 @@ def install(patch: pytest.MonkeyPatch) -> None:
         return original_getnameinfo(sockaddr, flags)
 
     def create_connection(address: Any, *args: Any, **kwargs: Any) -> socket.socket:
-        if not is_local_host(address[0]):
-            _enforce(_blocked("연결", address))
-        _enforce(
-            _address_problem(socket.AF_INET, address)
-        )  # 기록된 프록시면 소켓을 만들기 전에 막는다
+        # 소켓을 만들기 전에 막는다(만든 뒤 connect에서 막으면 원래 함수가 소켓을 닫지 않는다).
+        _enforce(_address_problem(socket.AF_INET, _numeric_port(address)))
         return original_create_connection(address, *args, **kwargs)
 
     _set(patch, socket.socket, "connect", connect, True)

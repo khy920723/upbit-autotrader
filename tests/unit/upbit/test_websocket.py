@@ -2565,3 +2565,419 @@ def test_private_stream_over_the_default_connector_keeps_secrets_out_of_locals(m
     assert token not in blob
     assert find_canaries(blob, [creds.access_key, creds.secret_key]) == []
     assert JWT_SHAPE.search(blob) is None
+
+
+# ── R22-03: 보내기 전 검사(헤더)와 예외 변환 분기 ──────────────────────
+# QA R22-03(PR #22): 헤더 검사의 거부, 주입 연결기의 OSError → core 오류 변환, 그 밖의 예외 변환
+# 분기를 시험한다. 감시 쪽(open_stream이 부르는 순간 core 오류)은 tests/unit/test_streams.py 끝.
+#
+# 정한 동작:
+# - WebsocketsConnector.connect는 연결하기 전에 헤더를 본다. Origin(CLAUDE.md: 보내면 10초에
+#   1회로 제한된다), 같은 이름 두 번(대소문자 무관), User-Agent(연결기의 user_agent로만 정한다)는
+#   ValueError이고 websockets connect를 부르지 않는다. 문구에 헤더 값을 넣지 않는다.
+# - 주입한 연결기(WsConnector)의 OSError: connect에서 나면 StreamConnectFailed(http_status=None),
+#   구독 전송(send)·받기(recv)에서 나면 StreamClosed(close_code는 그때 연결의 close_code). reason에
+#   예외 타입 이름이 들어가고 원래 예외를 잇지 않는다(__cause__·__context__ 없음). 연결은 닫는다.
+# - 연결 close가 StreamClosed(이미 닫힘)를 내면 기록하지 않고 결과를 그대로 둔다.
+# - 연결의 recv가 스스로 취소되면(라이브러리 안의 취소) 소비 태스크를 취소하지 않고 StreamClosed다.
+
+
+@pytest.mark.parametrize("name", ["Origin", "origin", "ORIGIN"])
+@pytest.mark.parametrize("url", [PUBLIC_URL, PRIVATE_URL])
+def test_connector_refuses_an_origin_header_before_connecting(monkeypatch, name, url):
+    spy = spy_on_websockets_connect(monkeypatch, refused())
+    headers = [("Authorization", "Bearer uat-test-0123456789abcdef"), (name, "https://upbit.com")]
+
+    with pytest.raises(ValueError, match="Origin"):
+        asyncio.run(make_connector().connect(url, headers=headers))
+
+    assert spy.calls == []
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        [("X-Test", "1"), ("X-Test", "2")],
+        [("X-Test", "1"), ("x-test", "1")],
+        [("Authorization", "Bearer uat-test-first-0123456789"), ("authorization", "Bearer b")],
+    ],
+    ids=["same-case", "other-case", "authorization"],
+)
+def test_connector_refuses_a_header_name_sent_twice_before_connecting(monkeypatch, headers):
+    spy = spy_on_websockets_connect(monkeypatch, refused())
+
+    with pytest.raises(ValueError) as info:  # noqa: PT011 - 문구는 구현이 정한다
+        asyncio.run(make_connector().connect(PRIVATE_URL, headers=headers))
+
+    assert spy.calls == []
+    text = "\n".join([str(info.value), repr(info.value), *traceback.format_exception(info.value)])
+    for _, value in headers:
+        if len(value) > 2:
+            assert value not in text  # 헤더 값(토큰)을 문구에 넣지 않는다
+
+
+@pytest.mark.parametrize("name", ["User-Agent", "user-agent"])
+def test_connector_refuses_a_user_agent_header_before_connecting(monkeypatch, name):
+    spy = spy_on_websockets_connect(monkeypatch, refused())
+
+    with pytest.raises(ValueError, match="User-Agent"):
+        asyncio.run(make_connector().connect(PUBLIC_URL, headers=[(name, "curl/8 (test)")]))
+
+    assert spy.calls == []
+
+
+class OsErrorConnection(ScriptedConnection):
+    """ScriptedConnection에 OSError를 더한다(주입 연결기가 core 오류로 바꾸지 않은 경우).
+
+    send_error: 구독 전송에서 낸다. recv_error: 프레임을 다 준 뒤 recv에서 낸다.
+    error_close_code: 오류를 낼 때 close_code로 둘 값(None이면 열린 채로 본다).
+    """
+
+    def __init__(
+        self,
+        frames: Sequence[str | bytes] = (),
+        *,
+        send_error: BaseException | None = None,
+        recv_error: BaseException | None = None,
+        error_close_code: int | None = None,
+    ) -> None:
+        super().__init__(frames, None)
+        self._send_error = send_error
+        self._recv_error = recv_error
+        self._error_close_code = error_close_code
+
+    async def send(self, text: str) -> None:
+        if self._send_error is None:
+            await super().send(text)
+            return
+        self.sent.append(text)
+        self.close_code = self._error_close_code
+        raise self._send_error
+
+    async def recv(self) -> str | bytes:
+        if self._recv_error is None or self._frames:
+            return await super().recv()
+        await asyncio.sleep(0)
+        self.close_code = self._error_close_code
+        raise self._recv_error
+
+
+class CancelledRecvConnection(ScriptedConnection):
+    """프레임을 다 준 뒤 recv 안에서 스스로 취소된다(라이브러리 안의 취소 흉내)."""
+
+    async def recv(self) -> str | bytes:
+        if self._frames:
+            return await super().recv()
+        await asyncio.sleep(0)
+        raise asyncio.CancelledError
+
+
+class PlannedConnector:
+    """connect마다 계획 한 칸을 쓴다: 예외면 connect에서 내고, 연결이면 그 연결을 준다."""
+
+    def __init__(self, *plan: BaseException | ScriptedConnection) -> None:
+        self._plan = list(plan)
+        self.calls: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+        self.connections: list[ScriptedConnection] = []
+
+    async def connect(self, url: str, *, headers: Sequence[tuple[str, str]]) -> ScriptedConnection:
+        self.calls.append((url, tuple(headers)))
+        step = self._plan.pop(0)
+        if isinstance(step, BaseException):
+            raise step
+        self.connections.append(step)
+        return step
+
+
+def planned_env(*plan: BaseException | ScriptedConnection) -> Env:
+    return Env(FakeClock(), PlannedConnector(*plan))
+
+
+def planned_iterator(e: Env, kind: str) -> Any:
+    if kind == "public":
+        return e.public().ticker(["KRW-BTC"])
+    return e.private(credentials=make_upbit_credentials).events()
+
+
+def assert_not_chained(error: BaseException) -> None:
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+def _connect_os_errors() -> list[Any]:
+    return [
+        pytest.param(refused(), id="refused"),
+        pytest.param(ConnectionResetError(104, "Connection reset by peer (test)"), id="reset"),
+        pytest.param(OSError(101, "Network is unreachable (test)"), id="unreachable"),
+        pytest.param(ssl.SSLCertVerificationError(1, "verify failed (test)"), id="tls"),
+        pytest.param(TimeoutError(), id="timeout"),
+    ]
+
+
+@pytest.mark.parametrize("failure", _connect_os_errors())
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_oserror_from_an_injected_connect_is_connect_failed(kind, failure):
+    env = planned_env(failure)
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(planned_iterator(e, kind)))
+        assert items == []  # 연결하지 못하면 StreamOpened도 없다
+        assert type(error) is StreamConnectFailed
+        assert error.http_status is None
+        assert type(failure).__name__ in error.reason
+        assert_not_chained(error)
+
+    env.run(scenario)
+    assert len(env.connector.calls) == 1
+
+
+def test_a_connect_oserror_does_not_count_as_an_opened_connection():
+    env = planned_env(refused(), ScriptedConnection([BTC_FRAME], None))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        _, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
+        assert type(error) is StreamConnectFailed
+        _, first = await e.open_ticker(stream, within=1)
+        assert first == opened("public", 1)
+
+    env.run(scenario)
+
+
+def _send_os_errors() -> list[Any]:
+    return [
+        pytest.param(BrokenPipeError(32, "Broken pipe (test)"), id="broken-pipe"),
+        pytest.param(ConnectionResetError(104, "Connection reset by peer (test)"), id="reset"),
+        pytest.param(ssl.SSLError(1, "bad record mac (test)"), id="tls"),
+    ]
+
+
+@pytest.mark.parametrize("close_code", [None, 1006])
+@pytest.mark.parametrize("failure", _send_os_errors())
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_oserror_while_sending_the_subscription_is_stream_closed(kind, failure, close_code):
+    conn = OsErrorConnection(send_error=failure, error_close_code=close_code)
+    env = planned_env(conn)
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(planned_iterator(e, kind)))
+        assert items == []  # 구독을 보내지 못했으니 StreamOpened 전에 끝났다
+        assert type(error) is StreamClosed
+        assert error.close_code == close_code
+        assert type(failure).__name__ in error.reason
+        assert_not_chained(error)
+        assert len(conn.sent) == 1
+        assert conn.close_calls >= 1  # 어댑터가 연결을 닫았다
+
+    env.run(scenario)
+
+
+def _recv_os_errors() -> list[Any]:
+    return [
+        pytest.param(ConnectionResetError(104, "Connection reset by peer (test)"), id="reset"),
+        pytest.param(ConnectionAbortedError(103, "Software caused abort (test)"), id="aborted"),
+        pytest.param(ssl.SSLError(1, "bad record mac (test)"), id="tls"),
+        pytest.param(TimeoutError(), id="timeout"),
+    ]
+
+
+@pytest.mark.parametrize("close_code", [None, 1006])
+@pytest.mark.parametrize("failure", _recv_os_errors())
+def test_public_oserror_while_receiving_is_stream_closed_after_earlier_messages(
+    failure, close_code
+):
+    conn = OsErrorConnection([BTC_FRAME], recv_error=failure, error_close_code=close_code)
+    env = planned_env(conn)
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
+        assert [type(item) for item in items] == [StreamOpened, TickerEvent]
+        assert type(error) is StreamClosed
+        assert error.close_code == close_code
+        assert type(failure).__name__ in error.reason
+        assert_not_chained(error)
+        assert conn.close_calls >= 1
+
+    env.run(scenario)
+
+
+@pytest.mark.parametrize("failure", _recv_os_errors())
+def test_private_oserror_while_receiving_is_stream_closed(failure):
+    conn = OsErrorConnection(recv_error=failure, error_close_code=1006)
+    env = planned_env(conn)
+    stream = env.private(credentials=make_upbit_credentials)
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.events()))
+        assert items == [opened("private", 1)]
+        assert type(error) is StreamClosed
+        assert error.close_code == 1006
+        assert type(failure).__name__ in error.reason
+        assert_not_chained(error)
+        assert conn.close_calls >= 1
+
+    env.run(scenario)
+
+
+def test_a_recv_cancelled_inside_the_connection_is_stream_closed():
+    conn = CancelledRecvConnection([BTC_FRAME], None)
+    env = planned_env(conn)
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        consumer = e.consume(stream.ticker(["KRW-BTC"]))
+        items, error = await e.drain(consumer)
+        assert [type(item) for item in items] == [StreamOpened, TickerEvent]
+        assert type(error) is StreamClosed  # CancelledError가 소비 태스크로 새지 않는다
+        assert not consumer.task.cancelled()
+        assert conn.close_calls >= 1
+
+    env.run(scenario)
+
+
+def test_a_close_that_says_already_closed_is_not_logged(caplog):
+    caplog.set_level(logging.DEBUG)
+    already = StreamClosed(close_code=1006, reason="이미 닫힘(test)")
+    env = scripted_env(([BTC_FRAME], 1006, {"close_error": already}))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
+        assert [type(item) for item in items] == [StreamOpened, TickerEvent]
+        assert type(error) is StreamClosed
+        assert error.close_code == 1006  # 닫기의 StreamClosed가 결과를 덮지 않는다
+        assert e.connector.connections[0].close_calls >= 1
+
+    env.run(scenario)
+    assert app_warnings(caplog) == []
+
+
+def test_aclose_with_a_close_that_says_already_closed_returns_quietly(caplog):
+    caplog.set_level(logging.DEBUG)
+    already = StreamClosed(close_code=1006, reason="이미 닫힘(test)")
+    env = scripted_env(([BTC_FRAME], None, {"close_error": already}))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        iterator, _ = await e.open_ticker(stream)
+        await iterator.aclose()  # 예외 없이 끝난다
+        assert e.connector.connections[0].close_calls >= 1
+
+    env.run(scenario)
+    assert app_warnings(caplog) == []
+
+
+# ── R22-03: 그 밖의 빠진 분기(연결 감싸개·로거·설정·값 검사) ──────────
+
+
+class _OpenWs:
+    """정상 동작하는 websockets ClientConnection 대역(보낸 것과 닫기를 기록한다)."""
+
+    def __init__(self, close_error: BaseException | None = None) -> None:
+        self.close_code: int | None = None
+        self.sent: list[str] = []
+        self.closed_with: list[int] = []
+        self._close_error = close_error
+
+    async def send(self, text: str) -> None:
+        self.sent.append(text)
+
+    async def recv(self) -> str:
+        return "frame"
+
+    async def close(self, code: int = 1000) -> None:
+        self.closed_with.append(code)
+        if self._close_error is not None:
+            raise self._close_error
+        self.close_code = code
+
+
+def test_connection_wrapper_passes_send_recv_and_close_through(monkeypatch):
+    ws = _OpenWs()
+    spy_on_websockets_connect(monkeypatch, None, ws=ws)
+
+    async def main() -> tuple[Any, list[Any]]:
+        conn = await make_connector().connect("ws://127.0.0.1:9/x", headers=[])
+        seen = [conn.close_code]
+        await conn.send("hello")
+        seen.append(await conn.recv())
+        await conn.close(4000)
+        seen.append(conn.close_code)
+        return conn, seen
+
+    _, seen = asyncio.run(main())
+
+    assert seen == [None, "frame", 4000]
+    assert ws.sent == ["hello"]
+    assert ws.closed_with == [4000]
+
+
+def test_connection_wrapper_close_of_an_already_closed_connection_is_quiet(monkeypatch):
+    from websockets.exceptions import ConnectionClosedOK
+    from websockets.frames import Close
+
+    closed = ConnectionClosedOK(Close(1000, ""), Close(1000, ""), rcvd_then_sent=True)
+    ws = _OpenWs(close_error=closed)
+    spy_on_websockets_connect(monkeypatch, None, ws=ws)
+
+    async def main() -> None:
+        conn = await make_connector().connect("ws://127.0.0.1:9/x", headers=[])
+        await conn.close()  # 이미 닫힌 연결: 예외 없이 끝난다
+
+    asyncio.run(main())
+    assert ws.closed_with == [1000]
+
+
+def test_wire_logger_drops_debug_records_even_at_debug_level(monkeypatch, caplog):
+    # websockets는 DEBUG로 요청 헤더(Authorization)·프레임 원문을 남긴다(INV-07).
+    spy = spy_on_websockets_connect(monkeypatch, refused())
+    with pytest.raises(StreamConnectFailed):
+        asyncio.run(make_connector().connect(PUBLIC_URL, headers=[]))
+    ((_, kwargs),) = spy.calls
+    wire = kwargs["logger"]
+    caplog.set_level(logging.DEBUG)
+    wire.logger.setLevel(logging.DEBUG)
+    try:
+        wire.debug("> Authorization: Bearer %s", "uat-test-debug-value")
+        wire.log(logging.DEBUG, "> TEXT %s", "uat-test-frame-value")
+        wire.info("연결 정보(test)")
+    finally:
+        wire.logger.setLevel(logging.NOTSET)
+
+    texts = [r.getMessage() for r in caplog.records if r.name == wire.logger.name]
+    assert texts == ["연결 정보(test)"]
+    assert "uat-test-debug-value" not in caplog.text
+    assert "uat-test-frame-value" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "options",
+    [{"open_timeout": 0}, {"open_timeout": -1.0}, {"close_timeout": 0}, {"close_timeout": -0.5}],
+    ids=["open-0", "open-negative", "close-0", "close-negative"],
+)
+def test_connector_timeouts_must_be_positive(options):
+    with pytest.raises(ValueError, match="timeout"):
+        make_connector(**options)
+
+
+@pytest.mark.parametrize("value", [0, -1.0])
+@pytest.mark.parametrize("kind", ["public", "private"])
+def test_stream_open_timeout_must_be_positive(kind, value):
+    with pytest.raises(ValueError, match="open_timeout"):
+        _stream_maker(kind)(open_timeout=value)
+
+
+def test_ticker_with_an_unknown_stream_type_is_skipped(caplog):
+    caplog.set_level(logging.DEBUG)
+    env = scripted_env(([btc_frame(stream_type="DELAYED"), BTC_FRAME], 1000))
+    stream = env.public()
+
+    async def scenario(e: Env) -> None:
+        items, error = await e.drain(e.consume(stream.ticker(["KRW-BTC"])))
+        assert [type(item) for item in items] == [StreamOpened, TickerEvent]
+        assert type(error) is StreamClosed
+
+    env.run(scenario)
+    assert stream.skipped_messages == {"ticker": 1}
+    assert app_warnings(caplog)

@@ -1870,3 +1870,47 @@ def test_418_up_to_24_hours_is_not_marked_as_capped(retry_after, wait):
     assert error.retry_after == (None if retry_after is None else float(retry_after))
     assert measured == pytest.approx(wait)
     assert limiter.retry_after_capped is False
+
+
+# --- R17-06: 보내기 전 검사·Date 해석의 남은 분기 --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "base_url", ["https://api.upbit.com/", "https://api.upbit.com//", "http://127.0.0.1:9/"]
+)
+def test_base_url_with_a_trailing_slash_is_rejected_when_made(base_url):
+    # 끝 슬래시가 있으면 `/v1/...`를 붙여 중복 슬래시가 된다(2026-11-16부터 오류). 만들 때 막는다.
+    clock = FakeClock(auto_advance=True)
+    wire = Wire(clock, [reply()])
+
+    with pytest.raises(ValueError, match="base_url"):
+        UpbitHttp(
+            clock=clock,
+            limiter=RateLimiter(clock),
+            transport=httpx.MockTransport(wire),
+            base_url=base_url,
+            user_agent=UA,
+        )
+
+    assert wire.requests == []
+
+
+@pytest.mark.parametrize(
+    ("date", "expected"),
+    [
+        # RFC 5322의 "-0000"(시간대 정보 없음)은 시간대 없는 값으로 읽힌다. UTC로 본다.
+        ("Thu, 05 Nov 2026 02:02:01 -0000", datetime(2026, 11, 5, 2, 2, 1, tzinfo=UTC)),
+        ("Thu, 05 Nov 2026 11:02:01 +0900", datetime(2026, 11, 5, 2, 2, 1, tzinfo=UTC)),
+    ],
+    ids=["no-zone", "kst"],
+)
+def test_date_header_without_or_with_another_zone_becomes_utc(date, expected):
+    async def scenario():
+        async with connect(reply(date=date)) as h:
+            return await h.http.get("/v1/market/all", [("is_details", "true")])
+
+    server_date = run(scenario).server_date
+
+    assert server_date == expected
+    assert server_date.tzinfo is not None
+    assert server_date.utcoffset() == timedelta(0)

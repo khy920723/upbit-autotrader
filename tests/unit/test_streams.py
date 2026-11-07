@@ -82,6 +82,13 @@ open_stream을 부를 때마다 다음 줄의 async generator를 준다. 줄이 
     끊김을 정리하던 중이면 기록(logging)만 하고 다시 연다.
 15. backoff 대기가 0이어도 이벤트 루프를 한 번 놓는다(즉시 실패가 이어져도 루프를
     독점하지 않는다).
+16. 핸드셰이크 HTTP 상태(3단계 정리 R22-02): 연결 실패(StreamConnectFailed)에
+    http_status가 있으면 그 끊김의 RECONNECTING 상태 error_name이 `"HTTP_<상태>"`
+    (예: "HTTP_401")다. 이터레이터가 내든 open_stream()이 바로 내든 같다. http_status가
+    None이면 지금처럼 None이다. kind·reason("connect_failed")·retry_in·backoff 진행은
+    바뀌지 않는다(429도 backoff 그대로). 다른 끊김(StreamClosed, NetworkError, 오류 없이
+    끝남, 무수신)의 RECONNECTING error_name은 None 그대로다. 앱은 이것으로 인증·한도
+    문제와 네트워크 끊김을 구분한다(401·403이 이어질 때의 처리는 5단계).
 """
 
 import asyncio
@@ -1040,6 +1047,123 @@ def test_silence_reports_degraded_then_reconnecting_with_the_same_reason():
     assert rec.statuses("RECONNECTING")[0][1].retry_in == 1
 
 
+# ── 핸드셰이크 HTTP 상태(16, R22-02) ──────────────────────
+
+
+def handshake_failed(status: int | None) -> errors.StreamConnectFailed:
+    return errors.StreamConnectFailed(http_status=status, reason=f"핸드셰이크 HTTP {status}")
+
+
+def reconnecting_fields(rec: Recorder) -> list[tuple[str, str | None, float | None]]:
+    return [(s.reason, s.error_name, s.retry_in) for _, s in rec.statuses("RECONNECTING")]
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+@pytest.mark.parametrize("status", [301, 401, 403, 429, 500, 503])
+def test_reconnecting_names_the_handshake_http_status(stream, status):
+    """TS-41: 핸드셰이크 HTTP 상태가 RECONNECTING의 error_name "HTTP_<상태>"로 간다."""
+    script, rec, result = simulate(
+        stream, *([handshake_failed(status)] for _ in range(3)), [OPEN], seconds=10
+    )
+
+    assert result == "running"
+    name = f"HTTP_{status}"
+    assert reconnecting_fields(rec) == [
+        ("connect_failed", name, 1),
+        ("connect_failed", name, 2),
+        ("connect_failed", name, 4),
+    ]
+    # 다른 동작은 그대로다: backoff 표, 실패한 시각에 알림, 열리면 OPEN(error_name 없음).
+    assert gaps(script) == pytest.approx([1, 2, 4])
+    assert [t for t, _ in rec.statuses("RECONNECTING")] == pytest.approx(
+        [c.opened_at for c in script.opened[:3]]
+    )
+    (_, opened), *_ = rec.statuses("OPEN")
+    assert (opened.reason, opened.error_name, opened.retry_in) == ("opened", None, None)
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_connect_failure_without_http_status_keeps_error_name_none(stream):
+    """TS-41: HTTP 응답이 없는 연결 실패(거절·타임아웃)는 지금처럼 error_name이 None이다."""
+    _, rec, _ = simulate(stream, [connect_failed()], [handshake_failed(None)], [OPEN], seconds=5)
+
+    assert reconnecting_fields(rec) == [("connect_failed", None, 1), ("connect_failed", None, 2)]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [k for k in DISCONNECTS if k not in {"connect_failed", "handshake_rejected"}],
+)
+def test_other_disconnects_keep_error_name_none(kind):
+    """TS-41: HTTP 상태가 없는 끊김의 RECONNECTING error_name은 None 그대로다."""
+    _, rec, _ = simulate("public", DISCONNECTS[kind](), [OPEN, tick(1)], seconds=5)
+
+    ((reason, error_name, retry_in),) = reconnecting_fields(rec)
+    assert reason != "connect_failed"
+    assert (error_name, retry_in) == (None, 1)
+
+
+def test_silence_reconnect_keeps_error_name_none():
+    """TS-41: 무수신으로 끊은 뒤의 RECONNECTING도 error_name이 None이다."""
+    _, rec, _ = simulate("public", [OPEN], [OPEN, tick(2)], seconds=200)
+
+    (_, status), *_ = rec.statuses("RECONNECTING")
+    assert (status.reason, status.error_name) == ("silence", None)
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_connect_failure_raised_by_open_stream_itself_names_the_status(stream):
+    """TS-41: open_stream()이 이터레이터를 주기 전에 StreamConnectFailed를 내도 같다."""
+
+    async def scenario():
+        clock = FakeClock()
+        script = Script(clock, stream, [OPEN])
+        calls: list[float] = []
+
+        def open_stream():
+            calls.append(clock.monotonic())
+            if len(calls) == 1:
+                raise errors.StreamConnectFailed(http_status=403, reason="핸드셰이크 거절")
+            return script.open_stream()
+
+        rec = Recorder(clock)
+        task = await start(supervisor(clock, script, rec, open_stream=open_stream))
+        await clock.run_for(5)
+        await stop(task)
+        assert not leftover_tasks()
+        return rec, calls
+
+    rec, calls = asyncio.run(scenario())
+
+    assert calls == [T0, T0 + 1]
+    assert reconnecting_fields(rec) == [("connect_failed", "HTTP_403", 1)]
+    assert [s.kind for _, s in rec.statuses()] == ["CONNECTING", "RECONNECTING", "OPEN"]
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    stream=st.sampled_from(["public", "private"]),
+    statuses=st.lists(
+        st.one_of(st.none(), st.integers(min_value=100, max_value=599)), min_size=1, max_size=8
+    ),
+)
+def test_handshake_status_model(stream, statuses):
+    """TS-41: 연속 연결 실패마다 그 실패의 HTTP 상태를 싣고 backoff 표는 그대로 내려간다."""
+    expected_delays = [
+        DEFAULT_BACKOFF[min(i, len(DEFAULT_BACKOFF) - 1)] for i in range(len(statuses))
+    ]
+    connections = [[handshake_failed(status)] for status in statuses]
+
+    script, rec, result = simulate(stream, *connections, [OPEN], seconds=sum(expected_delays) + 1)
+
+    assert result == "running"
+    assert reconnecting_fields(rec) == [
+        ("connect_failed", None if status is None else f"HTTP_{status}", delay)
+        for status, delay in zip(statuses, expected_delays, strict=True)
+    ]
+    assert gaps(script) == pytest.approx(expected_delays)
+
+
 # ── 무수신: 콜백 시간 제외, 열린 뒤에만 ───────────────────
 
 
@@ -1570,3 +1694,220 @@ def test_second_cancel_during_cleanup_still_ends_cancelled(stream, where):
         assert not leftover_tasks(), leftover_tasks()
 
     asyncio.run(scenario())
+
+
+# ── open_stream이 부르는 순간 core 오류를 낼 때(R22-03) ─────────
+# open_stream은 보통 async generator 함수를 불러 이터레이터를 준다(첫 anext 전에는 아무 일도
+# 없다). 그래도 부르는 순간 core 오류(NetworkError·StreamError 계열)를 내면(예: 키를 부를 때
+# 읽는 구현) 이터레이터에서 난 같은 오류와 똑같이 다룬다: 끊김이면 backoff 뒤 다시 열고,
+# D-080 규칙(인증 오류는 바로 1번, 요청 오류는 BROKEN)을 따른다. 이터레이터가 없으니 닫을 것도
+# 없고 남는 태스크도 없다. core 밖 예외는 이터레이터 오류처럼 run() 밖으로 올린다(11).
+
+
+class RaisingOpen:
+    """open_stream 자리: 앞의 errors를 부르는 순간 차례로 내고(이터레이터를 만들지 않는다),
+    다 내면 대본(script)의 다음 줄을 준다."""
+
+    def __init__(self, script: Script, *errors_first: BaseException) -> None:
+        self.script = script
+        self.errors = list(errors_first)
+        self.calls: list[float] = []
+
+    def __call__(self):
+        self.calls.append(self.script.clock.monotonic())
+        if self.errors:
+            raise self.errors.pop(0)
+        return self.script.open_stream()
+
+
+def simulate_raising_open(stream: str, errors_first, *connections, seconds: float, **options):
+    """simulate와 같되 open_stream이 앞의 errors_first를 부르는 순간 낸다.
+
+    (opener, script, rec, 결과) — 결과는 "running"·"returned"·예외 객체.
+    """
+
+    async def scenario():
+        clock = FakeClock()
+        script = Script(clock, stream, *connections)
+        opener = RaisingOpen(script, *errors_first)
+        rec = Recorder(clock)
+        task = await start(supervisor(clock, script, rec, open_stream=opener, **options))
+        await clock.run_for(seconds)
+        if task.done():
+            result = task.exception() or "returned"
+            await settle()
+            script.freeze()
+        else:
+            result = "running"
+            script.freeze()
+            await stop(task)
+        assert not leftover_tasks(), leftover_tasks()
+        return opener, script, rec, result
+
+    return asyncio.run(scenario())
+
+
+CALL_TIME_DISCONNECTS = {
+    "connect_failed": (lambda: connect_failed(), "connect_failed"),
+    "handshake_rejected": (
+        lambda: errors.StreamConnectFailed(http_status=503, reason="핸드셰이크 HTTP 503"),
+        "connect_failed",
+    ),
+    "closed": (lambda: closed(1006), "closed"),
+    "network_error": (lambda: errors.NetworkError("DNS 실패"), "network_error"),
+    "request_timeout": (lambda: errors.RequestTimeout("응답 없음"), "network_error"),
+}
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+@pytest.mark.parametrize(
+    ("make_error", "reason"), CALL_TIME_DISCONNECTS.values(), ids=CALL_TIME_DISCONNECTS.keys()
+)
+def test_open_stream_raising_a_disconnect_backs_off_and_reopens(stream, make_error, reason):
+    data = tick(1) if stream == "public" else asset_event(1)
+
+    opener, script, rec, result = simulate_raising_open(
+        stream, [make_error(), make_error(), make_error()], [OPEN, data], seconds=20
+    )
+
+    assert result == "running"
+    # 부를 때 실패한 세 번도 연속 실패로 센다: 1·2·4초 뒤 다시 부른다.
+    assert [t - T0 for t in opener.calls] == pytest.approx([0, 1, 3, 7])
+    reconnecting = [s for _, s in rec.statuses("RECONNECTING")]
+    assert [s.retry_in for s in reconnecting] == pytest.approx([1, 2, 4])
+    assert {s.reason for s in reconnecting} == {reason}
+    assert all(s.stream == stream for _, s in rec.statuses())
+    # 네 번째에 연 연결이 첫 연결이다(재연결 훅 없이 OPEN, 이벤트 전달).
+    assert len(script.opened) == 1
+    assert [s.kind for _, s in rec.statuses()] == [
+        "CONNECTING",
+        "RECONNECTING",
+        "RECONNECTING",
+        "RECONNECTING",
+        "OPEN",
+    ]
+    assert rec.hooks() == []
+    assert [e for _, e in rec.events()] == [data]
+
+
+def test_open_stream_raising_an_auth_error_reopens_once_then_auth_check():
+    no_keys = errors.StreamAuthError(error_name="NO_CREDENTIALS", message="키 없음")
+    again = errors.StreamAuthError(error_name="NO_CREDENTIALS", message="키 없음")
+
+    opener, script, rec, result = simulate_raising_open(
+        "private", [no_keys, again], [OPEN, asset_event(1)], seconds=600
+    )
+
+    assert result == "returned"
+    assert opener.calls == [T0, T0]  # 인증 오류 뒤에는 기다리지 않고 1번
+    assert script.opened == []
+    (_, reconnecting), = rec.statuses("RECONNECTING")
+    assert (reconnecting.reason, reconnecting.error_name, reconnecting.retry_in) == (
+        "auth_failed",
+        "NO_CREDENTIALS",
+        0.0,
+    )
+    last_at, last = rec.statuses()[-1]
+    assert (last.kind, last.error_name) == ("AUTH_CHECK", "NO_CREDENTIALS")
+    assert last_at == T0
+
+
+def test_open_stream_raising_an_auth_error_once_then_working_opens():
+    no_keys = errors.StreamAuthError(error_name="NO_CREDENTIALS", message="키 없음")
+
+    opener, script, rec, result = simulate_raising_open(
+        "private", [no_keys], [OPEN, asset_event(1)], seconds=10
+    )
+
+    assert result == "running"
+    assert opener.calls == [T0, T0]
+    assert len(script.opened) == 1
+    assert [s.kind for _, s in rec.statuses()] == ["CONNECTING", "RECONNECTING", "OPEN"]
+    assert [e for _, e in rec.events()] == [asset_event(1)]
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_open_stream_raising_a_rate_limit_waits_then_reopens_once(stream):
+    opener, _, rec, result = simulate_raising_open(
+        stream, [rate_limited(), rate_limited()], seconds=600
+    )
+
+    assert result == "returned"
+    assert [t - T0 for t in opener.calls] == pytest.approx([0, 1])
+    last = rec.statuses()[-1][1]
+    assert (last.kind, last.reason, last.error_name) == (
+        "BROKEN",
+        "rate_limited",
+        "TOO_MANY_REQUEST",
+    )
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+def test_open_stream_raising_a_request_error_is_broken_without_retry(stream):
+    error = errors.StreamRequestError(error_name="WRONG_FORMAT", message="형식 오류")
+
+    opener, script, rec, result = simulate_raising_open(stream, [error], [OPEN], seconds=600)
+
+    assert result == "returned"
+    assert len(opener.calls) == 1
+    assert script.opened == []
+    assert rec.statuses("RECONNECTING") == []
+    last = rec.statuses()[-1][1]
+    assert (last.kind, last.reason, last.error_name) == ("BROKEN", "request_error", "WRONG_FORMAT")
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+@pytest.mark.parametrize(
+    "make_error",
+    [lambda: ValueError("구독할 마켓이 없다"), lambda: errors.InvariantViolation("버그")],
+    ids=["ValueError", "InvariantViolation"],
+)
+def test_open_stream_raising_a_non_core_error_propagates(stream, make_error):
+    error = make_error()
+
+    opener, script, rec, result = simulate_raising_open(stream, [error], [OPEN], seconds=600)
+
+    assert result is error
+    assert len(opener.calls) == 1
+    assert script.opened == []
+    assert rec.statuses("RECONNECTING") == []
+
+
+def test_open_stream_failing_at_call_time_degrades_a_long_public_outage():
+    # 부를 때 실패가 이어져도 끊김과 같다: 마지막 데이터(없으면 run() 시작) 뒤 120초면 DEGRADED 1번.
+    failures = [connect_failed() for _ in range(10)]
+
+    _, _, rec, result = simulate_raising_open("public", failures, seconds=200)
+
+    assert result == "running"
+    degraded = rec.statuses("DEGRADED")
+    assert len(degraded) == 1
+    at, status = degraded[0]
+    assert status.reason == "silence"
+    assert T0 + 120 <= at <= T0 + 120 + 30
+
+
+SAME_AS_ITERATOR = {
+    **{key: make for key, (make, _) in CALL_TIME_DISCONNECTS.items()},
+    "auth_error": auth_error,
+    "rate_limited": lambda: rate_limited(),
+    "minute_limited": lambda: rate_limited(minute_limited=True),
+    "request_error": lambda: errors.StreamRequestError(error_name="NO_CODES", message="m"),
+}
+
+
+@pytest.mark.parametrize("stream", ["public", "private"])
+@pytest.mark.parametrize("make_error", SAME_AS_ITERATOR.values(), ids=SAME_AS_ITERATOR.keys())
+def test_open_stream_raising_is_handled_like_the_iterator_raising(stream, make_error):
+    # 부르는 순간 낸 오류와 첫 anext에서 낸 같은 오류는 상태(모든 필드)·다시 여는 시각이 같다.
+    data = tick(1) if stream == "public" else asset_event(1)
+
+    opener, _, raised_at_call, _ = simulate_raising_open(
+        stream, [make_error(), make_error()], [OPEN, data], seconds=200
+    )
+    script, from_iterator, _ = simulate(
+        stream, [make_error()], [make_error()], [OPEN, data], seconds=200
+    )
+
+    assert raised_at_call.statuses() == from_iterator.statuses()
+    assert opener.calls == [c.opened_at for c in script.opened]

@@ -21,8 +21,15 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
   정리 단계에서 만든 가짜마다 `assert_clean()`을 부른다.
 - 연결(WsConnector): `await fake.connect(url, *, headers) -> FakeWsConnection`. headers는
   (이름, 값) 쌍의 시퀀스다. 연결 객체(WsConnection): `await send(text)`, `await recv()`(기본은
-  bytes, ws_binary(False)면 str), `await ping()`(PING 프레임, 응답을 기다리지 않음),
-  `await close(code=1000)`, `close_code`(열려 있으면 None).
+  bytes, ws_binary(False)면 str), `await ping()`, `await close(code=1000)`, `close_code`(열려
+  있으면 None).
+  - `await ping()`(3단계 정리 R22-01, websockets 17.4의 ping과 같은 모양): PING 프레임을 보내고
+    "PONG 대기" awaitable을 돌려준다. 서버가 PONG으로 답하면 끝나고(결과 값은 쓰지 않는다),
+    답하기 전에 연결이 끊기면(어느 쪽이 닫든) 그 awaitable은 `StreamClosed`로 끝난다. 기본은
+    PING을 받은 그 가상 시각에 바로 답한다(ws_no_pong이면 답하지 않는다). PONG은 서버 메시지가
+    아니다(recv로 오지 않고 delivered에 남지 않는다). 기다리지 않고 버려도 이벤트 루프 경고
+    (exception was never retrieved)나 RuntimeWarning(never awaited)이 없다. 이미 끊긴 연결의
+    ping은 그 자리에서 StreamClosed다(아래와 같다).
   - 연결 거절은 `StreamConnectFailed`(core 오류, `.http_status`: 실제 한도 초과면 429,
     ws_reject_connect는 준 값, 기본 None).
   - 끊긴 뒤 recv·send·ping은 `StreamClosed`(core 오류, `.close_code`). 끊기기 전에 서버가 보낸
@@ -134,6 +141,12 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
   - `ws_drop(after=None, *, stream=None)`: None이면 지금 열린 연결을 close 1006(close 프레임 없는
     끊김)으로 끊는다. after=N이면 그 뒤 서버 메시지 N개를 보낸 다음 끊는다. 열린 연결이 없으면
     다음에 받아들이는 연결 하나에 건다.
+  - `ws_no_pong(*, stream=None)`(R22-01, 반쯤 열린 연결): 지금 열린 연결(stream이면 그 종류만)은
+    그 뒤 받는 PING 프레임에 PONG으로 답하지 않는다. 그 PING의 대기 awaitable은 연결이 끊길
+    때까지 끝나지 않고, 끊기면 StreamClosed다. 이미 답한 PING은 그대로다. PING은 그대로 받아
+    `pings`에 남고 120초 무송수신 규칙의 활동으로 센다(연결을 끊지 않는다. 끊김은 클라이언트가
+    알아채야 한다). 열린 연결이 없으면 다음에 받아들이는 연결 하나에 건다(ws_drop과 같다).
+    그다음 연결은 다시 답한다.
   - `ws_silence(seconds, *, stream=None)`: [지금, 지금 + seconds) 동안 서버는 아무것도 보내지 않고
     버린다(스냅숏·UP·오류 포함, UP 주기는 계속 돈다). 클라이언트 송신은 그대로 활동이라 PING
     프레임이 있으면 끊기지 않고, 없으면 120초 규칙으로 끊긴다.
@@ -149,16 +162,19 @@ FakeClock(`await clock.run_for(...)`)으로 움직이고 asyncio.run으로 돌�
 - 검사: `connections`(시도 순서, 위반·거절 포함). 항목은 `.url`, `.headers`(받은 그대로),
   `.stream`("public"·"private", 주소를 모르면 None), `.accepted`, `.opened_at`(monotonic),
   `.received`([(monotonic, 받은 메시지)]), `.delivered`([(monotonic, 보낸 텍스트)], 바이너리도
-  텍스트로. ws_raw의 UTF-8 아닌 bytes만 bytes 그대로), `.pings`([monotonic]), `.closed_at`,
-  `.close_code`. repr은 Authorization 값을 가린다.
+  텍스트로. ws_raw의 UTF-8 아닌 bytes만 bytes 그대로), `.pings`([monotonic]), `.pongs`
+  ([monotonic], 서버가 PONG으로 답한 시각, R22-01), `.closed_at`, `.close_code`. repr은
+  Authorization 값을 가린다.
   `violations`, `jwt_payloads`, `assert_clean()`(위반이 있으면 목록을 보여 주며 AssertionError).
 """
 
 import asyncio
 import contextlib
+import gc
 import inspect
 import json
 import uuid
+import warnings
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
@@ -1738,6 +1754,172 @@ def test_ws_drop_stream_filter(env):
         assert public.close_code is None
 
     env.run(scenario)
+
+
+# ── PING의 PONG 대기·주입: PONG 없음(R22-01) ───────────────
+
+
+async def pong_wait(conn: Any) -> asyncio.Future[Any]:
+    """PING을 보내고 돌려받은 PONG 대기 awaitable을 Future로 감싼다(완료 여부를 보려고)."""
+    return asyncio.ensure_future(await conn.ping())
+
+
+async def assert_answered(waiting: asyncio.Future[Any]) -> None:
+    await settle()
+    assert waiting.done(), "PONG이 와야 한다"
+    assert waiting.exception() is None
+
+
+async def assert_unanswered(waiting: asyncio.Future[Any]) -> None:
+    await settle()
+    assert not waiting.done(), "PONG이 오지 않아야 한다"
+
+
+async def expect_lost(waiting: asyncio.Future[Any]) -> StreamClosed:
+    """연결이 끊겨 PONG 대기가 StreamClosed로 끝났는지 본다."""
+    await settle()
+    assert waiting.done()
+    with pytest.raises(StreamClosed) as info:
+        waiting.result()
+    return info.value
+
+
+def test_ping_gives_a_pong_wait_answered_at_once(env):
+    """TS-106: PING의 PONG 대기는 기본으로 같은 가상 시각에 끝난다(서버 메시지가 아니다)."""
+
+    async def scenario(e: Env) -> None:
+        conn = await e.subscribed_public("KRW-BTC")
+        await e.clock.run_for(30)
+        await assert_answered(await pong_wait(conn))
+        await assert_nothing_pending(conn)  # PONG은 recv로 오지 않는다
+
+    env.run(scenario)
+    record = env.fake.connections[0]
+    assert record.pings == [1030.0]
+    assert record.pongs == [1030.0]
+    assert len(record.delivered) == 1  # 스냅숏뿐
+
+
+def test_ws_no_pong_leaves_pings_unanswered_until_the_connection_closes(env):
+    """TS-106: ws_no_pong 뒤 PING은 받지만 답하지 않고, 끊기면 PONG 대기가 StreamClosed다."""
+
+    async def scenario(e: Env) -> None:
+        conn = await e.subscribed_public("KRW-BTC")
+        e.fake.ws_no_pong()
+        waiting = await pong_wait(conn)
+        await e.clock.run_for(100)
+        await assert_unanswered(waiting)
+        assert conn.close_code is None  # 가짜는 연결을 끊지 않는다(알아채는 것은 앱 몫)
+        e.fake.ws_drop()
+        assert (await expect_lost(waiting)).close_code == DROP_CLOSE_CODE
+
+    env.run(scenario)
+    record = env.fake.connections[0]
+    assert record.pings == [1000.0]
+    assert record.pongs == []
+
+
+def test_ws_no_pong_wait_ends_when_the_client_closes(env):
+    async def scenario(e: Env) -> None:
+        conn = await e.private()
+        e.fake.ws_no_pong()
+        waiting = await pong_wait(conn)
+        await conn.close()
+        assert (await expect_lost(waiting)).close_code == 1000
+
+    env.run(scenario)
+
+
+def test_ws_no_pong_ping_counts_as_activity_for_the_idle_rule(env):
+    async def scenario(e: Env) -> None:
+        conn = await e.subscribed_public("KRW-BTC")
+        e.fake.ws_no_pong()
+        for _ in range(10):
+            await e.clock.run_for(30)
+            await conn.ping()  # 대기는 버린다
+        assert conn.close_code is None  # 1300.0: PING을 받았으니 무송수신이 아니다
+        await e.clock.run_for(120)
+        assert conn.close_code == IDLE_CLOSE_CODE
+
+    env.run(scenario)
+    assert env.fake.connections[0].pongs == []
+
+
+def test_pings_answered_before_ws_no_pong_stay_answered(env):
+    async def scenario(e: Env) -> None:
+        conn = await e.public()
+        answered = await pong_wait(conn)
+        e.fake.ws_no_pong()
+        unanswered = await pong_wait(conn)
+        await assert_answered(answered)
+        await assert_unanswered(unanswered)
+        await conn.close()
+        await expect_lost(unanswered)
+        assert answered.exception() is None
+
+    env.run(scenario)
+    assert env.fake.connections[0].pongs == [1000.0]
+
+
+def test_ws_no_pong_without_open_connection_applies_to_the_next_one(env):
+    async def scenario(e: Env) -> None:
+        e.fake.ws_no_pong()
+        first = await e.public()
+        waiting = await pong_wait(first)
+        await assert_unanswered(waiting)
+        await first.close()
+        await expect_lost(waiting)
+
+        await e.clock.run_for(1)
+        second = await e.public()  # 그다음 연결은 다시 답한다
+        await assert_answered(await pong_wait(second))
+
+    env.run(scenario)
+    assert [r.pongs for r in env.fake.connections] == [[], [1001.0]]
+
+
+def test_ws_no_pong_stream_filter(env):
+    async def scenario(e: Env) -> None:
+        public = await e.public()
+        private = await e.private()
+        e.fake.ws_no_pong(stream="private")
+        await assert_answered(await pong_wait(public))
+        await assert_unanswered(await pong_wait(private))
+
+    env.run(scenario)
+
+
+def test_ws_no_pong_rejects_unknown_stream_names(env):
+    with pytest.raises(ValueError, match="stream"):
+        env.fake.ws_no_pong(stream="both")
+
+
+@pytest.mark.parametrize("no_pong", [False, True], ids=["answered", "no-pong"])
+def test_dropped_pong_waits_leave_no_warnings(make_env, no_pong):
+    """버린 PONG 대기(답했든 끊겨 실패했든)는 루프 경고·RuntimeWarning을 남기지 않는다."""
+    env = make_env()
+    problems: list[dict[str, Any]] = []
+
+    async def main() -> None:
+        asyncio.get_running_loop().set_exception_handler(lambda _l, ctx: problems.append(ctx))
+        conn = await env.public()
+        if no_pong:
+            env.fake.ws_no_pong()
+        for _ in range(3):
+            await conn.ping()  # 돌려받은 대기를 쓰지 않고 버린다
+        env.fake.ws_drop()  # 기다리던 PING이 있으면 StreamClosed로 끝난다
+        await settle()
+        gc.collect()
+        await settle()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        asyncio.run(main())
+        gc.collect()
+
+    assert problems == []
+    assert [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)] == []
+    env.fake.assert_clean()
 
 
 # ── 주입: 무수신·바이너리 ─────────────────────────────────

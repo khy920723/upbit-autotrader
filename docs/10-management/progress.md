@@ -2,6 +2,30 @@
 
 세션이 끝날 때마다 맨 위에 추가한다. 형식: 날짜 — 단계 / 한 일 / 결정 / 남은 일 / 다음 단계.
 
+## 2026-11-06 — 인프라: 라이선스 목록 excludes 설명(R17-05)과 websockets 번들 확인 (클라우드 세션)
+
+- 한 일:
+  - QA R17-05: [의존성 라이선스 목록](../07-security-legal/dependency-licenses.md) 4장의 excludes 설명을 `packaging/autotrader.spec` 주석과 맞췄다.
+    - 제외 항목 4묶음(setuptools 계열, `PySide6.QtNetwork`, `_pytest`·`pytest`, `httpx._main`·`pygments`)을 끌려오는 경로와 빼도 되는 이유로 표에 정리했다.
+    - typing_extensions는 런타임에 들어간다고 고쳤다.
+    - 제외 이유는 패키지 코드로 확인했다: anyio `_backends/_asyncio.py`의 pytest 연동 함수 두 곳, `httpx/__init__.py`의 `_main` ImportError 처리, `PySide6/__init__.py`의 실행되지 않는 분기.
+    - 수치는 같은 spec의 Linux 빌드(main d6242b6)로 다시 쟀다. 번들 Python 모듈은 excludes가 없으면 1,089개, 있으면 535개다. excludes를 모두 빼면 spec이 `_distutils_hack, _pytest, packaging, pygments, setuptools`에서 멈춘다. 이전 문구의 "531개 → 247개"와 "typing_extensions에서 멈춤"은 지금과 맞지 않았다.
+  - websockets 번들 확인: PR #22의 build-exe windows 작업 로그(run 42137330425, job 127628692398, head cbe4a1d)를 읽었다.
+    - PyInstaller가 contrib 훅 `hook-websockets.py`(websockets 하위 모듈 전체 수집)를 처리했다. 빌드와 개발 전용 모듈 검사를 통과했다.
+    - `--self-test` 6/6 통과. 모듈 import 점검이 autotrader 모듈 30개를 모두 import하므로, 웹소켓 어댑터가 쓰는 `websockets.asyncio.client`·`websockets.exceptions`·`websockets.uri`가 Windows exe 안에서 import됐다.
+    - TLS 줄은 "certifi 2026.10.23 묶음, CA 인증서 118개, OpenSSL 3.5.9 29 Sep 2026, 최소 TLSv1_2"로 certifi 묶음을 가리킨다.
+    - 작업 로그에는 번들 파일 목록이 없다. 그래서 같은 spec의 Linux 빌드로 보충 확인했다: websockets 하위 모듈 52개, C 확장 `websockets/speedups`, `websockets-17.4.dist-info/licenses/LICENSE`, `certifi/cacert.pem`이 번들에 들어갔다.
+  - 3b에서 바뀐 런타임 의존성 확인
+    - 3장 표는 `uv.lock`과 맞다(검사 스크립트). 3장 첫 문장의 런타임 패키지 목록이 "PySide6, keyring"뿐이라 httpx, PyJWT, websockets, certifi를 더했다.
+    - `packaging/NOTICE.txt`에는 certifi 2026.10.23(MPL-2.0) 고지와 소스 위치가 이미 있다. websockets(BSD-3-Clause)는 2장 규칙상 NOTICE 대상이 아니고, 라이선스 원문은 dist-info에 들어간다. NOTICE.txt는 고칠 것이 없었다.
+  - [CI 변경 제안](ci-proposals.md) 2번(Windows에서 네트워크 차단·웹소켓 루프백 테스트)은 사용자 승인(2026-11-07)으로 build-exe.yml에 반영되어(main 554757f, 변경안과 같은 내용) 지웠다.
+  - 린트 통과, 테스트 3,763개 통과(9개 건너뜀), 줄·분기 커버리지 합계 96%
+- 결정: 없음
+- 남은 일:
+  - Windows 번들 안의 websockets 파일 목록을 직접 보려면 build-exe를 수동 실행해 올린 결과물을 열어야 한다(이번에는 로그와 Linux 빌드로 확인).
+  - PR: 이 세션의 PR 생성(REST)은 auto 모드 권한 검사에서 "외부 시스템 쓰기"로 거부됐고, 지휘 세션이 [PR #25](https://github.com/khy920723/upbit-autotrader/pull/25)를 열었다. 이 세션은 main 병합과 충돌 해결만 했다.
+- 다음 단계: 3단계 QA 검토 뒤 정리 PR(R17-04·R17-06·R17-07)
+
 ## 2026-11-06 — QA: PR #22(3단계 3b 업비트 웹소켓) 검토와 3단계 완료 확인 (클라우드 세션)
 
 - 한 일:

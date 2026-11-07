@@ -24,7 +24,7 @@
 
 ## 3. 런타임 의존성
 
-앱이 import하는 패키지(PySide6, keyring)와 그 의존성이다.
+앱이 import하는 패키지(PySide6, keyring, httpx, PyJWT, websockets, certifi)와 그 의존성이다.
 
 <!-- license-inventory:runtime:start -->
 | 패키지 | 버전 | 라이선스 | 설치 플랫폼 | 비고 |
@@ -61,8 +61,21 @@
 
 배포하지 않는다. 테스트·린트·빌드에만 쓴다.
 
-- PyInstaller는 jaraco 네임스페이스 패키지를 처리하면서 setuptools(벤더링한 jaraco)를 끌어오고, 그 의존성인 packaging까지 번들에 넣는다. 앱은 이것들을 쓰지 않으므로 spec의 `excludes`로 뺐다(Linux 빌드 기준 번들 모듈 531개 → 247개). typing_extensions는 3단계부터 런타임 의존성(anyio)이라 빼지 않는다.
-- spec은 번들의 Python 모듈이 런타임 의존성(3장) 밖의 배포판에 속하면 빌드를 멈춘다. `excludes`를 빼고 빌드하면 `_distutils_hack, packaging, setuptools, typing_extensions`에서 멈추는 것을 확인했다.
+PyInstaller는 import 경로를 따라 쓰지 않는 개발·빌드 전용 모듈까지 끌어온다. 그래서 spec의 `excludes`로 뺀다. 이유는 `packaging/autotrader.spec`의 주석과 같다.
+
+| 제외 항목 | 끌려오는 경로 | 빼도 되는 이유 |
+|---|---|---|
+| `setuptools`, `_distutils_hack`, `pkg_resources`, `packaging` | PyInstaller의 jaraco 네임스페이스 처리가 setuptools(벤더링한 jaraco)를 끌어오고, 그 의존성인 packaging까지 따라온다 | 개발·빌드 전용이다. 앱은 쓰지 않는다 |
+| `PySide6.QtNetwork` | `PySide6/__init__.py`가 실행되지 않는 분기에서 import한다 | 앱은 쓰지 않는다(TLS는 Python ssl과 certifi, D-093). 넣으면 OpenSSL DLL을 PATH에서 찾아 넣을 수 있다(5장) |
+| `_pytest`, `pytest` | anyio의 asyncio 백엔드가 pytest 연동 함수(`_run_tests_and_fixtures`, `run_test`) 안에서만 `_pytest.outcomes`를 import한다 | 테스트 전용이다. 앱이 실행하는 경로에서는 import되지 않는다 |
+| `httpx._main`, `pygments` | httpx 명령줄 도구(`httpx._main`)가 pygments·click·rich를 import한다 | 앱은 명령줄 도구를 쓰지 않는다. `httpx/__init__.py`가 `_main`의 ImportError를 처리한다. click·rich는 설치돼 있지 않아 들어오지 않는다 |
+
+- typing_extensions는 3단계부터 런타임 의존성(anyio, Python 3.15 미만)이라 빼지 않고 번들에 들어간다(3장).
+- 번들 Python 모듈 수(Linux 빌드, 2026-11-06, main d6242b6): `excludes`가 없으면 1,089개, 있으면 535개다.
+- spec은 번들의 Python 모듈이 런타임 의존성(3장) 밖의 배포판에 속하면 빌드를 멈춘다.
+  - `excludes`를 모두 빼고 빌드하면 `_distutils_hack, _pytest, packaging, pygments, setuptools`에서 멈추는 것을 같은 빌드로 확인했다.
+  - `pkg_resources`와 `pytest`는 이 빌드에서는 끌려오지 않았다(미리 막아 둔 항목이다).
+  - `PySide6.QtNetwork`는 런타임 배포판(PySide6_Essentials) 소속이라 이 검사에 걸리지 않는다. 빼는 이유는 바이너리(OpenSSL DLL) 쪽이다.
 
 <!-- license-inventory:dev:start -->
 | 패키지 | 버전 | 라이선스 | 설치 플랫폼 | 비고 |

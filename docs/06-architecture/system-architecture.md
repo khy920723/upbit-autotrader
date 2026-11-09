@@ -70,7 +70,7 @@ flowchart TB
 |---|---|
 | 스케줄러 | 주기 작업(JOB-01~14) 실행. monotonic 시간 기준, 날짜 경계는 거래소 시각 |
 | 결정 엔진 | 시그널, 규칙, 위험 결과를 모아 매수·매도·보류 결정 |
-| 규칙 엔진 | 지표 계산과 규칙 조건 평가(조건은 ADR-0007로 결정) |
+| 규칙 엔진 | 지표 계산과 규칙 조건 평가(조건은 사용자가 보고서를 보고 고름, D-107) |
 | 위험 관리 | 모든 주문의 마지막 관문. 한도 검사, 주문 금액 결정. I/O가 없는 순수 계산 |
 | 주문 관리 | identifier 생성·저장, 전송, 결과 불명 확인, 재조정, 상태 전이 |
 | 브로커 | live(업비트 주문), validate(`/v1/orders/test` + 가상 체결), paper(가상 체결)를 같은 인터페이스로 |
@@ -230,11 +230,7 @@ class EntryRule(Protocol):                           # ADR-0007 후보를 담기
     def evaluate(self, market: str, candles: CandleSet, ticker: Ticker) -> RuleResult: ...
     # RuleResult: ok(bool), reason_code, details(JSON으로 남길 값)
 
-class ExitRule(Protocol):                            # 규칙상 청산 조건(ADR-0007과 함께)
-    name: str
-    def required_candles(self) -> Mapping[CandleUnit, int]: ...
-    def evaluate(self, market: str, candles: CandleSet, ticker: Ticker,
-                 position: PositionView) -> RuleResult: ...
+# ExitRule(규칙상 청산)은 만들지 않는다(D-105, 규칙상 청산 없음).
 
 class RiskManager(Protocol):                         # I/O 없는 순수 계산. 분기 커버리지 100% 대상
     def approve_buy(self, ctx: RiskContext, market: str) -> Approval | Rejection: ...
@@ -398,7 +394,7 @@ AutotraderError
 | asyncio와 Qt 연결 | core 전용 스레드에서 asyncio 루프(3장, [ADR-0009](adr/0009-gui-asyncio-bridge.md)) | 유효(D-040) |
 | 업비트 클라이언트 | httpx 기반 자체 클라이언트([ADR-0006](adr/0006-upbit-client.md)) | 유효(D-038) |
 | 인터페이스 시그니처, 오류 타입 | 6·7장 | 유효(초안, 구현하면서 이름 조정 가능) |
-| EntryRule·ExitRule 입력 | 6장 가안(한 마켓의 캔들과 ticker) | 대기(ADR-0007, D-021) |
+| EntryRule 입력 | 6장 가안(한 마켓의 캔들과 ticker). 캔들 단위는 사용자 설정(D-106). ExitRule은 D-105로 없음 | 대기(D-106·D-107 세부) |
 | DB 접근 방식 | 표준 `sqlite3` + 직접 SQL([데이터 모델](../04-data/data-model.md) 1장) | 대기(D-041) |
 | 단일 인스턴스 | QLockFile + QLocalServer(8장) | 대기(D-052) |
 | 공인 IP 확인 | 필요할 때만 외부 조회(8장) | 대기(D-051) |

@@ -1,6 +1,6 @@
 # upbit-autotrader
 
-업비트 원화(KRW) 마켓에서 최대 3개 코인을 자동으로 매매하는 **개인용 Windows 데스크톱 앱**입니다. 시세·지표와 뉴스 헤드라인을 LLM(Gemini)이 긍정·부정으로 평가하고, 규칙 조건과 위험 한도를 모두 통과할 때만 주문합니다.
+업비트 원화(KRW) 마켓에서 최대 3개 코인을 자동으로 매매하는 **개인용 Windows 데스크톱 앱**입니다. 시세·지표를 LLM(매매 PC의 Claude Code CLI 세션)이 긍정·부정으로 평가하고, 규칙 조건과 위험 한도를 모두 통과할 때만 주문합니다.
 
 > **현재 상태:** 1단계(설계, 사용자 결정 대기 항목 있음)와 2단계(뼈대·빌드 검증: 빈 창 앱, `--self-test`, Windows 빌드)를 마쳤고 매매 기능은 아직 없습니다. 진행 상황은 [진행 기록](docs/10-management/progress.md)에 남깁니다.
 
@@ -34,7 +34,7 @@
 | 화면 | PySide6 6.12 (Windows 10을 지원하는 마지막 Qt) |
 | 배포 | PyInstaller 폴더형 빌드, GitHub Actions Windows 러너 |
 | 거래소 | 업비트 Open API (REST, WebSocket) |
-| 시그널 | Gemini API (google-genai, 구조화 출력) |
+| 시그널 | Claude Code CLI(비대화형 실행, 구조화 출력). 2026-11-09 Gemini에서 바꿨고 세부는 [분석 보고서 세션 제안서](docs/03-functional/analysis-report-session.md)에서 정한다 |
 | 뉴스 | 네이버 검색 API, CoinDesk·Cointelegraph RSS |
 | 저장 | SQLite, Windows 자격 증명 관리자(keyring) |
 | 테스트 | pytest, pytest-qt, ruff |

@@ -20,7 +20,7 @@
 | 번호 | 제목 | 상태 |
 |---|---|---|
 | [0001](0001-python-pyside6-pyinstaller.md) | Python + PySide6 + PyInstaller(onedir) | 확정 |
-| [0002](0002-gemini-free-tier-signal.md) | 시그널은 Gemini API 무료 등급 | 확정 |
+| [0002](0002-gemini-free-tier-signal.md) | 시그널은 Gemini API 무료 등급 | 대체됨(D-108, 2026-11-09: Claude Code CLI 세션) |
 | [0003](0003-paper-first-risk-precedence.md) | 페이퍼 우선, 위험 관리 우선 | 확정 |
 | [0004](0004-github-actions-windows-build.md) | GitHub Actions Windows 빌드와 워크플로 관리 | 확정 |
 | [0005](0005-news-sources.md) | 뉴스 출처: 뉴스를 수집하지 않는다(약관) | 확정(2026-11-07 개정, D-097. 처음 결정 D-013은 대체됨) |

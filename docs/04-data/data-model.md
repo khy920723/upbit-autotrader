@@ -216,7 +216,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | signal_id | INTEGER | FK signals | 손절처럼 시그널 없는 결정은 NULL |
 | action | TEXT | 필수 | BUY, SELL, HOLD, BLOCKED, SKIP |
 | reason_code | TEXT | 필수 | [매매 로직 명세](../03-functional/trading-logic.md) 13장의 이유 코드 |
-| rule_result_json | TEXT | | 규칙 평가 결과(ADR-0007 확정 후 형식 고정) |
+| rule_result_json | TEXT | | 규칙 평가 결과(D-107 세부와 ADR-0007 뒤 형식 고정) |
 | risk_result_json | TEXT | | 한도 검사 결과와 승인 금액 |
 | would_order_json | TEXT | | signal-only 모드에서 "냈을 주문" |
 
@@ -235,7 +235,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | req_price | TEXT | | 보낸 `price`(지정가 단가 또는 매수 총액) |
 | req_volume | TEXT | | 보낸 `volume` |
 | approved_krw | INTEGER | | 위험 관리가 승인한 매수 금액 |
-| purpose | TEXT | 필수 | ENTRY, STOP_LOSS, TAKE_PROFIT, RULE_EXIT, LLM_NEGATIVE, LIQUIDATE, DESELECT_SELL, MODE_EXIT_SELL, IMPORTED(재조정으로 들여온 주문) |
+| purpose | TEXT | 필수 | ENTRY, STOP_LOSS, TAKE_PROFIT, LLM_NEGATIVE, LIQUIDATE, DESELECT_SELL, MODE_EXIT_SELL, IMPORTED(재조정으로 들여온 주문). RULE_EXIT는 D-105(규칙상 청산 없음)로 쓰지 않는다 |
 | step_no | INTEGER | | ENTRY는 매수 단계 번호(1·2), TAKE_PROFIT은 익절 단계 번호(두 단계를 합쳐 팔면 2). 그 밖은 NULL |
 | source | TEXT | 필수, 기본 `app` | app, reconcile(거래소 목록에서 들여옴, D-070) |
 | mode | TEXT | 필수 | paper, live-validate, live |

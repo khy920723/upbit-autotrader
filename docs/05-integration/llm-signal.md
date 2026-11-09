@@ -1,6 +1,8 @@
 # LLM 시그널 명세
 
-상태: 초안(2026-11-05 1단계에서 429 구분 방법·SDK 재시도·호출 API 확인 반영, 2026-11-07 SDK 3.0.0 확인과 4단계 전 결정 묶음 연결, 같은 날 뉴스 제외(D-097) 반영) · 관련: [매매 로직 명세](../03-functional/trading-logic.md), [뉴스 수집 명세](news-collection.md)(쓰지 않음), [ADR-0002](../06-architecture/adr/0002-gemini-free-tier-signal.md)
+상태: 초안, D-108로 본문 재작성 대기(2026-11-05 1단계에서 429 구분 방법·SDK 재시도·호출 API 확인 반영, 2026-11-07 SDK 3.0.0 확인과 4단계 전 결정 묶음 연결, 같은 날 뉴스 제외(D-097) 반영) · 관련: [매매 로직 명세](../03-functional/trading-logic.md), [뉴스 수집 명세](news-collection.md)(쓰지 않음), [ADR-0002](../06-architecture/adr/0002-gemini-free-tier-signal.md)
+
+> **D-108(2026-11-09)로 LLM 시그널 출처가 Gemini에서 매매 PC의 Claude Code CLI 세션(D-107의 보고서 세션)으로 바뀌었다.** 이 문서 본문(Gemini 모델·SDK·호출 API·429 구분·약관)은 [분석 보고서 세션 제안서](../03-functional/analysis-report-session.md) 9장의 질문에 답을 받은 뒤 다시 쓴다. 그때까지 본문은 기록이다. 입력 규칙(데이터 블록, 키·잔고·주문 내역·계정 정보 금지, 뉴스 없음, 받은 데이터만 근거)과 응답 스키마·실패 시 neutral은 제안서의 기준안으로 이어진다.
 
 ## 1. 역할
 

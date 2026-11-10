@@ -27,19 +27,19 @@
 | | [화면 정의서](02-ux/screen-spec.md) | 초안 |
 | | [메시지·문구 정의서](02-ux/messages.md) | 초안 |
 | 03 기능 | [기능 명세서](03-functional/feature-spec.md) | 초안 |
-| | [매매 로직 명세](03-functional/trading-logic.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
+| | [매매 로직 명세](03-functional/trading-logic.md) | 초안(1단계 제안 반영, 결정 대기 있음. D-114로 매수 조건·일정 장은 제안서 답 뒤 다시 씀) |
 | | [위험 관리 정책서](03-functional/risk-policy.md) | 확정(수치는 초안, 1단계 제안 반영 결정 대기 있음) |
 | | [상태 전이 정의서](03-functional/state-machines.md) | 초안 |
 | | [알림 정의서](03-functional/notifications.md) | 초안 |
 | | [설정 항목 정의서](03-functional/settings.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [분할 매수·매도 설계](03-functional/split-trading.md) | 확정(D-082~D-086) |
-| | [4단계 시작 전 결정 묶음](03-functional/stage4-decisions.md) | 일부 결정(D-095~D-097, D-105), 방향 결정(D-106~D-108), 나머지 대기 |
-| | [분석 보고서 세션 제안서](03-functional/analysis-report-session.md) | 제안(D-106·D-107·D-108 세부 대기) |
+| | [4단계 시작 전 결정 묶음](03-functional/stage4-decisions.md) | 일부 결정(D-095~D-097, D-105, D-109~D-111, D-113, D-041·D-042·D-044), 방향 결정(D-106, D-108, D-112, D-114), 나머지 대기 |
+| | [분석 보고서 세션 제안서](03-functional/analysis-report-session.md) | 제안(예상·결과 보고서 순환, 2026-11-10 다시 씀. 질문 28개, D-106·D-108·D-111·D-112·D-114 세부 대기) |
 | 04 데이터 | [데이터 모델](04-data/data-model.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [로그·감사 기록 정의서](04-data/logging-audit.md) | 초안 |
 | 05 연동 | [업비트 API 연동 명세](05-integration/upbit-api.md) | 확정(2026-11 기준 사실, 2026-11-05 재확인, 결정 대기 있음) |
-| | [LLM 시그널 명세](05-integration/llm-signal.md) | D-108로 본문 재작성 대기(Gemini → Claude Code CLI) |
-| | [뉴스 수집 명세](05-integration/news-collection.md) | 쓰지 않음(약관, D-097). 이전 설계 기록 |
+| | [LLM 시그널 명세](05-integration/llm-signal.md) | D-108·D-112로 본문 재작성 대기(Gemini → Claude Code CLI, 웹 검색) |
+| | [뉴스 수집 명세](05-integration/news-collection.md) | 쓰지 않음(약관, D-097). 이전 설계 기록. 시그널 웹 검색(D-112)과의 관계는 제안서 S7 |
 | | [디스코드 연동 명세](05-integration/discord.md) | 확정(D-081) |
 | 06 아키텍처 | [시스템 구성도](06-architecture/system-architecture.md) | 초안(1단계 제안 반영, 결정 대기 있음) |
 | | [기술 스택·버전 정책](06-architecture/tech-stack.md) | 확정(1단계 제안 반영, 결정 대기 있음) |
@@ -64,7 +64,7 @@
 | | [결정 로그](10-management/decision-log.md) | 진행 중 |
 | | [D-108 정리 목록](10-management/d108-gemini-cleanup.md) | 진행 중(Gemini 언급 위치와 고칠 순서) |
 | | [CI 변경 제안](10-management/ci-proposals.md) | 진행 중 |
-| 리서치 | [규칙 조건 후보 비교 리포트](research/rule-candidates.md) | 비교 완료, 사용자 선택 대기(D-072) |
+| 리서치 | [규칙 조건 후보 비교 리포트](research/rule-candidates.md) | 비교 완료. D-114로 참고 자료(규칙 선택 방식 D-107은 대체됨) |
 | | [2단계 하락률 비교 리포트](research/split-drop-rate.md) | 비교 완료, D-086 결정(기본값 2%), 외부 자료 부록 |
 
 ## ID 규칙

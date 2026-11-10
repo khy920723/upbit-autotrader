@@ -1,10 +1,10 @@
 # 데이터 모델
 
-상태: 초안(1단계 제안, 사용자 결정 대기: D-041 DB 접근 방식, D-044 실행 모드 저장 위치, D-049 live-validate 일수. 2026-11-07 뉴스 테이블 제외, D-097) · 관련: [로그·감사 기록 정의서](logging-audit.md), [상태 전이 정의서](../03-functional/state-machines.md), [매매 로직 명세](../03-functional/trading-logic.md), [시스템 구성도](../06-architecture/system-architecture.md)
+상태: 초안(1단계 제안. D-041 DB 접근 방식·D-044 실행 모드 저장 위치는 2026-11-10 유효. 사용자 결정 대기: D-049 live-validate 일수. 예상·결과 보고서 표는 [분석 보고서 세션 제안서](../03-functional/analysis-report-session.md) 10.2절의 답 뒤에 더한다. 2026-11-07 뉴스 테이블 제외, D-097) · 관련: [로그·감사 기록 정의서](logging-audit.md), [상태 전이 정의서](../03-functional/state-machines.md), [매매 로직 명세](../03-functional/trading-logic.md), [시스템 구성도](../06-architecture/system-architecture.md)
 
 저장소는 SQLite 파일 하나다: `%LOCALAPPDATA%\upbit-autotrader\data\autotrader.db`(같은 폴더에 `-wal`, `-shm` 파일이 생긴다). 아래 테이블·열·인덱스는 1단계 제안이며 2단계 구현 전에 사용자 확인을 받는다.
 
-## 1. 접근 방식 (제안, D-041 대기)
+## 1. 접근 방식 (D-041 유효, 2026-11-10)
 
 | 후보 | 장점 | 단점 |
 |---|---|---|
@@ -92,7 +92,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | 키 | 값 | 비고 |
 |---|---|---|
 | `install_id` | UUID | 진단 묶음 구분용 |
-| `mode` | paper, signal-only, live-validate, live | 현재 실행 모드. 설정 파일이 아니라 DB에 둔다(D-044 대기, [설정 항목 정의서](../03-functional/settings.md) 1장) |
+| `mode` | paper, signal-only, live-validate, live | 현재 실행 모드. 설정 파일이 아니라 DB에 둔다(D-044 유효, [설정 항목 정의서](../03-functional/settings.md) 1장) |
 | `mode_changed_at` | 시각 | |
 | `trading_state` | RUNNING, PAUSED, BUY_BLOCKED, STOPPED | 재시작 때 복원할 직전 상태. [정지]·[정지 후 전량 매도]는 취소·매도보다 먼저 STOPPED를 저장한다(LIQUIDATING은 저장하지 않음, D-069) |
 | `buy_blocked_date_kst` | `YYYY-MM-DD` | 일일 손실 한도·주문 수 상한에 닿은 날 |
@@ -216,7 +216,7 @@ PK는 기본 키, FK는 외래 키다. "필수"는 NOT NULL이다.
 | signal_id | INTEGER | FK signals | 손절처럼 시그널 없는 결정은 NULL |
 | action | TEXT | 필수 | BUY, SELL, HOLD, BLOCKED, SKIP |
 | reason_code | TEXT | 필수 | [매매 로직 명세](../03-functional/trading-logic.md) 13장의 이유 코드 |
-| rule_result_json | TEXT | | 규칙 평가 결과(D-107 세부와 ADR-0007 뒤 형식 고정) |
+| rule_result_json | TEXT | | 규칙 평가 결과(D-107 세부와 ADR-0007 뒤 형식 고정). D-114로 예상 보고서 판정·관문 결과로 바뀔 수 있다(제안서 10.2절) |
 | risk_result_json | TEXT | | 한도 검사 결과와 승인 금액 |
 | would_order_json | TEXT | | signal-only 모드에서 "냈을 주문" |
 

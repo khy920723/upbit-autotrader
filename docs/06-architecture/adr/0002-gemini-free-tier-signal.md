@@ -2,7 +2,7 @@
 
 상태: 대체됨(D-108, 2026-11-09) · 처음 확정 2026-11-03
 
-> **D-108(2026-11-09)로 LLM 시그널은 Gemini가 아니라 매매 PC의 Claude Code CLI 세션이 낸다.** 이 ADR의 본문은 기록이다. 새 시그널 결정은 [분석 보고서 세션 제안서](../../03-functional/analysis-report-session.md) 9장의 질문에 답을 받은 뒤 새 ADR로 쓴다.
+> **D-108(2026-11-09)로 LLM 시그널은 Gemini가 아니라 매매 PC의 Claude Code CLI 세션이 낸다.** 이 ADR의 본문은 기록이다. 새 시그널 결정은 [분석 보고서 세션 제안서](../../03-functional/analysis-report-session.md) 12장의 질문에 답을 받은 뒤 새 ADR로 쓴다(웹 검색 D-112, 매수 근거 D-114 포함).
 
 ## 맥락
 

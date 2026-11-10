@@ -1,6 +1,6 @@
 # 기술 스택·버전 정책
 
-상태: 확정(1단계 제안 반영, 결정 대기 있음: D-041, D-042) · 2026-11-03 확인, 2026-11-05 갱신 · 관련: [ADR-0001](adr/0001-python-pyside6-pyinstaller.md), [시스템 구성도](system-architecture.md)
+상태: 확정(1단계 제안 반영. D-041·D-042는 2026-11-10 유효) · 2026-11-03 확인, 2026-11-05 갱신 · 관련: [ADR-0001](adr/0001-python-pyside6-pyinstaller.md), [시스템 구성도](system-architecture.md)
 
 ## 1. 스택
 
@@ -16,8 +16,8 @@
 | JWT | PyJWT | 고정(2026-11-05 최신 2.15.1) | HS512 서명 |
 | 데이터 검증 | pydantic 2 | 고정 | LLM 출력·설정 검증 |
 | 비밀 저장 | keyring | 25.x | Windows 자격 증명 관리자. PyInstaller에 훅 있음 |
-| DB | SQLite(표준 라이브러리 `sqlite3`, 직접 SQL) | STRICT 테이블이라 SQLite 3.37 이상(self-test에서 확인) | 단일 사용자 로컬 앱(D-041 대기) |
-| 설정 파일 | JSON(표준 라이브러리) + pydantic 검증 | - | D-042 대기. `tomllib`는 읽기 전용이라 TOML을 쓰려면 의존성이 늘어남 |
+| DB | SQLite(표준 라이브러리 `sqlite3`, 직접 SQL) | STRICT 테이블이라 SQLite 3.37 이상(self-test에서 확인) | 단일 사용자 로컬 앱(D-041 유효) |
+| 설정 파일 | JSON(표준 라이브러리) + pydantic 검증 | - | D-042 유효. `tomllib`는 읽기 전용이라 TOML을 쓰려면 의존성이 늘어남 |
 | GUI–asyncio 연결 | 표준 asyncio 루프를 전용 스레드에서 실행 | 추가 의존성 없음 | ADR-0009(확정, D-040). qasync, QtAsyncio는 쓰지 않음 |
 | 테스트 | pytest, pytest-qt | dev 그룹 | 화면 테스트는 offscreen |
 | 린트 | ruff | dev 그룹 | |

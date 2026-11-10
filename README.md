@@ -34,7 +34,7 @@
 | 화면 | PySide6 6.12 (Windows 10을 지원하는 마지막 Qt) |
 | 배포 | PyInstaller 폴더형 빌드, GitHub Actions Windows 러너 |
 | 거래소 | 업비트 Open API (REST, WebSocket) |
-| 시그널 | Claude Code CLI(비대화형 실행, 구조화 출력). 2026-11-09 Gemini에서 바꿨고 세부는 [분석 보고서 세션 제안서](docs/03-functional/analysis-report-session.md)에서 정한다 |
+| 시그널 | Claude Code CLI(비대화형 실행, 구조화 출력, 웹 검색). 2026-11-09 Gemini에서 바꿨고, 2026-11-10 매수 근거를 예상 결과 보고서로 정했다. 세부는 [분석 보고서 세션 제안서](docs/03-functional/analysis-report-session.md)에서 정한다 |
 | 뉴스 | 네이버 검색 API, CoinDesk·Cointelegraph RSS |
 | 저장 | SQLite, Windows 자격 증명 관리자(keyring) |
 | 테스트 | pytest, pytest-qt, ruff |

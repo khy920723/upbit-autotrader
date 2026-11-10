@@ -140,7 +140,7 @@
 | ID | 시나리오 | 기대 결과 | 수준 |
 |---|---|---|---|
 | TS-98 | 시작 앱 등록·해제(가짜 레지스트리) | 켜면 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`에 현재 exe의 전체 경로를 경로에 공백이 있어도 실행되게 쓰고, 끄면 지운다. 관리자 권한을 요구하지 않는다 | 단위 |
-| TS-99 | 재시작 후 직전 모드 복원 | paper, signal-only, live-validate, live 각각에서 재시작하면 같은 모드로 돌아온다(모드 저장 위치는 D-044 대기). 키·허용 IP 문제는 live 계열만 HALTED, paper·signal-only는 경고. `app.resume_last_mode`가 꺼져 있을 때의 시작 상태는 결정 필요(Q-16) | 통합 |
+| TS-99 | 재시작 후 직전 모드 복원 | paper, signal-only, live-validate, live 각각에서 재시작하면 같은 모드로 돌아온다(모드는 DB `app_meta.mode`에 저장, D-044 유효). 키·허용 IP 문제는 live 계열만 HALTED, paper·signal-only는 경고. `app.resume_last_mode`가 꺼져 있을 때의 시작 상태는 결정 필요(Q-16) | 통합 |
 | TS-100 | 마법사·설정 저장 뒤 비밀 위치(카나리아) | 가짜 키가 keyring에만 있고 설정 파일, DB, 로그, self-test 보고서에는 0건 | 통합 |
 | TS-101 | 마법사 단계 규칙 | W1은 동의 없이 다음 단계로 갈 수 없고 동의 시각을 저장한다. W5 디스코드 알림은 건너뛸 수 있다. W9 요약에서 키는 앞 4자리만 보인다 | 화면 |
 

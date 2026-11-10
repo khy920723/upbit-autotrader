@@ -1,25 +1,25 @@
 # D-108 정리 목록 (Gemini 언급 위치)
 
-상태: 진행 중 · 2026-11-09 작성 · 관련: [결정 로그](decision-log.md) D-108, [분석 보고서 세션 제안서](../03-functional/analysis-report-session.md) 9장, [진행 기록](progress.md)
+상태: 진행 중 · 2026-11-09 작성 · 관련: [결정 로그](decision-log.md) D-108, [분석 보고서 세션 제안서](../03-functional/analysis-report-session.md) 5·6·9장, [진행 기록](progress.md)
 
 D-108(2026-11-09)로 LLM 시그널은 Gemini가 아니라 매매 PC의 Claude Code CLI 세션이 낸다. 사용자는 "최신 문서 다시 확인"을 "저장소 문서 정리"라고 답했다. 이 문서는 저장소에서 Gemini·google-genai·AI Studio를 언급하는 위치를 모으고, 무엇을 언제 고칠지 나눈다.
 
 - 기준: 이 목록을 만든 브랜치의 작업 트리(2026-11-09). 줄 번호는 이후 수정으로 바뀔 수 있다.
-- 찾은 말: `gemini`, `google-genai`, `google.genai`, `genai`, `aistudio`, `AI Studio`(대소문자 무시). 모두 216곳, 37개 파일. 이 문서는 세지 않았다.
+- 찾은 말: `gemini`, `google-genai`, `google.genai`, `genai`, `aistudio`, `AI Studio`(대소문자 무시). 모두 213곳, 37개 파일. 이 문서는 세지 않았다.
 
 ## 1. 분류별 위치
 
-### 기록(고치지 않음) (127곳)
+### 기록(고치지 않음) (124곳)
 
 | 파일 | 줄 |
 |---|---|
-| `docs/10-management/progress.md` | 8, 25, 28, 29, 34, 40, 48, 59, 62, 91, 97, 108, 167, 185, 190, 198, 200, 716, 732, 737, 773, 776, 777, 779, 793 |
+| `docs/10-management/progress.md` | 31, 35, 41, 50, 62, 65, 71, 88, 91, 92, 97, 103, 111, 122, 125, 154, 160, 171, 230, 248, 253, 261, 263, 779, 795, 800, 836, 839, 840, 842, 856 |
 | `docs/10-management/decision-log.md` | 17, 67, 68, 106, 108, 111, 115, 116, 121 |
-| `docs/03-functional/stage4-decisions.md` | 5, 13, 22, 42, 60, 66, 105, 120, 146, 153, 161, 163, 165, 169, 170, 171, 172, 176, 180, 181, 182, 183, 184, 187, 188, 189, 190, 192, 194, 197, 200, 205, 209, 215, 217, 222, 232, 233, 234, 237, 241, 243, 245, 247, 301, 382, 384, 401, 402, 403, 404, 405, 406, 407 |
-| `docs/10-management/roadmap.md` | 71, 92, 102, 165, 181, 182, 183, 186, 187, 191, 192, 209, 210, 211, 212, 213, 214 |
-| `docs/05-integration/news-collection.md` | 8, 11, 54 |
-| `docs/06-architecture/adr/0005-news-sources.md` | 12, 36 |
-| `docs/03-functional/analysis-report-session.md` | 5, 15, 33, 34, 246, 272, 273, 276, 279, 283, 382, 400 |
+| `docs/03-functional/stage4-decisions.md` | 5, 13, 22, 49, 69, 75, 114, 129, 156, 163, 171, 173, 175, 179, 180, 181, 182, 186, 190, 191, 192, 193, 194, 197, 198, 199, 200, 202, 204, 207, 210, 215, 219, 225, 227, 232, 242, 243, 244, 247, 251, 253, 255, 257, 315, 397, 399, 416, 417, 418, 419, 420, 421, 422 |
+| `docs/10-management/roadmap.md` | 71, 92, 103, 174, 190, 191, 192, 195, 196, 200, 201, 218, 219, 220, 221, 222, 223 |
+| `docs/05-integration/news-collection.md` | 9, 12, 55 |
+| `docs/06-architecture/adr/0005-news-sources.md` | 14, 38 |
+| `docs/03-functional/analysis-report-session.md` | 19, 612, 726 |
 | `docs/README.md` | 41, 65 |
 | `docs/06-architecture/adr/README.md` | 23 |
 | `docs/01-planning/requirements.md` | 13 |
@@ -29,7 +29,7 @@ D-108(2026-11-09)로 LLM 시그널은 Gemini가 아니라 매매 PC의 Claude Co
 
 | 파일 | 줄 |
 |---|---|
-| `docs/05-integration/llm-signal.md` | 3, 5, 13, 21, 22, 23, 24, 25, 30, 32, 33, 35, 36, 87, 98, 99, 102, 104, 108, 110, 112, 114, 131, 141, 147 |
+| `docs/05-integration/llm-signal.md` | 3, 5, 15, 23, 24, 25, 26, 27, 32, 34, 35, 37, 38, 89, 100, 101, 104, 106, 110, 112, 114, 116, 133, 143, 149 |
 | `docs/06-architecture/adr/0002-gemini-free-tier-signal.md` | 1, 5, 9, 10, 11, 15, 21 |
 | `docs/08-quality/fakes-spec.md` | 5, 204, 211, 221, 245, 354, 396, 408, 422 |
 | `docs/07-security-legal/legal-compliance.md` | 26, 28, 33, 34, 42, 51 |
@@ -76,6 +76,8 @@ D-108(2026-11-09)로 LLM 시그널은 Gemini가 아니라 매매 PC의 Claude Co
 ## 3. 제안서 답 뒤에 다시 쓸 것
 
 [분석 보고서 세션 제안서](../03-functional/analysis-report-session.md) 12장 질문에 답을 받은 뒤 아래를 고친다. 순서는 위에서 아래다.
+
+- 2026-11-10: D-112(시그널 웹 검색)와 D-114(매수 근거 = 예상 결과 보고서)로 다시 쓸 범위가 넓어졌다. 함께 고칠 곳은 [진행 기록](progress.md) 2026-11-10 항목의 "남은 일"에 있다.
 
 | 대상 | 고칠 내용 |
 |---|---|

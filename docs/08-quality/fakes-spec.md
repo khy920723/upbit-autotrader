@@ -203,7 +203,7 @@
 
 ## 3. FakeLLM (Gemini)
 
-> D-108(2026-11-09)로 시그널은 Claude Code CLI가 낸다. 이 절의 와이어 가짜(Interactions·generateContent 형식)는 [분석 보고서 세션 제안서](../03-functional/analysis-report-session.md) 9장의 답 뒤에 Claude Code CLI 출력(JSON, `structured_output`, 오류 결과, 종료 코드, 사용량 한도 메시지)을 흉내 내도록 다시 쓴다. 주입 기능의 뜻(지연, 형식 오류, 거절, 모델 불일치, 조작된 응답)은 그대로 쓸 수 있다.
+> D-108(2026-11-09)로 시그널은 Claude Code CLI가 낸다. 이 절의 와이어 가짜(Interactions·generateContent 형식)는 [분석 보고서 세션 제안서](../03-functional/analysis-report-session.md) 12장의 답 뒤에 Claude Code CLI 출력(JSON, `structured_output`, 오류 결과, 종료 코드, 사용량 한도 메시지)을 흉내 내도록 다시 쓴다. 주입 기능의 뜻(지연, 형식 오류, 거절, 모델 불일치, 조작된 응답)은 그대로 쓸 수 있다.
 
 ### 3.1 두 층
 
